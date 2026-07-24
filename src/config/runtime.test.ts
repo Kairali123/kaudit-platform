@@ -64,3 +64,28 @@ test('rejects weak or unapproved OIDC algorithms', () => {
   }
   assert.throws(() => loadRuntimeConfig(env), /unapproved algorithm/)
 })
+
+test('K2/K3 automation fails closed without completed calibration and named owner', () => {
+  const env = {
+    ...base(),
+    KAUDIT_K23_AUTOMATION_ENABLED: 'true',
+  }
+  assert.throws(
+    () => loadRuntimeConfig(env),
+    /K2\/K3 automation requires completed calibration/,
+  )
+})
+
+test('K2/K3 automation can only enable with calibration and named owner', () => {
+  const config = loadRuntimeConfig({
+    ...base(),
+    KAUDIT_K23_AUTOMATION_ENABLED: 'true',
+    KAUDIT_CALIBRATION_COMPLETE: 'true',
+    KAUDIT_K23_CLINICAL_SAFETY_OWNER: 'synthetic-owner',
+  })
+  assert.equal(config.releaseGates.k23AutomationEnabled, true)
+  assert.equal(
+    config.releaseGates.clinicalSafetyOwner,
+    'synthetic-owner',
+  )
+})

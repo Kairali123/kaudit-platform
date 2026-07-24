@@ -18,15 +18,27 @@ async function scalar(pool: Pool, sql: string): Promise<number | null> {
 }
 
 export async function collectMetrics(pool: Pool): Promise<RawMetrics> {
-  const calls = await scalar(pool, `SELECT COUNT(*) FROM kaudit_call`)
-  const evidenceObjects = await scalar(pool, `SELECT COUNT(*) FROM kaudit_evidence_object`)
-  const ingestionBatches = await scalar(pool, `SELECT COUNT(*) FROM kaudit_ingestion_batch`)
-  const ingestionCompleted = await scalar(pool, `SELECT COUNT(*) FROM kaudit_ingestion_batch WHERE status='completed'`)
-  const users = await scalar(pool, `SELECT COUNT(*) FROM kaudit_user`)
-  const recordingArtifacts = await scalar(pool, `SELECT COUNT(*) FROM kaudit_call_artifact WHERE artifact_type='recording'`)
-  const withSourceUrl = await scalar(pool, `SELECT COUNT(*) FROM kaudit_call_artifact WHERE artifact_type='recording' AND source_url IS NOT NULL`)
-  const withBaseline = await scalar(pool, `SELECT COUNT(*) FROM kaudit_call_artifact WHERE artifact_type='recording' AND sha256 IS NOT NULL`)
-  const everVerified = await scalar(pool, `SELECT COUNT(*) FROM kaudit_call_artifact WHERE artifact_type='recording' AND last_verified_at IS NOT NULL`)
+  const [
+    calls,
+    evidenceObjects,
+    ingestionBatches,
+    ingestionCompleted,
+    users,
+    recordingArtifacts,
+    withSourceUrl,
+    withBaseline,
+    everVerified,
+  ] = await Promise.all([
+    scalar(pool, `SELECT COUNT(*) FROM kaudit_call`),
+    scalar(pool, `SELECT COUNT(*) FROM kaudit_evidence_object`),
+    scalar(pool, `SELECT COUNT(*) FROM kaudit_ingestion_batch`),
+    scalar(pool, `SELECT COUNT(*) FROM kaudit_ingestion_batch WHERE status='completed'`),
+    scalar(pool, `SELECT COUNT(*) FROM kaudit_user`),
+    scalar(pool, `SELECT COUNT(*) FROM kaudit_call_artifact WHERE artifact_type='recording'`),
+    scalar(pool, `SELECT COUNT(*) FROM kaudit_call_artifact WHERE artifact_type='recording' AND source_url IS NOT NULL`),
+    scalar(pool, `SELECT COUNT(*) FROM kaudit_call_artifact WHERE artifact_type='recording' AND sha256 IS NOT NULL`),
+    scalar(pool, `SELECT COUNT(*) FROM kaudit_call_artifact WHERE artifact_type='recording' AND last_verified_at IS NOT NULL`),
+  ])
 
   let findings: { action: string; n: number }[] = []
   try {

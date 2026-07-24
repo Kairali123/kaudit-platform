@@ -73,3 +73,18 @@ hash-chained audit sink; it rejects the loopback development-auth mode.
 
 Do not apply migrations or point this path at production until the staged sequence in
 `docs/runbooks/SECURE_DASHBOARD.md` is approved and completed.
+
+## Routed enterprise app
+
+The application is page-based: `/` is Home/Profile, `/overview` is overview only, and
+`/evidence`, `/findings`, `/billing`, `/reports`, and `/operations` contain their
+dedicated aggregate views.
+
+After the secure identity migrations and local user provisioning:
+
+```bash
+npm run app:dev
+```
+
+Open `http://127.0.0.1:4173`. Use `npm run app:start` to build and serve the
+production bundle locally from `127.0.0.1:4175`. See `docs/ENTERPRISE_APP.md`.

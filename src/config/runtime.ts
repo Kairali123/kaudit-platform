@@ -26,6 +26,12 @@ export interface RuntimeConfig {
         tokenCookie: string | null
         algorithms: string[]
       }
+  releaseGates: {
+    calibrationComplete: boolean
+    k23AutomationEnabled: boolean
+    clinicalSafetyOwner: string | null
+    reportingApproved: boolean
+  }
 }
 
 export class ConfigurationError extends Error {
@@ -159,6 +165,22 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     )
   }
 
+  const releaseGates = {
+    calibrationComplete: bool(env, 'KAUDIT_CALIBRATION_COMPLETE'),
+    k23AutomationEnabled: bool(env, 'KAUDIT_K23_AUTOMATION_ENABLED'),
+    clinicalSafetyOwner: optional(env, 'KAUDIT_K23_CLINICAL_SAFETY_OWNER'),
+    reportingApproved: bool(env, 'KAUDIT_REPORTING_APPROVED'),
+  }
+  if (
+    releaseGates.k23AutomationEnabled &&
+    (!releaseGates.calibrationComplete ||
+      !releaseGates.clinicalSafetyOwner)
+  ) {
+    throw new ConfigurationError(
+      'K2/K3 automation requires completed calibration and KAUDIT_K23_CLINICAL_SAFETY_OWNER',
+    )
+  }
+
   return {
     environment,
     host,
@@ -166,5 +188,6 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     trustProxy: bool(env, 'KAUDIT_TRUST_PROXY'),
     database,
     auth,
+    releaseGates,
   }
 }

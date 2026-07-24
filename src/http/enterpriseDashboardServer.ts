@@ -2,6 +2,8 @@ import http, {
   type IncomingMessage,
   type ServerResponse,
 } from 'node:http'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import type { Pool } from 'mysql2/promise'
 import {
   AuthFailure,
@@ -17,14 +19,27 @@ import type {
 } from '../auth/types.ts'
 import type { AuditSink } from '../audit/types.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
-import { collectFullDashboard } from '../adapters/mysqlFullDashboard.ts'
-import { buildFullDashboard } from '../ui/fullDashboard.ts'
-import { renderFullDashboard } from '../ui/fullRender.ts'
+import {
+  collectBilling,
+  collectQuality,
+  collectRevenueSnapshots,
+} from '../adapters/mysqlFullDashboard.ts'
+import { collectMetrics } from '../adapters/mysqlMetrics.ts'
+import { collectOperations } from '../adapters/mysqlOperations.ts'
+import { USER_PERMISSIONS } from '../identity/access.ts'
+import {
+  buildBillingView,
+  buildQualityView,
+  buildRevenueSnapshots,
+  type ReleaseGateView,
+} from '../ui/fullDashboard.ts'
+import { buildDashboard } from '../ui/metrics.ts'
 import { clientAddress } from './clientAddress.ts'
 import { correlationId } from './correlation.ts'
 import {
   HTML_SECURITY_HEADERS,
   JSON_SECURITY_HEADERS,
+  STATIC_SECURITY_HEADERS,
 } from './securityHeaders.ts'
 
 interface Dependencies {
@@ -33,7 +48,28 @@ interface Dependencies {
   access: AccessRepository
   audit: AuditSink
   verifier: TokenVerifier | null
+  webDistRoot?: string
 }
+
+const APP_ROUTES = new Set([
+  '/',
+  '/overview',
+  '/evidence',
+  '/findings',
+  '/billing',
+  '/reports',
+  '/operations',
+])
+
+const API_ROUTES = new Set([
+  '/api/v1/me',
+  '/api/v1/overview',
+  '/api/v1/evidence',
+  '/api/v1/findings',
+  '/api/v1/billing',
+  '/api/v1/reports',
+  '/api/v1/operations',
+])
 
 function userAgent(request: IncomingMessage): string | null {
   const value = request.headers['user-agent']
@@ -121,6 +157,217 @@ async function auditAccess(
   })
 }
 
+function sendJson(
+  response: ServerResponse,
+  correlation: string,
+  value: unknown,
+): void {
+  response.writeHead(200, {
+    ...JSON_SECURITY_HEADERS,
+    'content-type': 'application/json; charset=utf-8',
+    'x-correlation-id': correlation,
+  })
+  response.end(JSON.stringify(value))
+}
+
+function rateCardApproved(
+  billing: Awaited<ReturnType<typeof collectBilling>>,
+): boolean {
+  return (
+    billing.rateCardStatus === 'published' &&
+    Boolean(billing.rateCardApprovedBy) &&
+    Boolean(billing.rateCardApprovedAt)
+  )
+}
+
+function releaseGates(
+  dependencies: Dependencies,
+  approvedRateCard: boolean,
+): ReleaseGateView[] {
+  return [
+    {
+      code: 'access',
+      label: 'Access control',
+      detail: 'Authenticated, role-checked aggregate access',
+      status: 'ready',
+    },
+    {
+      code: 'rate-card',
+      label: 'Rate card approval',
+      detail: approvedRateCard
+        ? 'Published with named approval'
+        : 'D-03 open; billing is provisional',
+      status: approvedRateCard ? 'ready' : 'blocked',
+    },
+    {
+      code: 'calibration',
+      label: 'AI calibration',
+      detail: dependencies.config.releaseGates.calibrationComplete
+        ? 'Calibration gate recorded complete'
+        : 'Accuracy has not been measured',
+      status: dependencies.config.releaseGates.calibrationComplete
+        ? 'ready'
+        : 'blocked',
+    },
+    {
+      code: 'k2-k3',
+      label: 'K2/K3 automation',
+      detail: dependencies.config.releaseGates.k23AutomationEnabled
+        ? 'Enabled with named safety owner'
+        : 'Inactive pending clinical/safety sign-off',
+      status: dependencies.config.releaseGates.k23AutomationEnabled
+        ? 'ready'
+        : 'blocked',
+    },
+    {
+      code: 'reporting',
+      label: 'Management snapshots',
+      detail: dependencies.config.releaseGates.reportingApproved
+        ? 'Reporting conventions approved'
+        : 'D-12-A conventions pending approval',
+      status: dependencies.config.releaseGates.reportingApproved
+        ? 'ready'
+        : 'pending',
+    },
+  ]
+}
+
+function permissionsFor(roles: readonly string[]): string[] {
+  return roles.includes('admin')
+    ? ['*']
+    : roles.includes('user')
+      ? [...USER_PERMISSIONS]
+      : []
+}
+
+async function apiResponse(
+  pathname: string,
+  dependencies: Dependencies,
+  context: AuthContext,
+): Promise<unknown> {
+  if (pathname === '/api/v1/me') {
+    return {
+      id: context.user.id,
+      email: context.user.email,
+      roles: context.user.roles,
+      permissions: permissionsFor(context.user.roles),
+      maxSensitivityTier: context.user.maxSensitivityTier,
+      authMode: dependencies.config.auth.mode,
+      contentAccess:
+        'Aggregate data only; raw audio and transcripts are not available in this app.',
+    }
+  }
+  if (pathname === '/api/v1/overview') {
+    const [metrics, billing] = await Promise.all([
+      collectMetrics(dependencies.pool),
+      collectBilling(dependencies.pool),
+    ])
+    return {
+      generatedAt: metrics.generatedAt,
+      tiles: buildDashboard(metrics).tiles,
+      gates: releaseGates(
+        dependencies,
+        rateCardApproved(billing),
+      ),
+    }
+  }
+  if (pathname === '/api/v1/evidence') {
+    const metrics = await collectMetrics(dependencies.pool)
+    const dashboard = buildDashboard(metrics)
+    return {
+      generatedAt: metrics.generatedAt,
+      tiles: dashboard.tiles,
+      integrityFindings: dashboard.findings,
+    }
+  }
+  if (pathname === '/api/v1/findings') {
+    const [metrics, quality] = await Promise.all([
+      collectMetrics(dependencies.pool),
+      collectQuality(dependencies.pool),
+    ])
+    return {
+      generatedAt: metrics.generatedAt,
+      authority: dependencies.config.releaseGates
+        .calibrationComplete
+        ? 'calibrated'
+        : 'uncalibrated',
+      quality: buildQualityView(quality, metrics.calls),
+    }
+  }
+  if (pathname === '/api/v1/billing') {
+    const billing = await collectBilling(dependencies.pool)
+    return {
+      generatedAt: new Date().toISOString(),
+      authority: rateCardApproved(billing)
+        ? 'authoritative'
+        : 'provisional',
+      billing: buildBillingView(billing),
+    }
+  }
+  if (pathname === '/api/v1/reports') {
+    const [billing, snapshots] = await Promise.all([
+      collectBilling(dependencies.pool),
+      collectRevenueSnapshots(dependencies.pool),
+    ])
+    return {
+      generatedAt: new Date().toISOString(),
+      authority:
+        rateCardApproved(billing) &&
+        dependencies.config.releaseGates.reportingApproved
+          ? 'authoritative'
+          : 'provisional',
+      snapshots: buildRevenueSnapshots(snapshots),
+    }
+  }
+  if (pathname === '/api/v1/operations') {
+    return collectOperations(dependencies.pool)
+  }
+  throw new Error('Unsupported API route')
+}
+
+function apiPermission(pathname: string): string {
+  return pathname === '/api/v1/reports'
+    ? 'snapshot:read'
+    : 'metrics:read'
+}
+
+function contentType(filePath: string): string {
+  if (filePath.endsWith('.js')) return 'text/javascript; charset=utf-8'
+  if (filePath.endsWith('.css')) return 'text/css; charset=utf-8'
+  if (filePath.endsWith('.svg')) return 'image/svg+xml'
+  if (filePath.endsWith('.png')) return 'image/png'
+  if (filePath.endsWith('.woff2')) return 'font/woff2'
+  return 'application/octet-stream'
+}
+
+async function serveApp(
+  pathname: string,
+  response: ServerResponse,
+  correlation: string,
+  webDistRoot: string,
+): Promise<boolean> {
+  const isAsset = pathname.startsWith('/assets/')
+  if (!isAsset && !APP_ROUTES.has(pathname)) return false
+  const relative = isAsset ? pathname.slice(1) : 'index.html'
+  const root = path.resolve(webDistRoot)
+  const filePath = path.resolve(root, relative)
+  if (!filePath.startsWith(`${root}${path.sep}`)) return false
+  try {
+    const body = await readFile(filePath)
+    response.writeHead(200, {
+      ...(isAsset ? STATIC_SECURITY_HEADERS : HTML_SECURITY_HEADERS),
+      'content-type': isAsset
+        ? contentType(filePath)
+        : 'text/html; charset=utf-8',
+      'x-correlation-id': correlation,
+    })
+    response.end(body)
+    return true
+  } catch {
+    return false
+  }
+}
+
 export function createEnterpriseDashboardServer(
   dependencies: Dependencies,
 ): http.Server {
@@ -176,11 +423,11 @@ export function createEnterpriseDashboardServer(
       }
       return
     }
-    if (
-      !['/', '/api/v1/me', '/api/v1/dashboard'].includes(
-        url.pathname,
-      )
-    ) {
+    const isKnownRoute =
+      API_ROUTES.has(url.pathname) ||
+      APP_ROUTES.has(url.pathname) ||
+      url.pathname.startsWith('/assets/')
+    if (!isKnownRoute) {
       problem(
         response,
         404,
@@ -194,60 +441,64 @@ export function createEnterpriseDashboardServer(
     let context: AuthContext | null = null
     try {
       context = await authenticate(request, dependencies)
-      requirePermission(context, 'metrics:read')
-      if (url.pathname === '/api/v1/me') {
+      if (API_ROUTES.has(url.pathname)) {
+        requirePermission(context, apiPermission(url.pathname))
+        const action =
+          url.pathname === '/api/v1/me'
+            ? 'identity.read'
+            : `${url.pathname.split('/').at(-1)}.read`
+        const body = await apiResponse(
+          url.pathname,
+          dependencies,
+          context,
+        )
         await auditAccess(
           dependencies,
           request,
           context,
           correlation,
           'success',
-          'identity.read',
+          action,
         )
-        response.writeHead(200, {
-          ...JSON_SECURITY_HEADERS,
-          'content-type': 'application/json; charset=utf-8',
-          'x-correlation-id': correlation,
-        })
-        response.end(
-          JSON.stringify({
-            id: context.user.id,
-            email: context.user.email,
-            roles: context.user.roles,
-            maxSensitivityTier:
-              context.user.maxSensitivityTier,
-          }),
-        )
+        sendJson(response, correlation, body)
         return
       }
-
-      const dashboard = buildFullDashboard(
-        await collectFullDashboard(dependencies.pool),
-        { accessControlEnforced: true },
-      )
+      requirePermission(context, 'metrics:read')
+      if (url.pathname.startsWith('/assets/')) {
+        const served = await serveApp(
+          url.pathname,
+          response,
+          correlation,
+          dependencies.webDistRoot ??
+            path.resolve(process.cwd(), 'apps/web/dist'),
+        )
+        if (served) return
+      }
       await auditAccess(
         dependencies,
         request,
         context,
         correlation,
         'success',
-        'dashboard.read',
+        'app.read',
       )
-      if (url.pathname === '/api/v1/dashboard') {
-        response.writeHead(200, {
-          ...JSON_SECURITY_HEADERS,
-          'content-type': 'application/json; charset=utf-8',
-          'x-correlation-id': correlation,
-        })
-        response.end(JSON.stringify(dashboard))
+      const served = await serveApp(
+        url.pathname,
+        response,
+        correlation,
+        dependencies.webDistRoot ??
+          path.resolve(process.cwd(), 'apps/web/dist'),
+      )
+      if (served) {
         return
       }
-      response.writeHead(200, {
-        ...HTML_SECURITY_HEADERS,
-        'content-type': 'text/html; charset=utf-8',
-        'x-correlation-id': correlation,
-      })
-      response.end(renderFullDashboard(dashboard))
+      problem(
+        response,
+        503,
+        'APP_NOT_BUILT',
+        'Web application is not built',
+        correlation,
+      )
     } catch (error) {
       const authFailure = error instanceof AuthFailure
       try {
@@ -259,7 +510,9 @@ export function createEnterpriseDashboardServer(
           authFailure ? 'denied' : 'failure',
           url.pathname === '/api/v1/me'
             ? 'identity.read'
-            : 'dashboard.read',
+            : url.pathname.startsWith('/api/')
+              ? `${url.pathname.split('/').at(-1)}.read`
+              : 'app.read',
         )
       } catch {
         // Privacy-safe structured logging below is the fallback when the

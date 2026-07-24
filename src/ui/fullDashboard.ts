@@ -101,6 +101,43 @@ export interface FullDashboardView {
   snapshots: RevenueSnapshotView[]
 }
 
+export interface ReleaseGateView {
+  code: 'access' | 'rate-card' | 'calibration' | 'k2-k3' | 'reporting'
+  label: string
+  detail: string
+  status: 'ready' | 'blocked' | 'pending'
+}
+
+export interface OverviewPageView {
+  generatedAt: string
+  tiles: Tile[]
+  gates: ReleaseGateView[]
+}
+
+export interface EvidencePageView {
+  generatedAt: string
+  tiles: Tile[]
+  integrityFindings: { action: string; n: number }[]
+}
+
+export interface FindingsPageView {
+  generatedAt: string
+  authority: 'uncalibrated' | 'calibrated'
+  quality: QualityView
+}
+
+export interface BillingPageView {
+  generatedAt: string
+  authority: 'provisional' | 'authoritative'
+  billing: BillingView
+}
+
+export interface ReportsPageView {
+  generatedAt: string
+  authority: 'provisional' | 'authoritative'
+  snapshots: RevenueSnapshotView[]
+}
+
 function fmtCount(n: number | null): string {
   return n == null ? '—' : n.toLocaleString('en-IN')
 }
@@ -114,13 +151,7 @@ function confidenceLabel(value: string | null): string {
   return Number.isFinite(n) ? `${(n * 100).toFixed(1)}%` : '—'
 }
 
-export function buildFullDashboard(
-  raw: RawFullDashboard,
-  options: { accessControlEnforced?: boolean } = {},
-): FullDashboardView {
-  const monitor = buildDashboard(raw.monitor)
-  const q = raw.quality
-  const totalCalls = raw.monitor.calls
+export function buildQualityView(q: RawQualityMetrics, totalCalls: number | null): QualityView {
   const qualityTiles: Tile[] = [
     {
       label: 'Calls analyzed',
@@ -147,8 +178,18 @@ export function buildFullDashboard(
       status: q.auditRuns == null ? 'pending' : 'neutral',
     },
   ]
+  return {
+    tiles: qualityTiles,
+    confirmations: q.confirmations,
+    origins: q.origins,
+    topFindings: q.topFindings.map((f) => ({ ...f, confidenceLabel: confidenceLabel(f.avgConfidence) })),
+    catalogLabel: q.catalogVersion
+      ? `${q.catalogVersion} · ${q.catalogStatus ?? 'unknown status'}`
+      : 'catalog unavailable',
+  }
+}
 
-  const b = raw.billing
+export function buildBillingView(b: RawBillingMetrics): BillingView {
   const rateCardApproved =
     b.rateCardStatus === 'published' && Boolean(b.rateCardApprovedBy) && Boolean(b.rateCardApprovedAt)
   const billingTiles: Tile[] = [
@@ -156,7 +197,7 @@ export function buildFullDashboard(
       label: 'Calculated billable amount',
       value: formatMoney(b.calculatedTotal, b.currency),
       sub: `${fmtCount(b.calculations)} call calculations`,
-      status: b.calculatedTotal == null ? 'pending' : 'warn',
+      status: b.calculatedTotal == null ? 'pending' : rateCardApproved ? 'good' : 'warn',
     },
     {
       label: 'Invoice / vendor claim',
@@ -176,12 +217,25 @@ export function buildFullDashboard(
     {
       label: 'Billable minutes',
       value: b.billableMinutes == null ? '—' : Number(b.billableMinutes).toLocaleString('en-IN', { maximumFractionDigits: 1 }),
-      sub: 'draft rate-card calculation',
-      status: b.billableMinutes == null ? 'pending' : 'warn',
+      sub: rateCardApproved ? 'approved rate-card calculation' : 'draft rate-card calculation',
+      status: b.billableMinutes == null ? 'pending' : rateCardApproved ? 'good' : 'warn',
     },
   ]
+  return {
+    tiles: billingTiles,
+    rateCardLabel: b.rateCardVersion
+      ? `${b.rateCardVersion} · ${b.rateCardStatus ?? 'unknown status'}`
+      : 'rate card unavailable',
+    rateCardApproved,
+    rateCardApprovalLabel: rateCardApproved
+      ? `Published with named approval on ${b.rateCardApprovedAt}`
+      : 'D-03 open — draft/unapproved rate card',
+    reconciliationStatus: b.reconciliationStatus ?? 'not started',
+  }
+}
 
-  const snapshots = raw.snapshots.map((s): RevenueSnapshotView => {
+export function buildRevenueSnapshots(raw: RawRevenueSnapshot[]): RevenueSnapshotView[] {
+  return raw.map((s): RevenueSnapshotView => {
     const variance = subtract(s.vendorClaimed, s.verified)
     const priorVariance = subtract(s.priorVendorClaimed, s.priorVerified)
     const snapshotTrend = trendWithDeadband(s.verified, s.priorVerified)
@@ -206,37 +260,27 @@ export function buildFullDashboard(
             : 'claim unavailable',
       trend: snapshotTrend,
       trendLabel,
-      // priorVariance is intentionally calculated here as an integrity check; a
-      // null/invalid prior leaves the trend unknown rather than fabricating it.
       ...(priorVariance == null && s.priorVerified == null ? {} : {}),
     }
   })
+}
+
+export function buildFullDashboard(
+  raw: RawFullDashboard,
+  options: { accessControlEnforced?: boolean } = {},
+): FullDashboardView {
+  const monitor = buildDashboard(raw.monitor)
+  const q = raw.quality
+  const totalCalls = raw.monitor.calls
+  const b = raw.billing
 
   return {
     generatedAt: raw.generatedAt,
     accessControlEnforced: options.accessControlEnforced === true,
     overviewTiles: monitor.tiles,
     integrityFindings: monitor.findings,
-    quality: {
-      tiles: qualityTiles,
-      confirmations: q.confirmations,
-      origins: q.origins,
-      topFindings: q.topFindings.map((f) => ({ ...f, confidenceLabel: confidenceLabel(f.avgConfidence) })),
-      catalogLabel: q.catalogVersion
-        ? `${q.catalogVersion} · ${q.catalogStatus ?? 'unknown status'}`
-        : 'catalog unavailable',
-    },
-    billing: {
-      tiles: billingTiles,
-      rateCardLabel: b.rateCardVersion
-        ? `${b.rateCardVersion} · ${b.rateCardStatus ?? 'unknown status'}`
-        : 'rate card unavailable',
-      rateCardApproved,
-      rateCardApprovalLabel: rateCardApproved
-        ? `Published with named approval on ${b.rateCardApprovedAt}`
-        : 'D-03 open — draft/unapproved rate card',
-      reconciliationStatus: b.reconciliationStatus ?? 'not started',
-    },
-    snapshots,
+    quality: buildQualityView(q, totalCalls),
+    billing: buildBillingView(b),
+    snapshots: buildRevenueSnapshots(raw.snapshots),
   }
 }

@@ -40,7 +40,7 @@ function s(value: unknown): string | null {
   return value == null ? null : String(value)
 }
 
-async function collectQuality(pool: Pool): Promise<RawQualityMetrics> {
+export async function collectQuality(pool: Pool): Promise<RawQualityMetrics> {
   const [summary, catalog, confirmationRows, originRows, findingRows] = await Promise.all([
     one(
       pool,
@@ -98,7 +98,7 @@ async function collectQuality(pool: Pool): Promise<RawQualityMetrics> {
   }
 }
 
-async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
+export async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
   const [summary, rateCard, reconciliation] = await Promise.all([
     one(
       pool,
@@ -224,6 +224,10 @@ async function collectSnapshot(pool: Pool, period: DatePeriod): Promise<RawReven
   }
 }
 
+export async function collectRevenueSnapshots(pool: Pool): Promise<RawRevenueSnapshot[]> {
+  return Promise.all(completedPeriods(todayInIndia()).map((period) => collectSnapshot(pool, period)))
+}
+
 function todayInIndia(): string {
   return new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Kolkata',
@@ -234,12 +238,11 @@ function todayInIndia(): string {
 }
 
 export async function collectFullDashboard(pool: Pool): Promise<RawFullDashboard> {
-  const periods = completedPeriods(todayInIndia())
-  const [monitor, quality, billing, ...snapshots] = await Promise.all([
+  const [monitor, quality, billing, snapshots] = await Promise.all([
     collectMetrics(pool),
     collectQuality(pool),
     collectBilling(pool),
-    ...periods.map((p) => collectSnapshot(pool, p)),
+    collectRevenueSnapshots(pool),
   ])
   const generatedAt = new Date().toISOString()
   return {

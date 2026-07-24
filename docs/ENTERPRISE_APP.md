@@ -1,0 +1,72 @@
+# Enterprise app
+
+The current UI is a routed React application backed by authenticated, page-scoped,
+aggregate-only APIs. It is intentionally private and renders no call-level rows, phone
+numbers, evidence URLs, audio, transcripts, customer identifiers, or health content.
+
+## Pages
+
+| Route | Purpose | Live source |
+|---|---|---|
+| `/` | Home/Profile: identity, role, permissions, sensitivity ceiling | `kaudit_user`, `kaudit_user_role` |
+| `/overview` | Headline coverage and release gates only | call/evidence aggregates and configured gates |
+| `/evidence` | Ingestion, references, hash baselines, integrity events | call/evidence/audit aggregates |
+| `/findings` | Finding totals, confidence, catalog, origins, decisions | audit-run/finding aggregates |
+| `/billing` | Calculation, claim, variance, rate card, reconciliation | billing/rate-card/reconciliation aggregates |
+| `/reports` | D-12 weekly/monthly/quarterly/yearly summaries | live period aggregates |
+| `/operations` | Outbox, inbox, jobs, idempotency, access-audit health | reliability/security aggregates |
+
+Each endpoint returns only the data used by its page. `/overview` does not return
+findings, billing, or snapshot payloads.
+
+## Run with real aggregate data
+
+Prerequisites:
+
+1. review and apply migrations `0003` and `0004` in the approved staged process;
+2. provision an active `kaudit_user` with an `admin` or `user` role;
+3. configure the gitignored `.env` from `.env.example`;
+4. keep release gates false unless their named approval and evidence exist.
+
+Development:
+
+```bash
+npm run app:dev
+```
+
+Open `http://127.0.0.1:4173`. Vite serves the UI and proxies `/api` to the secure
+server at `127.0.0.1:4175`.
+
+Production-shaped local build:
+
+```bash
+npm run app:start
+```
+
+Open `http://127.0.0.1:4175`. Static assets are served from the authenticated
+server with a same-origin CSP.
+
+Business data queries are read-only and aggregate-only. Successful and denied app/API
+access is written to the hash-chained audit log by design.
+
+## Authority labels
+
+- Billing becomes `authoritative` only when the newest rate card is `published` and
+  has both `approved_by` and `approved_at`.
+- Findings remain `uncalibrated` unless `KAUDIT_CALIBRATION_COMPLETE=true` is set
+  after the approved calibration protocol is complete.
+- K2/K3 automation cannot start unless calibration is complete and
+  `KAUDIT_K23_CLINICAL_SAFETY_OWNER` is named. Configuration fails closed if
+  enablement is attempted without both.
+- Reports remain `provisional` until the rate card is approved and
+  `KAUDIT_REPORTING_APPROVED=true`.
+
+These flags change labels and release posture. They do not retroactively validate,
+recalculate, or finalize existing data.
+
+## Production boundary
+
+This app is production-shaped, not production-approved. D-03, calibration, K2/K3
+ownership, privacy/retention, OIDC, infrastructure, and shadow-run acceptance remain
+release blockers. Do not expose the Vite server or use local authentication outside
+loopback development.
