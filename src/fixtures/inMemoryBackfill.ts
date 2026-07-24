@@ -2,12 +2,11 @@ import type { BackfillCandidate, BackfillRepo, RawStore } from '../backfill/port
 
 export class InMemoryRawStore implements RawStore {
   private readonly docs = new Map<string, unknown>()
-  set(bucket: string, key: string, doc: unknown): void {
-    this.docs.set(`${bucket}/${key}`, doc)
+  set(taskId: string, doc: unknown): void {
+    this.docs.set(taskId, doc)
   }
-  async readJson(bucket: string, key: string): Promise<unknown | null> {
-    const k = `${bucket}/${key}`
-    return this.docs.has(k) ? (this.docs.get(k) ?? null) : null
+  async readByTaskId(taskId: string): Promise<unknown | null> {
+    return this.docs.has(taskId) ? (this.docs.get(taskId) ?? null) : null
   }
 }
 

@@ -2,15 +2,14 @@
 export interface BackfillCandidate {
   evidenceObjectId: string // the recording evidence_object row to set source_url on
   callId: string
-  logicalCallKey: string // taskId used to key into the raw export document
-  rawBucket: string
-  rawKey: string
+  logicalCallKey: string // taskId (e.g. "T…") — the raw file is {logicalCallKey}.json
   existingSourceUrl: string | null
 }
 
-// Reads a raw KServe export document (JSON) from wherever raw evidence is stored.
+// Reads the raw KServe record for a call by its taskId (= logical_call_key). The
+// on-disk layout is one file per call: {root}/raw/{batchUUID}/{taskId}.json.
 export interface RawStore {
-  readJson(bucket: string, key: string): Promise<unknown | null>
+  readByTaskId(taskId: string): Promise<unknown | null>
 }
 
 export interface BackfillRepo {

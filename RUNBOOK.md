@@ -47,6 +47,13 @@ Run it with your MySQL client / a DBA — not from this app.
 Populates `source_url` from the raw KServe export payloads (extracts `recordingUrl`,
 normalizes plain/signed/proxy-wrapped → canonical S3 object URL).
 
+The backfill reads **one file per call** at
+`{KAUDIT_SOURCE_RAW_ROOT}/raw/{batchUUID}/{taskId}.json`, matched by the call's
+`logical_call_key` (the taskId, e.g. `T…`) across the batch-UUID subfolders. So
+`KAUDIT_SOURCE_RAW_ROOT` must be the directory that *contains* `raw/` (e.g.
+`../kcrm/.data/kaudit-evidence`). It handles both a flat record and a `{taskId: {…}}`
+wrapper.
+
 ```bash
 # DRY-RUN — confirms KAUDIT_SOURCE_RAW_ROOT resolves the raw exports and shows what WOULD
 # be populated + the finding breakdown. Writes nothing.

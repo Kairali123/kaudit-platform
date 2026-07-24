@@ -6,26 +6,19 @@ import type { BackfillCandidate } from './ports.ts'
 
 const S3_HOSTS = ['cdr-storage-recs.s3.ap-south-1.amazonaws.com']
 const OBJ = 'https://cdr-storage-recs.s3.ap-south-1.amazonaws.com/media/private/high-call-recordings/call_x.ogg'
+const TASK = 'T000024df528711f18383020017011b17'
 
 function candidate(over: Partial<BackfillCandidate> = {}): BackfillCandidate {
-  return {
-    evidenceObjectId: 'eo1',
-    callId: 'c1',
-    logicalCallKey: 'task-123',
-    rawBucket: 'local-disk',
-    rawKey: 'raw/export-1.json',
-    existingSourceUrl: null,
-    ...over,
-  }
+  return { evidenceObjectId: 'eo1', callId: 'c1', logicalCallKey: TASK, existingSourceUrl: null, ...over }
 }
 function opts(dryRun = false) {
   return { dryRun, allowedHosts: S3_HOSTS }
 }
 
-test('backfills source_url from a taskId-keyed export (plain S3 URL)', async () => {
+test('backfills from a flat per-call record file (recordingUrl at top level)', async () => {
   const c = candidate()
   const raw = new InMemoryRawStore()
-  raw.set('local-disk', 'raw/export-1.json', { 'task-123': { recordingUrl: OBJ } })
+  raw.set(TASK, { number: '9xxxxx', callConnectedTime: '…', recordingUrl: OBJ })
   const repo = new InMemoryBackfillRepo([c])
 
   const res = await backfillSourceUrl(c, { rawStore: raw, repo }, opts())
@@ -35,28 +28,26 @@ test('backfills source_url from a taskId-keyed export (plain S3 URL)', async () 
   assert.equal(repo.updates[0]?.s3Url, OBJ)
 })
 
-test('normalizes a proxy-wrapped recordingUrl to the inner S3 URL', async () => {
+test('backfills from a taskId-keyed wrapper file', async () => {
   const c = candidate()
   const raw = new InMemoryRawStore()
-  raw.set('local-disk', 'raw/export-1.json', {
-    'task-123': { recordingUrl: `https://unpod.ai/api/v1/media/download-signed-url/?url=${OBJ}` },
-  })
+  raw.set(TASK, { [TASK]: { recordingUrl: OBJ } })
   const repo = new InMemoryBackfillRepo([c])
 
   const res = await backfillSourceUrl(c, { rawStore: raw, repo }, opts())
-
   assert.equal(res.outcome, 'backfilled')
   assert.equal(res.s3Url, OBJ)
 })
 
-test('handles a single-record export that carries recordingUrl at the top level', async () => {
+test('normalizes a proxy-wrapped recordingUrl to the inner S3 URL', async () => {
   const c = candidate()
   const raw = new InMemoryRawStore()
-  raw.set('local-disk', 'raw/export-1.json', { recordingUrl: OBJ, foo: 'bar' })
+  raw.set(TASK, { recordingUrl: `https://unpod.ai/api/v1/media/download-signed-url/?url=${OBJ}` })
   const repo = new InMemoryBackfillRepo([c])
 
   const res = await backfillSourceUrl(c, { rawStore: raw, repo }, opts())
   assert.equal(res.outcome, 'backfilled')
+  assert.equal(res.s3Url, OBJ)
 })
 
 test('already-present source_url is skipped', async () => {
@@ -69,9 +60,9 @@ test('already-present source_url is skipped', async () => {
   assert.equal(repo.updates.length, 0)
 })
 
-test('missing raw export is a finding', async () => {
+test('missing raw file (taskId not found) is a finding', async () => {
   const c = candidate()
-  const raw = new InMemoryRawStore() // nothing set
+  const raw = new InMemoryRawStore() // nothing set for TASK
   const repo = new InMemoryBackfillRepo([c])
 
   const res = await backfillSourceUrl(c, { rawStore: raw, repo }, opts())
@@ -79,20 +70,20 @@ test('missing raw export is a finding', async () => {
   assert.equal(repo.issues[0]?.code, 'raw_missing')
 })
 
-test('call absent from the export is a finding', async () => {
+test('a non-record JSON shape (e.g. array) is a call_not_in_export finding', async () => {
   const c = candidate()
   const raw = new InMemoryRawStore()
-  raw.set('local-disk', 'raw/export-1.json', { 'some-other-task': { recordingUrl: OBJ } })
+  raw.set(TASK, ['not', 'a', 'record'])
   const repo = new InMemoryBackfillRepo([c])
 
   const res = await backfillSourceUrl(c, { rawStore: raw, repo }, opts())
   assert.equal(res.outcome, 'call_not_in_export')
 })
 
-test('call present but no recordingUrl is a finding', async () => {
+test('record present but no recordingUrl is a finding', async () => {
   const c = candidate()
   const raw = new InMemoryRawStore()
-  raw.set('local-disk', 'raw/export-1.json', { 'task-123': { status: 'completed' } })
+  raw.set(TASK, { number: '9xxxxx', callConnectedTime: null }) // no recordingUrl key
   const repo = new InMemoryBackfillRepo([c])
 
   const res = await backfillSourceUrl(c, { rawStore: raw, repo }, opts())
@@ -102,7 +93,7 @@ test('call present but no recordingUrl is a finding', async () => {
 test('unrecognized recording host is a finding, not stored', async () => {
   const c = candidate()
   const raw = new InMemoryRawStore()
-  raw.set('local-disk', 'raw/export-1.json', { 'task-123': { recordingUrl: 'https://evil.example.com/x.ogg' } })
+  raw.set(TASK, { recordingUrl: 'https://evil.example.com/x.ogg' })
   const repo = new InMemoryBackfillRepo([c])
 
   const res = await backfillSourceUrl(c, { rawStore: raw, repo }, opts())
@@ -114,7 +105,7 @@ test('unrecognized recording host is a finding, not stored', async () => {
 test('dry-run resolves the URL but writes nothing', async () => {
   const c = candidate()
   const raw = new InMemoryRawStore()
-  raw.set('local-disk', 'raw/export-1.json', { 'task-123': { recordingUrl: OBJ } })
+  raw.set(TASK, { recordingUrl: OBJ })
   const repo = new InMemoryBackfillRepo([c])
 
   const summary = await backfillBatch([c], { rawStore: raw, repo }, opts(true))
@@ -124,10 +115,10 @@ test('dry-run resolves the URL but writes nothing', async () => {
 })
 
 test('batch summary counts each outcome', async () => {
-  const good = candidate({ evidenceObjectId: 'g' })
-  const missing = candidate({ evidenceObjectId: 'm', rawKey: 'raw/missing.json' })
+  const good = candidate({ evidenceObjectId: 'g', logicalCallKey: 'T-good' })
+  const missing = candidate({ evidenceObjectId: 'm', logicalCallKey: 'T-missing' })
   const raw = new InMemoryRawStore()
-  raw.set('local-disk', 'raw/export-1.json', { 'task-123': { recordingUrl: OBJ } })
+  raw.set('T-good', { recordingUrl: OBJ })
   const repo = new InMemoryBackfillRepo([good, missing])
 
   const summary = await backfillBatch([good, missing], { rawStore: raw, repo }, opts())

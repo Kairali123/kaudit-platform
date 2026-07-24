@@ -1,9 +1,10 @@
 import type { BackfillCandidate, BackfillRepo, RawStore } from './ports.ts'
 import { normalizeRecordingUrl } from './normalizeRecordingUrl.ts'
 
-// Populates `source_url` on recording evidence rows by extracting the recording URL
-// from the raw KServe export payload and normalizing it to the stable S3 object URL.
-// Every unresolved case is a recorded finding — never a silent skip.
+// Populates `source_url` on recording evidence rows by reading the per-call raw KServe
+// file ({root}/raw/{batchUUID}/{taskId}.json), extracting the recording URL, and
+// normalizing it to the stable S3 object URL. Every unresolved case is a recorded
+// finding — never a silent skip.
 
 export type BackfillOutcome =
   | 'backfilled'
@@ -41,15 +42,17 @@ export interface BackfillSummary {
   results: BackfillResult[]
 }
 
-// Mirror of the KCRM linkage (fetchAndStoreRecording.ts): the raw export is either an
-// object keyed by taskId, or a single record that already carries `recordingUrl`.
+// Robust to both observed shapes:
+//   • a flat per-call record:  { number, …, recordingUrl }
+//   • a taskId-keyed wrapper:  { "<taskId>": { …, recordingUrl } }
 function pickCallRecord(doc: unknown, key: string): Record<string, unknown> | null {
-  if (!doc || typeof doc !== 'object') return null
+  if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null
   const anyDoc = doc as Record<string, unknown>
   const keyed = anyDoc[key]
-  if (keyed && typeof keyed === 'object') return keyed as Record<string, unknown>
-  if (typeof anyDoc.recordingUrl === 'string') return anyDoc
-  return null
+  if (keyed && typeof keyed === 'object' && !Array.isArray(keyed)) {
+    return keyed as Record<string, unknown> // taskId-keyed wrapper
+  }
+  return anyDoc // per-call file: the document itself is the call record
 }
 
 export async function backfillSourceUrl(
@@ -61,9 +64,9 @@ export async function backfillSourceUrl(
     return { id: c.evidenceObjectId, outcome: 'already_present' }
   }
 
-  const doc = await ports.rawStore.readJson(c.rawBucket, c.rawKey)
+  const doc = await ports.rawStore.readByTaskId(c.logicalCallKey)
   if (doc == null) {
-    if (!opts.dryRun) await ports.repo.recordIssue(c.evidenceObjectId, 'raw_missing', `${c.rawBucket}/${c.rawKey}`)
+    if (!opts.dryRun) await ports.repo.recordIssue(c.evidenceObjectId, 'raw_missing', `taskId ${c.logicalCallKey}`)
     return { id: c.evidenceObjectId, outcome: 'raw_missing' }
   }
 
