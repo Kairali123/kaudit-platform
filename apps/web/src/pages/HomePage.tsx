@@ -20,7 +20,17 @@ export function HomePage() {
         eyebrow="Home"
         title="Your audit workspace"
         description="Identity, access scope, and a clear route into each operational area."
-        badge={<span className="status-badge ready">Authenticated</span>}
+        badge={
+          <span
+            className={`status-badge ${
+              profile.accessControlEnforced ? 'ready' : 'provisional'
+            }`}
+          >
+            {profile.accessControlEnforced
+              ? 'Authenticated'
+              : 'Local preview'}
+          </span>
+        }
       />
       <section className="profile-layout">
         <article className="profile-card">
@@ -60,6 +70,12 @@ export function HomePage() {
           </article>
         </div>
       </section>
+      {!profile.accessControlEnforced && (
+        <Notice tone="warning" title="Access control is not enforced">
+          This is a loopback-only preview identity. Do not expose or distribute
+          this running application.
+        </Notice>
+      )}
       <Notice tone="info" title="Content boundary enforced">
         {profile.contentAccess}
       </Notice>

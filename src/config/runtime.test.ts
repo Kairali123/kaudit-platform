@@ -22,6 +22,15 @@ test('accepts loopback-only local authentication outside production', () => {
   assert.equal(config.database.password, 'synthetic-secret')
 })
 
+test('accepts explicit loopback-only preview without OIDC or a user email', () => {
+  const env = base()
+  delete env.KAUDIT_DEV_USER_EMAIL
+  env.KAUDIT_AUTH_MODE = 'preview'
+  const config = loadRuntimeConfig(env)
+  assert.equal(config.auth.mode, 'preview')
+  assert.equal(config.host, '127.0.0.1')
+})
+
 test('rejects local authentication in production', () => {
   assert.throws(
     () =>

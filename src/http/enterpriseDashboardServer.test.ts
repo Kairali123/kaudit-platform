@@ -59,6 +59,7 @@ async function withServer(
   audit: AuditSink,
   run: (baseUrl: string) => Promise<void>,
   webDistRoot?: string,
+  runtimeConfig: RuntimeConfig = config,
 ): Promise<void> {
   const pool = {
     async query() {
@@ -66,7 +67,7 @@ async function withServer(
     },
   } as unknown as Pool
   const server = createEnterpriseDashboardServer({
-    config,
+    config: runtimeConfig,
     pool,
     access,
     audit,
@@ -105,6 +106,44 @@ test('liveness is public but emits hardened no-store headers', async () => {
       assert.equal(response.headers.get('cache-control'), 'no-store, max-age=0')
       assert.equal(response.headers.get('x-frame-options'), 'DENY')
       assert.equal(events.length, 0)
+    },
+  )
+})
+
+test('preview mode uses a non-authorizing identity and never writes access audit', async () => {
+  let auditWrites = 0
+  await withServer(
+    {
+      async record() {
+        auditWrites += 1
+      },
+      async readiness() {
+        return false
+      },
+    },
+    async (baseUrl) => {
+      const me = await fetch(`${baseUrl}/api/v1/me`)
+      assert.equal(me.status, 200)
+      const profile = (await me.json()) as Record<string, unknown>
+      assert.equal(profile.authMode, 'preview')
+      assert.equal(profile.accessControlEnforced, false)
+      assert.equal(profile.maxSensitivityTier, 'K0')
+
+      const overview = await fetch(`${baseUrl}/api/v1/overview`)
+      assert.equal(overview.status, 200)
+      const body = (await overview.json()) as {
+        gates: Array<{ code: string; status: string }>
+      }
+      assert.equal(
+        body.gates.find((gate) => gate.code === 'access')?.status,
+        'blocked',
+      )
+      assert.equal(auditWrites, 0)
+    },
+    undefined,
+    {
+      ...config,
+      auth: { mode: 'preview' },
     },
   )
 })

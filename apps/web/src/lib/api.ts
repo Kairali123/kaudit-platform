@@ -21,6 +21,7 @@ export interface Profile {
   permissions: string[]
   maxSensitivityTier: string
   authMode: string
+  accessControlEnforced: boolean
   contentAccess: string
 }
 

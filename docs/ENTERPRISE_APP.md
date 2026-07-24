@@ -19,25 +19,47 @@ numbers, evidence URLs, audio, transcripts, customer identifiers, or health cont
 Each endpoint returns only the data used by its page. `/overview` does not return
 findings, billing, or snapshot payloads.
 
-## Run with real aggregate data
+## Run the local preview with real aggregate data
 
-Prerequisites:
-
-1. review and apply migrations `0003` and `0004` in the approved staged process;
-2. provision an active `kaudit_user` with an `admin` or `user` role;
-3. configure the gitignored `.env` from `.env.example`;
-4. keep release gates false unless their named approval and evidence exist.
-
-Development:
+The preview requires only the existing database variables in the gitignored `.env`:
 
 ```bash
 npm run app:dev
 ```
 
 Open `http://127.0.0.1:4173`. Vite serves the UI and proxies `/api` to the secure
-server at `127.0.0.1:4175`.
+server at `127.0.0.1:4175`. This command explicitly uses `preview` mode:
 
-Production-shaped local build:
+- it is accepted only on a loopback host outside production;
+- it uses a synthetic K0 identity with the standard read permissions;
+- it reads real aggregate business data;
+- it does not write access-audit events;
+- the UI visibly labels access control as unenforced.
+
+To preview the built bundle instead of Vite:
+
+```bash
+npm run app:preview
+```
+
+Open `http://127.0.0.1:4175`.
+
+## Run the authenticated application
+
+Prerequisites:
+
+1. review and apply migrations `0003` and `0004` in the approved staged process;
+2. provision an active `kaudit_user` with an `admin` or `user` role;
+3. configure local auth or the approved OIDC integration in `.env`;
+4. keep release gates false unless their named approval and evidence exist.
+
+Secure development:
+
+```bash
+npm run app:dev:secure
+```
+
+Production-shaped authenticated build:
 
 ```bash
 npm run app:start
@@ -47,7 +69,7 @@ Open `http://127.0.0.1:4175`. Static assets are served from the authenticated
 server with a same-origin CSP.
 
 Business data queries are read-only and aggregate-only. Successful and denied app/API
-access is written to the hash-chained audit log by design.
+access is written to the hash-chained audit log in authenticated modes.
 
 ## Authority labels
 

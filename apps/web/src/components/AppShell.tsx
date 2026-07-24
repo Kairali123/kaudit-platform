@@ -11,8 +11,10 @@ import {
   Sparkles,
   X,
 } from 'lucide-react'
+import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
+import { getJson, type Profile } from '../lib/api'
 
 const navigation = [
   { to: '/', label: 'Home', icon: Home, end: true },
@@ -26,6 +28,11 @@ const navigation = [
 
 export function AppShell() {
   const [open, setOpen] = useState(false)
+  const profile = useQuery({
+    queryKey: ['me'],
+    queryFn: () => getJson<Profile>('/api/v1/me'),
+  }).data
+  const secured = profile?.accessControlEnforced === true
   return (
     <div className="app-shell">
       <aside className={open ? 'sidebar open' : 'sidebar'}>
@@ -86,10 +93,14 @@ export function AppShell() {
           </button>
           <div className="environment">
             <span />
-            Private workspace
+            {secured ? 'Private workspace' : 'Local preview'}
           </div>
           <div className="topbar-right">
-            <span>Production gates active</span>
+            <span>
+              {secured
+                ? 'Access control enforced'
+                : 'Access control not enforced'}
+            </span>
             <Shield size={16} aria-label="Session managed by identity provider" />
           </div>
         </div>

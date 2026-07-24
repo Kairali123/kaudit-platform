@@ -1,4 +1,4 @@
-export type AuthMode = 'oidc' | 'local'
+export type AuthMode = 'oidc' | 'local' | 'preview'
 
 export interface RuntimeConfig {
   environment: 'development' | 'test' | 'production'
@@ -14,6 +14,9 @@ export interface RuntimeConfig {
     sslCaFile: string | null
   }
   auth:
+    | {
+        mode: 'preview'
+      }
     | {
         mode: 'local'
         email: string
@@ -99,19 +102,21 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   }
   const environment = rawEnvironment as RuntimeConfig['environment']
   const mode = (env.KAUDIT_AUTH_MODE?.trim() || 'oidc') as AuthMode
-  if (mode !== 'oidc' && mode !== 'local') {
-    throw new ConfigurationError('KAUDIT_AUTH_MODE must be oidc or local')
+  if (mode !== 'oidc' && mode !== 'local' && mode !== 'preview') {
+    throw new ConfigurationError(
+      'KAUDIT_AUTH_MODE must be oidc, local, or preview',
+    )
   }
 
   const host =
     env.KAUDIT_SECURE_HOST?.trim() ||
     (environment === 'production' ? '0.0.0.0' : '127.0.0.1')
   if (
-    mode === 'local' &&
+    (mode === 'local' || mode === 'preview') &&
     (environment === 'production' || !['127.0.0.1', '::1', 'localhost'].includes(host))
   ) {
     throw new ConfigurationError(
-      'Local authentication is allowed only on a loopback host outside production',
+      'Local/preview authentication is allowed only on a loopback host outside production',
     )
   }
 
@@ -130,7 +135,9 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   }
 
   const auth: RuntimeConfig['auth'] =
-    mode === 'local'
+    mode === 'preview'
+      ? { mode }
+      : mode === 'local'
       ? {
           mode,
           email: required(env, 'KAUDIT_DEV_USER_EMAIL').toLowerCase(),

@@ -110,6 +110,19 @@ async function authenticate(
   request: IncomingMessage,
   dependencies: Dependencies,
 ): Promise<AuthContext> {
+  if (dependencies.config.auth.mode === 'preview') {
+    return {
+      user: {
+        id: 'local-preview',
+        email: 'local-preview@kaudit.invalid',
+        status: 'active',
+        maxSensitivityTier: 'K0',
+        roles: ['user'],
+      },
+      issuer: 'local-preview',
+      subject: 'local-preview',
+    }
+  }
   if (dependencies.config.auth.mode === 'local') {
     return authenticateLocal(
       dependencies.config.auth.email,
@@ -139,6 +152,7 @@ async function auditAccess(
   outcome: 'success' | 'denied' | 'failure',
   action: string,
 ): Promise<void> {
+  if (dependencies.config.auth.mode === 'preview') return
   await dependencies.audit.record({
     actorUserId: context?.user.id ?? null,
     actorEmail: context?.user.email ?? null,
@@ -188,8 +202,14 @@ function releaseGates(
     {
       code: 'access',
       label: 'Access control',
-      detail: 'Authenticated, role-checked aggregate access',
-      status: 'ready',
+      detail:
+        dependencies.config.auth.mode === 'preview'
+          ? 'Local preview only; access control is not enforced'
+          : 'Authenticated, role-checked aggregate access',
+      status:
+        dependencies.config.auth.mode === 'preview'
+          ? 'blocked'
+          : 'ready',
     },
     {
       code: 'rate-card',
@@ -253,6 +273,8 @@ async function apiResponse(
       permissions: permissionsFor(context.user.roles),
       maxSensitivityTier: context.user.maxSensitivityTier,
       authMode: dependencies.config.auth.mode,
+      accessControlEnforced:
+        dependencies.config.auth.mode !== 'preview',
       contentAccess:
         'Aggregate data only; raw audio and transcripts are not available in this app.',
     }
@@ -397,11 +419,17 @@ export function createEnterpriseDashboardServer(
     }
     if (url.pathname === '/health/ready') {
       try {
+        const preview =
+          dependencies.config.auth.mode === 'preview'
         const [dbResult, identityReady, auditReady] =
           await Promise.all([
             dependencies.pool.query('SELECT 1'),
-            dependencies.access.readiness(),
-            dependencies.audit.readiness(),
+            preview
+              ? Promise.resolve(true)
+              : dependencies.access.readiness(),
+            preview
+              ? Promise.resolve(true)
+              : dependencies.audit.readiness(),
           ])
         if (!dbResult || !identityReady || !auditReady) {
           throw new Error('dependency not ready')

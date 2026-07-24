@@ -80,11 +80,14 @@ The application is page-based: `/` is Home/Profile, `/overview` is overview only
 `/evidence`, `/findings`, `/billing`, `/reports`, and `/operations` contain their
 dedicated aggregate views.
 
-After the secure identity migrations and local user provisioning:
+For a loopback-only preview using real aggregate data:
 
 ```bash
 npm run app:dev
 ```
 
-Open `http://127.0.0.1:4173`. Use `npm run app:start` to build and serve the
-production bundle locally from `127.0.0.1:4175`. See `docs/ENTERPRISE_APP.md`.
+Open `http://127.0.0.1:4173`. It is visibly unauthenticated and must not be exposed.
+Use `npm run app:preview` for the built local preview.
+
+After identity migrations and user/OIDC provisioning, use `npm run app:dev:secure`
+or `npm run app:start`. See `docs/ENTERPRISE_APP.md`.
