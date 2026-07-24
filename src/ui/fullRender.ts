@@ -63,6 +63,15 @@ function countTable(
 }
 
 export function renderFullDashboard(view: FullDashboardView): string {
+  const accessBanner = view.accessControlEnforced
+    ? 'AUTHENTICATED · ROLE-CHECKED · AGGREGATE DATA ONLY'
+    : 'LOCAL PREVIEW ONLY · ACCESS CONTROL NOT YET ENFORCED (W1) · DO NOT DEPLOY OR DISTRIBUTE'
+  const accessGate = view.accessControlEnforced
+    ? '<div class="gate good"><strong>Access control enforced</strong><span>OIDC identity and server-side metrics permission are required.</span></div>'
+    : '<div class="gate danger"><strong>Access control pending</strong><span>No real auth is enforced yet. Local use by the project team only.</span></div>'
+  const accessFooter = view.accessControlEnforced
+    ? 'Authenticated aggregate dashboard. Raw call content remains unavailable.'
+    : 'Aggregate-only local dashboard. No customer, phone, audio, transcript, or health content is rendered.'
   const topFindings = view.quality.topFindings.length
     ? `<div class="table-card wide"><div class="table-title"><div><h3>Top finding types</h3><p>Aggregate output only—no call content.</p></div><span class="chip">${esc(view.quality.catalogLabel)}</span></div>
         <table><thead><tr><th>Finding code</th><th class="num">Count</th><th class="num">Avg confidence</th></tr></thead>
@@ -155,7 +164,7 @@ export function renderFullDashboard(view: FullDashboardView): string {
   @media(max-width:620px){.top{padding:18px 18px 82px}.main{padding:0 14px 50px}.brand-row{align-items:flex-start}.brand-row nav{display:none}.hero{align-items:flex-start;flex-direction:column;margin-top:32px}.hero h1{font-size:28px}.hero-meta{text-align:left}.metric-grid,.snapshot-grid{grid-template-columns:1fr}.section-heading{align-items:flex-start;flex-direction:column}.snapshot-title{flex-direction:column}.security-bar{text-align:left;padding:9px 14px}footer{flex-direction:column}}
 </style></head>
 <body>
-  <div class="security-bar">LOCAL PREVIEW ONLY · ACCESS CONTROL NOT YET ENFORCED (W1) · DO NOT DEPLOY OR DISTRIBUTE</div>
+  <div class="security-bar">${accessBanner}</div>
   <div class="shell">
     <header class="top"><div class="top-inner">
       <div class="brand-row">
@@ -171,7 +180,7 @@ export function renderFullDashboard(view: FullDashboardView): string {
     </div></header>
     <main class="main">
       <div class="gate-grid" aria-label="Data status">
-        <div class="gate danger"><strong>Access control pending</strong><span>No real auth is enforced yet. Local use by the project team only.</span></div>
+        ${accessGate}
         <div class="gate warn"><strong>Billing is provisional</strong><span>D-03 open: rate card is draft/unapproved.</span></div>
         <div class="gate warn"><strong>Findings are uncalibrated</strong><span>Confidence is not measured accuracy.</span></div>
       </div>
@@ -209,7 +218,7 @@ export function renderFullDashboard(view: FullDashboardView): string {
         <div class="snapshot-grid">${view.snapshots.map(snapshotCard).join('')}</div>
       </section>
 
-      <footer><span>Aggregate-only local dashboard. No customer, phone, audio, transcript, or health content is rendered.</span><span>Refresh to update · no production deployment</span></footer>
+      <footer><span>${accessFooter}</span><span>Refresh to update · billing/findings gates remain enforced</span></footer>
     </main>
   </div>
 </body></html>`

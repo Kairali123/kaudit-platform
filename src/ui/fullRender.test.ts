@@ -36,3 +36,14 @@ test('escapes database-derived labels', () => {
   assert.ok(!html.includes('<img src=x'))
   assert.ok(html.includes('&lt;img src=x onerror=alert(1)&gt;'))
 })
+
+test('renders the secured state only when access enforcement is explicit', () => {
+  const html = renderFullDashboard(
+    buildFullDashboard(sampleFullRaw, {
+      accessControlEnforced: true,
+    }),
+  )
+  assert.ok(html.includes('AUTHENTICATED · ROLE-CHECKED'))
+  assert.ok(html.includes('Access control enforced'))
+  assert.ok(!html.includes('ACCESS CONTROL NOT YET ENFORCED'))
+})

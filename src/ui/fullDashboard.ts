@@ -93,7 +93,7 @@ export interface RevenueSnapshotView {
 
 export interface FullDashboardView {
   generatedAt: string
-  accessControlEnforced: false
+  accessControlEnforced: boolean
   overviewTiles: Tile[]
   integrityFindings: { action: string; n: number }[]
   quality: QualityView
@@ -114,7 +114,10 @@ function confidenceLabel(value: string | null): string {
   return Number.isFinite(n) ? `${(n * 100).toFixed(1)}%` : '—'
 }
 
-export function buildFullDashboard(raw: RawFullDashboard): FullDashboardView {
+export function buildFullDashboard(
+  raw: RawFullDashboard,
+  options: { accessControlEnforced?: boolean } = {},
+): FullDashboardView {
   const monitor = buildDashboard(raw.monitor)
   const q = raw.quality
   const totalCalls = raw.monitor.calls
@@ -211,7 +214,7 @@ export function buildFullDashboard(raw: RawFullDashboard): FullDashboardView {
 
   return {
     generatedAt: raw.generatedAt,
-    accessControlEnforced: false,
+    accessControlEnforced: options.accessControlEnforced === true,
     overviewTiles: monitor.tiles,
     integrityFindings: monitor.findings,
     quality: {

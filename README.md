@@ -10,7 +10,13 @@ Architecture package: `../voice-agent-call-audit-architecture`.
 
 ## Status
 
-Greenfield. First workstream: **W3 — evidence integrity**.
+Active remediation/build. W3 evidence-reference integrity, W1 identity/access
+primitives, the aggregate dashboard, and the first production security foundation
+are implemented on feature branches with synthetic tests. The platform is **not
+production-ready yet**: D-03 rate-card approval, calibration, K2/K3 safety ownership,
+retention/compliance controls, reliable ingestion/jobs, reconciliation, corrective
+actions, infrastructure, and shadow-month acceptance remain gated. See
+`IMPLEMENTATION_STATUS.md`.
 
 > **⚠️ Trade-off in effect (D-13, cost-driven, made knowingly):** recordings are
 > referenced by their **KServe URL** and are **not** copied into independent Kairali
@@ -57,3 +63,13 @@ Then open `http://127.0.0.1:4174`. The full dashboard is local-only and visibly
 marks access control as unenforced, billing as provisional (D-03), and findings as
 uncalibrated. It renders aggregate data only—never call audio, transcripts, phone
 numbers, customer identifiers, or health content. See `docs/FULL_DASHBOARD.md`.
+
+## Secure dashboard foundation
+
+`npm run ui:secure` starts the protected aggregate server after migrations 0003/0004,
+user provisioning, and the environment in `.env.example` are configured. Production
+requires OIDC, a pre-provisioned active user/role, MySQL TLS, and a working
+hash-chained audit sink; it rejects the loopback development-auth mode.
+
+Do not apply migrations or point this path at production until the staged sequence in
+`docs/runbooks/SECURE_DASHBOARD.md` is approved and completed.
