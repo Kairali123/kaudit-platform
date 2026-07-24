@@ -37,3 +37,23 @@ detection, and missing-URL (source_missing) handling.
 `npm run w3:verify` defaults to **dry-run** (fetch + report, write nothing). It writes
 hashes/verifications/findings only when `KAUDIT_VERIFY_MODE=EXECUTE`, touches the
 production DB in that mode, and must be run as an approved, supervised pass.
+
+## Local dashboards
+
+Full aggregate preview without a database:
+
+```bash
+npm run ui:dashboard:sample
+open dashboard-sample.html
+```
+
+Full live aggregate dashboard using the gitignored `.env`:
+
+```bash
+npm run ui:dashboard
+```
+
+Then open `http://127.0.0.1:4174`. The full dashboard is local-only and visibly
+marks access control as unenforced, billing as provisional (D-03), and findings as
+uncalibrated. It renders aggregate data only—never call audio, transcripts, phone
+numbers, customer identifiers, or health content. See `docs/FULL_DASHBOARD.md`.

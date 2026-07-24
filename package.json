@@ -10,10 +10,12 @@
     "test:w3": "node --test src/storage/verifyEvidenceUrl.test.ts src/security/urlSafety.test.ts src/adapters/proxyResolvingFetcher.test.ts",
     "test:backfill": "node --test src/backfill/normalizeRecordingUrl.test.ts src/backfill/backfillSourceUrl.test.ts",
     "test:w1": "node --test src/identity/resolveIdentity.test.ts src/identity/buildUserSet.test.ts src/identity/access.test.ts",
-    "test:ui": "node --test src/ui/metrics.test.ts src/ui/render.test.ts",
+    "test:ui": "node --test src/ui/metrics.test.ts src/ui/render.test.ts src/ui/decimal.test.ts src/ui/periods.test.ts src/ui/fullDashboard.test.ts src/ui/fullRender.test.ts",
     "typecheck": "tsc --noEmit",
     "ui:monitor": "node --env-file-if-exists=.env src/cli/run-monitor.ts",
     "ui:sample": "node src/cli/render-sample.ts",
+    "ui:dashboard": "node --env-file-if-exists=.env src/cli/run-full-dashboard.ts",
+    "ui:dashboard:sample": "node src/cli/render-full-sample.ts",
     "w3:verify": "node --env-file-if-exists=.env src/cli/run-verification.ts",
     "w3:backfill": "node --env-file-if-exists=.env src/cli/run-backfill.ts",
     "w1:identity": "node --env-file-if-exists=.env src/cli/run-identity-backfill.ts"

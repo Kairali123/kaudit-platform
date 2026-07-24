@@ -7,3 +7,4 @@ dist/
 .DS_Store
 *.tsbuildinfo
 monitor-sample.html
+dashboard-sample.html
