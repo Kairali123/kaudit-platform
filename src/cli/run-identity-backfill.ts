@@ -3,15 +3,16 @@ import { buildUserSet } from '../identity/buildUserSet.ts'
 import { createMysqlIdentitySource } from '../adapters/mysqlIdentitySource.ts'
 import { createMysqlIdentityRepo } from '../adapters/mysqlIdentityRepo.ts'
 
-// Seeds the identity foundation: reads every authorship/actor string in the schema,
-// resolves them into a deduped user + system-actor set, and (in EXECUTE) upserts the
-// single tenant, the users, and their memberships. Requires migration 0003 applied.
+// Seeds the identity foundation (single company): reads every authorship/actor string in
+// the schema, resolves them into a deduped user + system-actor set, and (in EXECUTE)
+// upserts the users and assigns each a safe default role. Requires migration 0003.
 // Defaults to DRY-RUN (report only). Writes only when KAUDIT_IDENTITY_MODE=EXECUTE.
+// It does NOT set anyone's health-content ceiling — max_sensitivity_tier stays at the
+// deny-by-default 'K1'; elevating a user to K2/K3 is a separate, audited clinical/privacy
+// action, never a bulk backfill.
 async function main(): Promise<void> {
   const execute = process.env.KAUDIT_IDENTITY_MODE?.trim() === 'EXECUTE'
   const dryRun = !execute
-  const tenantId = req('KAUDIT_TENANT_ID')
-  const tenantName = process.env.KAUDIT_TENANT_NAME?.trim() || 'Kairali'
   const defaultRole = process.env.KAUDIT_DEFAULT_ROLE?.trim() || 'unassigned'
 
   const pool = mysql.createPool({
@@ -39,10 +40,9 @@ async function main(): Promise<void> {
 
   if (!dryRun) {
     const repo = createMysqlIdentityRepo(pool)
-    await repo.ensureTenant(tenantId, tenantName)
     const up = await repo.upsertUsers(result.users)
-    const memberships = await repo.upsertMemberships(tenantId, result.users.map((u) => u.key), defaultRole)
-    console.log(`[W1-identity] wrote: users inserted=${up.inserted} existing=${up.existing}; memberships=${memberships}`)
+    const roles = await repo.assignRole(result.users.map((u) => u.key), defaultRole)
+    console.log(`[W1-identity] wrote: users inserted=${up.inserted} existing=${up.existing}; role '${defaultRole}' assigned to ${roles}`)
   }
   await pool.end()
 }

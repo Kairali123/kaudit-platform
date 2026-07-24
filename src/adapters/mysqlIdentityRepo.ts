@@ -1,19 +1,10 @@
 import type { Pool } from 'mysql2/promise'
 import { randomUUID } from 'node:crypto'
 import type { IdentityRepo } from '../identity/ports.ts'
-import type { ResolvedUser } from '../identity/buildUserSet.ts'
 
-// Idempotent writes of the identity foundation. Requires migration 0003 applied.
+// Idempotent writes of the user directory + role assignments. Requires migration 0003.
 export function createMysqlIdentityRepo(pool: Pool): IdentityRepo {
   return {
-    async ensureTenant(id, name): Promise<void> {
-      await pool.query(
-        `INSERT INTO kaudit_tenant (id, name) VALUES (?, ?)
-         ON DUPLICATE KEY UPDATE name = VALUES(name)`,
-        [id, name],
-      )
-    },
-
     async upsertUsers(users): Promise<{ inserted: number; existing: number }> {
       let inserted = 0
       let existing = 0
@@ -34,8 +25,7 @@ export function createMysqlIdentityRepo(pool: Pool): IdentityRepo {
       return { inserted, existing }
     },
 
-    async upsertMemberships(tenantId, userKeys, defaultRole): Promise<number> {
-      // Resolve each user key back to its kaudit_user.id, then upsert a membership.
+    async assignRole(userKeys, roleCode): Promise<number> {
       let count = 0
       for (const key of userKeys) {
         const isUser = key.startsWith('user:')
@@ -49,9 +39,9 @@ export function createMysqlIdentityRepo(pool: Pool): IdentityRepo {
         const userId = userRows[0]?.id
         if (!userId) continue
         await pool.query(
-          `INSERT INTO kaudit_membership (id, tenant_id, user_id, role_code) VALUES (?, ?, ?, ?)
+          `INSERT INTO kaudit_user_role (id, user_id, role_code) VALUES (?, ?, ?)
            ON DUPLICATE KEY UPDATE id = id`,
-          [randomUUID(), tenantId, userId, defaultRole],
+          [randomUUID(), userId, roleCode],
         )
         count += 1
       }

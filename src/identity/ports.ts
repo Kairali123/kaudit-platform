@@ -5,11 +5,9 @@ export interface IdentitySource {
   collect(): Promise<IdentityRef[]>
 }
 
-// Writes the resolved identity foundation: the single tenant, the user directory,
-// and memberships. All upserts are idempotent (safe to re-run).
+// Writes the identity foundation: the user directory + role assignments. Idempotent.
 export interface IdentityRepo {
-  ensureTenant(id: string, name: string): Promise<void>
   upsertUsers(users: ResolvedUser[]): Promise<{ inserted: number; existing: number }>
-  // Assigns each resolved user a membership in the tenant with the given default role.
-  upsertMemberships(tenantId: string, userKeys: string[], defaultRole: string): Promise<number>
+  // Assigns each resolved user the given role (idempotent). Returns rows affected.
+  assignRole(userKeys: string[], roleCode: string): Promise<number>
 }
