@@ -25,7 +25,7 @@ const patterns = [
   'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY',
   'AKIA[0-9A-Z]{16}',
   'sk-[A-Za-z0-9_-]{20,}',
-  'mysql://[^[:space:]]+:[^[:space:]]+@',
+  'mysql' + '://[^[:space:]]+:[^[:space:]]+@',
 ]
 const scan = spawnSync(
   'git',

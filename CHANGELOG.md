@@ -8,3 +8,6 @@
   correlation IDs.
 - Added an additive migration and writer for hash-chained security audit events.
 - Added CI, secret scanning, deployment/runbook documentation, and synthetic tests.
+- Added additive reliable-processing controls, canonical message hashing, transactional
+  outbox enqueue, leased publication/retry/DLQ, inbox deduplication, and mutation
+  idempotency.
