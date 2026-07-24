@@ -1,47 +1,47 @@
 import type { Pool } from 'mysql2/promise'
 import type { BackfillCandidate, BackfillRepo } from '../backfill/ports.ts'
 
-// Lists recording rows needing `source_url` and writes the resolved S3 object URL.
-// The raw record is located on disk by taskId (= logical_call_key), so this query no
-// longer needs the raw evidence object_key — it only returns the recording evidence
-// row to update plus the call's logical_call_key.
+// Lists ALL recording call_artifact rows still needing `source_url` and writes the
+// resolved S3 object URL onto the call_artifact.
+//
+// Deliberately NOT filtered by fetch_status or evidence_object linkage: every recording
+// is re-tested fresh from the raw export (the old 'unavailable'/'pending' flags are not
+// trusted — the raw file's recordingUrl is the accurate test). Target set ≈ 43,245.
 export function createMysqlBackfillRepo(pool: Pool): BackfillRepo {
   return {
     async listCandidates(limit: number): Promise<BackfillCandidate[]> {
       const [rows] = await pool.query(
-        `SELECT rec.id         AS evidence_object_id,
-                c.id           AS call_id,
+        `SELECT ca.id         AS call_artifact_id,
+                c.id          AS call_id,
                 c.logical_call_key,
-                rec.source_url AS existing_source_url
-           FROM kaudit_call c
-           JOIN kaudit_call_artifact ca
-             ON ca.call_id = c.id AND ca.artifact_type = 'recording'
-           JOIN kaudit_evidence_object rec
-             ON rec.id = ca.evidence_object_id
-          WHERE rec.source_url IS NULL
+                ca.source_url AS existing_source_url
+           FROM kaudit_call_artifact ca
+           JOIN kaudit_call c ON c.id = ca.call_id
+          WHERE ca.artifact_type = 'recording'
+            AND ca.source_url IS NULL
           ORDER BY c.source_started_at ASC
           LIMIT ?`,
         [limit],
       )
       return (rows as any[]).map((r) => ({
-        evidenceObjectId: r.evidence_object_id,
+        callArtifactId: r.call_artifact_id,
         callId: r.call_id,
         logicalCallKey: r.logical_call_key,
         existingSourceUrl: r.existing_source_url,
       }))
     },
-    async setSourceUrl(evidenceObjectId, s3Url): Promise<void> {
-      await pool.query(`UPDATE kaudit_evidence_object SET source_url = ? WHERE id = ?`, [
+    async setSourceUrl(callArtifactId, s3Url): Promise<void> {
+      await pool.query(`UPDATE kaudit_call_artifact SET source_url = ? WHERE id = ?`, [
         s3Url,
-        evidenceObjectId,
+        callArtifactId,
       ])
     },
-    async recordIssue(evidenceObjectId, code, detail): Promise<void> {
+    async recordIssue(callArtifactId, code, detail): Promise<void> {
       await pool.query(
         `INSERT INTO kaudit_audit_log
            (id, actor_email, action, resource_type, resource_id, correlation_id, occurred_at)
-         VALUES (UUID(), 'w3-backfill', ?, 'evidence_object', ?, ?, NOW(6))`,
-        [`backfill_${code}`, evidenceObjectId, detail.slice(0, 120)],
+         VALUES (UUID(), 'w3-backfill', ?, 'call_artifact', ?, ?, NOW(6))`,
+        [`backfill_${code}`, callArtifactId, detail.slice(0, 120)],
       )
     },
   }

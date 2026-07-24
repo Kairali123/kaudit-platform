@@ -1,8 +1,8 @@
 import type { BackfillCandidate, BackfillRepo, RawStore } from './ports.ts'
 import { normalizeRecordingUrl } from './normalizeRecordingUrl.ts'
 
-// Populates `source_url` on recording evidence rows by reading the per-call raw KServe
-// file ({root}/raw/{batchUUID}/{taskId}.json), extracting the recording URL, and
+// Populates `source_url` on recording call_artifact rows by reading the per-call raw
+// KServe file ({root}/raw/{batchUUID}/{taskId}.json), extracting the recording URL, and
 // normalizing it to the stable S3 object URL. Every unresolved case is a recorded
 // finding — never a silent skip.
 
@@ -42,9 +42,8 @@ export interface BackfillSummary {
   results: BackfillResult[]
 }
 
-// Robust to both observed shapes:
-//   • a flat per-call record:  { number, …, recordingUrl }
-//   • a taskId-keyed wrapper:  { "<taskId>": { …, recordingUrl } }
+// Robust to both observed shapes: a flat per-call record { …, recordingUrl } or a
+// taskId-keyed wrapper { "<taskId>": { …, recordingUrl } }.
 function pickCallRecord(doc: unknown, key: string): Record<string, unknown> | null {
   if (!doc || typeof doc !== 'object' || Array.isArray(doc)) return null
   const anyDoc = doc as Record<string, unknown>
@@ -61,35 +60,35 @@ export async function backfillSourceUrl(
   opts: BackfillOptions,
 ): Promise<BackfillResult> {
   if (c.existingSourceUrl) {
-    return { id: c.evidenceObjectId, outcome: 'already_present' }
+    return { id: c.callArtifactId, outcome: 'already_present' }
   }
 
   const doc = await ports.rawStore.readByTaskId(c.logicalCallKey)
   if (doc == null) {
-    if (!opts.dryRun) await ports.repo.recordIssue(c.evidenceObjectId, 'raw_missing', `taskId ${c.logicalCallKey}`)
-    return { id: c.evidenceObjectId, outcome: 'raw_missing' }
+    if (!opts.dryRun) await ports.repo.recordIssue(c.callArtifactId, 'raw_missing', `taskId ${c.logicalCallKey}`)
+    return { id: c.callArtifactId, outcome: 'raw_missing' }
   }
 
   const rec = pickCallRecord(doc, c.logicalCallKey)
   if (!rec) {
-    if (!opts.dryRun) await ports.repo.recordIssue(c.evidenceObjectId, 'call_not_in_export', c.logicalCallKey)
-    return { id: c.evidenceObjectId, outcome: 'call_not_in_export' }
+    if (!opts.dryRun) await ports.repo.recordIssue(c.callArtifactId, 'call_not_in_export', c.logicalCallKey)
+    return { id: c.callArtifactId, outcome: 'call_not_in_export' }
   }
 
   const rawUrl = typeof rec.recordingUrl === 'string' && rec.recordingUrl.length ? rec.recordingUrl : null
   if (!rawUrl) {
-    if (!opts.dryRun) await ports.repo.recordIssue(c.evidenceObjectId, 'no_recording_url', c.logicalCallKey)
-    return { id: c.evidenceObjectId, outcome: 'no_recording_url' }
+    if (!opts.dryRun) await ports.repo.recordIssue(c.callArtifactId, 'no_recording_url', c.logicalCallKey)
+    return { id: c.callArtifactId, outcome: 'no_recording_url' }
   }
 
   const norm = normalizeRecordingUrl(rawUrl, opts.allowedHosts)
   if (!norm.ok || !norm.s3Url) {
-    if (!opts.dryRun) await ports.repo.recordIssue(c.evidenceObjectId, 'unrecognized_url', norm.reason ?? 'unknown')
-    return { id: c.evidenceObjectId, outcome: 'unrecognized_url', reason: norm.reason }
+    if (!opts.dryRun) await ports.repo.recordIssue(c.callArtifactId, 'unrecognized_url', norm.reason ?? 'unknown')
+    return { id: c.callArtifactId, outcome: 'unrecognized_url', reason: norm.reason }
   }
 
-  if (!opts.dryRun) await ports.repo.setSourceUrl(c.evidenceObjectId, norm.s3Url)
-  return { id: c.evidenceObjectId, outcome: 'backfilled', s3Url: norm.s3Url }
+  if (!opts.dryRun) await ports.repo.setSourceUrl(c.callArtifactId, norm.s3Url)
+  return { id: c.callArtifactId, outcome: 'backfilled', s3Url: norm.s3Url }
 }
 
 export async function backfillBatch(

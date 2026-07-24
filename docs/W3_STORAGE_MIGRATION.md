@@ -72,10 +72,13 @@ fixed config; `redirect:'error'` blocks redirect bounces.
 > recording. That is a data-exposure finding to raise with KServe/unpod separately; it does
 > not change W3's integrity logic.
 
-## Schema note (additive migration)
+## Schema note (additive migration 0002)
 
-Uses a dedicated server-only `source_url` column and a `last_verified_at` column on
-`kaudit_evidence_object`. `source_url` is never exposed to the browser/exports.
+`source_url`, `sha256` (nullable), and `last_verified_at` live on **`kaudit_call_artifact`**
+(the recording is a call_artifact — 1:1 per call, present for all 43,245). Migration 0002
+supersedes 0001, which targeted `kaudit_evidence_object` — the wrong table, because ~43,017
+recordings have no evidence_object row and its `sha256` is NOT NULL (incompatible with the
+"hash recorded on first verify" baseline). `source_url` is server-only — never exported.
 
 ## Verification (synthetic, runs now)
 

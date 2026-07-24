@@ -9,7 +9,7 @@ const OBJ = 'https://cdr-storage-recs.s3.ap-south-1.amazonaws.com/media/private/
 const TASK = 'T000024df528711f18383020017011b17'
 
 function candidate(over: Partial<BackfillCandidate> = {}): BackfillCandidate {
-  return { evidenceObjectId: 'eo1', callId: 'c1', logicalCallKey: TASK, existingSourceUrl: null, ...over }
+  return { callArtifactId: 'ca1', callId: 'c1', logicalCallKey: TASK, existingSourceUrl: null, ...over }
 }
 function opts(dryRun = false) {
   return { dryRun, allowedHosts: S3_HOSTS }
@@ -25,6 +25,7 @@ test('backfills from a flat per-call record file (recordingUrl at top level)', a
 
   assert.equal(res.outcome, 'backfilled')
   assert.equal(res.s3Url, OBJ)
+  assert.equal(repo.updates[0]?.id, 'ca1')
   assert.equal(repo.updates[0]?.s3Url, OBJ)
 })
 
@@ -80,7 +81,7 @@ test('a non-record JSON shape (e.g. array) is a call_not_in_export finding', asy
   assert.equal(res.outcome, 'call_not_in_export')
 })
 
-test('record present but no recordingUrl is a finding', async () => {
+test('record present but no recordingUrl is a finding (independent of old fetch_status)', async () => {
   const c = candidate()
   const raw = new InMemoryRawStore()
   raw.set(TASK, { number: '9xxxxx', callConnectedTime: null }) // no recordingUrl key
@@ -115,8 +116,8 @@ test('dry-run resolves the URL but writes nothing', async () => {
 })
 
 test('batch summary counts each outcome', async () => {
-  const good = candidate({ evidenceObjectId: 'g', logicalCallKey: 'T-good' })
-  const missing = candidate({ evidenceObjectId: 'm', logicalCallKey: 'T-missing' })
+  const good = candidate({ callArtifactId: 'g', logicalCallKey: 'T-good' })
+  const missing = candidate({ callArtifactId: 'm', logicalCallKey: 'T-missing' })
   const raw = new InMemoryRawStore()
   raw.set('T-good', { recordingUrl: OBJ })
   const repo = new InMemoryBackfillRepo([good, missing])

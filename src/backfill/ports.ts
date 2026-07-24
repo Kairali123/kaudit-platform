@@ -1,6 +1,8 @@
-// A call whose recording needs its stable S3 object URL written into `source_url`.
+// A recording (kaudit_call_artifact) that needs its stable S3 object URL written into
+// `source_url`. Driven by "the raw export has a recordingUrl", NOT by any pre-existing
+// evidence_object or the old fetch_status.
 export interface BackfillCandidate {
-  evidenceObjectId: string // the recording evidence_object row to set source_url on
+  callArtifactId: string // the recording call_artifact row to set source_url on
   callId: string
   logicalCallKey: string // taskId (e.g. "T…") — the raw file is {logicalCallKey}.json
   existingSourceUrl: string | null
@@ -14,6 +16,6 @@ export interface RawStore {
 
 export interface BackfillRepo {
   listCandidates(limit: number): Promise<BackfillCandidate[]>
-  setSourceUrl(evidenceObjectId: string, s3Url: string): Promise<void>
-  recordIssue(evidenceObjectId: string, code: string, detail: string): Promise<void>
+  setSourceUrl(callArtifactId: string, s3Url: string): Promise<void>
+  recordIssue(callArtifactId: string, code: string, detail: string): Promise<void>
 }

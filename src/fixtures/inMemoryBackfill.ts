@@ -22,7 +22,7 @@ export class InMemoryBackfillRepo implements BackfillRepo {
   }
   async setSourceUrl(id: string, s3Url: string): Promise<void> {
     this.updates.push({ id, s3Url })
-    const c = this.candidates.find((x) => x.evidenceObjectId === id)
+    const c = this.candidates.find((x) => x.callArtifactId === id)
     if (c) c.existingSourceUrl = s3Url
   }
   async recordIssue(id: string, code: string, detail: string): Promise<void> {

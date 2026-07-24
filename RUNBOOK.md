@@ -31,14 +31,18 @@ written to `kaudit_audit_log` and quarantine the row — never silently skipped.
 
 ---
 
-## Step 1 — Apply migration 0001 (adds `source_url`, `last_verified_at`)
+## Step 1 — Apply migration 0002 (source_url + sha256 + last_verified_at on kaudit_call_artifact)
 
-File: `migrations/0001_evidence_add_source_url_and_last_verified_at.sql` (additive; INSTANT
-column add + online index; reversible).
+File: `migrations/0002_call_artifact_add_source_url.sql` (additive; INSTANT column add +
+online index; reversible). **Supersedes 0001** — these columns belong on the recording
+(`kaudit_call_artifact`, 1:1 per call, all 43,245), not `kaudit_evidence_object` (which
+~43,017 recordings have no row in, and whose `sha256` is NOT NULL).
 
 1. **Pre-flight** (read-only): run the PRE-FLIGHT `SELECT` in the file — expect **0 rows**.
 2. **UP**: run the two `ALTER TABLE` statements.
-3. **VERIFY**: run the VERIFY block — expect the two columns + `idx_evidence_last_verified`.
+3. **VERIFY**: run the VERIFY block — expect the three columns + `idx_call_artifact_verify`.
+4. (Optional) the commented cleanup drops the superseded 0001 columns from
+   `kaudit_evidence_object` after confirming they are empty.
 
 Run it with your MySQL client / a DBA — not from this app.
 
