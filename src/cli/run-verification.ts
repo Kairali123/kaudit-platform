@@ -1,12 +1,14 @@
 import mysql from 'mysql2/promise'
 import { verifyEvidenceBatch } from '../storage/verifyEvidenceUrl.ts'
 import { createMysqlEvidenceRepo } from '../adapters/mysqlEvidenceRepo.ts'
-import { createHttpUrlFetcher } from '../adapters/httpUrlFetcher.ts'
+import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.ts'
 
-// Verifies vendor-hosted (KServe) recording URLs: reachability + hash against the
-// baseline recorded at ingestion. Defaults to DRY-RUN (fetch + report, write
-// nothing). Writes hashes/verifications/findings only when KAUDIT_VERIFY_MODE=EXECUTE.
-// Touches the production DB in EXECUTE mode — run as an approved, supervised pass.
+// Verifies KServe recordings: fetches each recording FRESH through the unpod.ai proxy
+// ({KAUDIT_UNPOD_PROXY_BASE}?url={s3_object_url}) and hashes it against the baseline
+// recorded at ingestion. Defaults to DRY-RUN (fetch + report, write nothing). Writes
+// hashes/verifications/findings only when KAUDIT_VERIFY_MODE=EXECUTE. Touches the
+// production DB and downloads real recordings in EXECUTE mode — run as an approved,
+// supervised pass.
 async function main(): Promise<void> {
   const execute = process.env.KAUDIT_VERIFY_MODE?.trim() === 'EXECUTE'
   const dryRun = !execute
@@ -16,8 +18,9 @@ async function main(): Promise<void> {
     .map((h) => h.trim())
     .filter(Boolean)
   if (!allowedHosts.length) {
-    throw new Error('KAUDIT_ALLOWED_RECORDING_HOSTS is required (comma-separated host allowlist)')
+    throw new Error('KAUDIT_ALLOWED_RECORDING_HOSTS is required (comma-separated S3 host allowlist)')
   }
+  const proxyBase = req('KAUDIT_UNPOD_PROXY_BASE')
 
   const pool = mysql.createPool({
     host: req('DB_HOST'),
@@ -29,11 +32,11 @@ async function main(): Promise<void> {
     connectTimeout: 30_000,
   })
   const repo = createMysqlEvidenceRepo(pool)
-  const fetcher = createHttpUrlFetcher()
+  const fetcher = createProxyResolvingFetcher(proxyBase)
 
   const rows = await repo.listForVerification(batchSize)
   console.log(
-    `[W3-verify] ${dryRun ? 'DRY-RUN' : 'EXECUTE'} — ${rows.length} rows; hosts=${allowedHosts.join(',')}`,
+    `[W3-verify] ${dryRun ? 'DRY-RUN' : 'EXECUTE'} — ${rows.length} rows; proxy=${new URL(proxyBase).host}; s3-hosts=${allowedHosts.join(',')}`,
   )
 
   const summary = await verifyEvidenceBatch(

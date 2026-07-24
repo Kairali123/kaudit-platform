@@ -47,10 +47,30 @@ Outcomes: `hash_recorded | verified | evidence_altered | source_missing | unsafe
 
 Pure, injectable core (`src/storage/verifyEvidenceUrl.ts`) with two ports:
 
-- `UrlFetcher` — fetches vendor bytes (`httpUrlFetcher.ts`; size cap + timeout + no redirect).
+- `UrlFetcher` — fetches vendor bytes. Production adapter: `proxyResolvingFetcher.ts`.
 - `EvidenceRepo` — reads rows, records hash/verified/findings (`mysqlEvidenceRepo.ts`).
 
 Plus `isSafeVendorUrl` (`src/security/urlSafety.ts`) as a pure pre-fetch guard.
+
+## Fetch path — unpod.ai proxy (verified behavior)
+
+`source_url` stores the **stable S3 object URL** (e.g.
+`https://cdr-storage-recs.s3.ap-south-1.amazonaws.com/.../call_x.ogg`) — never a signed/
+expiring URL. Each verification re-calls the proxy fresh.
+
+Observed 2026-07-24 against a live sample: `GET {KAUDIT_UNPOD_PROXY_BASE}?url={s3ObjectUrl}`
+returns **200, `content-type: audio/ogg`, ~33 KB, `redirects=0`** — the audio bytes
+directly (no JSON, no signed-URL to follow, no second request). The `proxyResolvingFetcher`
+matches this: one GET, `redirect:'error'`, rejects a 200 whose content-type is not `audio/*`
+(error page ≠ evidence), plus empty/oversize guards.
+
+SSRF posture: the row-controlled value (`source_url`'s S3 host) is constrained by
+`isSafeVendorUrl` against `KAUDIT_ALLOWED_RECORDING_HOSTS`; the egress host (the proxy) is
+fixed config; `redirect:'error'` blocks redirect bounces.
+
+> ⚠️ The proxy is **unauthenticated** — anyone with the S3 path can download a private
+> recording. That is a data-exposure finding to raise with KServe/unpod separately; it does
+> not change W3's integrity logic.
 
 ## Schema note (additive migration)
 
