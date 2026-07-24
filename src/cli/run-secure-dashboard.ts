@@ -43,6 +43,21 @@ const server = createEnterpriseDashboardServer({
   audit,
   verifier,
 })
+let shuttingDown = false
+
+server.on('error', async (error: NodeJS.ErrnoException) => {
+  if (error.code === 'EADDRINUSE') {
+    process.stderr.write(
+      `[secure-dashboard] port ${config.port} is already in use. Stop the existing process or choose another KAUDIT_SECURE_PORT.\n`,
+    )
+  } else {
+    process.stderr.write(
+      `[secure-dashboard] could not start (${error.code ?? 'unknown error'})\n`,
+    )
+  }
+  await pool.end()
+  process.exit(1)
+})
 
 server.listen(config.port, config.host, () => {
   process.stdout.write(
@@ -51,6 +66,8 @@ server.listen(config.port, config.host, () => {
 })
 
 async function shutdown(signal: string): Promise<void> {
+  if (shuttingDown) return
+  shuttingDown = true
   process.stdout.write(
     `[secure-dashboard] ${signal}; shutting down\n`,
   )

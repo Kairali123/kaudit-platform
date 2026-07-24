@@ -87,7 +87,7 @@ npm run app:dev
 ```
 
 Open `http://127.0.0.1:4173`. It is visibly unauthenticated and must not be exposed.
-Use `npm run app:preview` for the built local preview.
+Use `npm run app:preview` for the built local preview on `127.0.0.1:4176`.
 
 After identity migrations and user/OIDC provisioning, use `npm run app:dev:secure`
 or `npm run app:start`. See `docs/ENTERPRISE_APP.md`.

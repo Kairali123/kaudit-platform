@@ -42,7 +42,8 @@ To preview the built bundle instead of Vite:
 npm run app:preview
 ```
 
-Open `http://127.0.0.1:4175`.
+Open `http://127.0.0.1:4176`. The built preview uses a separate port so it can
+run alongside `app:dev`, whose API uses `4175`.
 
 ## Run the authenticated application
 

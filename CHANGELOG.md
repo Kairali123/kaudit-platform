@@ -9,6 +9,8 @@
 - Added fail-closed calibration and K2/K3 runtime gates.
 - Added an explicit loopback-only preview mode so the real aggregate UI can run before
   user provisioning without weakening the authenticated startup path.
+- Moved the built preview to port 4176 and added a clear startup message for occupied
+  ports, avoiding collisions with the development API on 4175.
 - Preserved visible D-03, calibration, D-12, and K2/K3 authority warnings.
 - Added production configuration validation and fail-closed OIDC authentication.
 - Added database-backed role authorization for the aggregate dashboard.
