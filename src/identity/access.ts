@@ -1,44 +1,69 @@
-// Single-company access model for the Kairali audit platform. Two ORTHOGONAL,
-// deny-by-default controls:
+// Single-company access model for the Kairali audit platform. Two roles + one content gate,
+// all deny-by-default:
 //
-//   1. ROLES → functional permissions ("who can do what").
-//   2. max_sensitivity_tier → who may view health-sensitive (K2/K3) CALL CONTENT.
+//   • 'admin' → everything (user management, config, financial approvals, and — the control
+//     that matters — granting/changing a user's health-content ceiling).
+//   • 'user'  → day-to-day operational access (read/review/reconcile/report), NOT admin actions.
+//   • 'unassigned' (the seed default) and anything unknown → nothing.
 //
-// A billing analyst may hold billing permissions yet still not be allowed to open K2/K3
-// audio — the two are independent. Enforcement is pure and testable here; the DB stores
-// only which roles a user has (kaudit_user_role) and their tier (kaudit_user).
-//
-// The role catalog and permission codes below are a PROPOSAL for review — the exact set
-// is a Kairali business decision.
+//   • max_sensitivity_tier (on kaudit_user) → who may view K2/K3 CALL CONTENT. Orthogonal to
+//     roles: a 'user' with operational permissions still cannot open health audio unless an
+//     admin has raised their ceiling. Only an admin may change it ('sensitivity:grant'), and
+//     that change must be written to the audit log (application enforcement).
 
-export const ROLE_PERMISSIONS: Record<string, readonly string[]> = {
-  platform_admin: ['user:manage', 'connection:manage', 'config:manage'],
-  audit_manager: ['call:read', 'review:assign', 'review:policy', 'calibration:manage'],
-  call_auditor: ['call:read', 'call:review', 'finding:confirm'],
-  billing_analyst: ['call:read', 'billing:configure', 'invoice:reconcile'],
-  finance_approver: ['billing:approve', 'reconciliation:close', 'dispute:approve'],
-  corrective_action_triager: ['cluster:confirm', 'action:route'],
-  clinical_safety_reviewer: ['safety:review', 'safety:escalate'],
-  security_privacy_admin: ['retention:manage', 'access:review', 'legalhold:manage'],
-  operations_viewer: ['call:read', 'metrics:read'],
-  management_viewer: ['snapshot:read'],
+// Day-to-day operational permissions granted to the 'user' role.
+export const USER_PERMISSIONS: readonly string[] = [
+  'call:read',
+  'call:review',
+  'finding:confirm',
+  'invoice:reconcile',
+  'cluster:confirm',
+  'action:route',
+  'metrics:read',
+  'snapshot:read',
+]
+
+// Named admin-only permissions. Admin is granted EVERYTHING; these exist so specific admin
+// gates are explicit in code. Note: money-approval + close (billing:approve,
+// reconciliation:close, dispute:approve) are admin-only, preserving a do-vs-approve split —
+// flag if operational users should also close reconciliations.
+export const ADMIN_ONLY_PERMISSIONS: readonly string[] = [
+  'user:manage',
+  'config:manage',
+  'connection:manage',
+  'sensitivity:grant', // grant/change a user's max_sensitivity_tier (audited)
+  'billing:approve',
+  'reconciliation:close',
+  'dispute:approve',
+  'retention:manage',
+  'access:review',
+  'legalhold:manage',
+  'policy:publish',
+]
+
+// True if the user's roles grant the permission. Admin ⇒ everything.
+export function can(roles: readonly string[], permission: string): boolean {
+  if (roles.includes('admin')) return true
+  if (roles.includes('user')) return USER_PERMISSIONS.includes(permission)
+  return false
 }
 
-// True if ANY of the user's roles grants the permission.
-export function can(roles: readonly string[], permission: string): boolean {
-  return roles.some((r) => ROLE_PERMISSIONS[r]?.includes(permission) ?? false)
+// Only an admin may grant/change a user's health-content ceiling. The change itself must be
+// recorded to the audit log by the caller.
+export function canGrantSensitivity(roles: readonly string[]): boolean {
+  return can(roles, 'sensitivity:grant')
 }
 
 // Sensitivity tiers in ascending order of access required. K4 (card/OTP/credentials) is
-// intentionally absent — it is suppressed at source and NEVER viewable by anyone.
+// intentionally absent — suppressed at source and NEVER viewable by anyone.
 export const SENSITIVITY_ORDER: readonly string[] = ['K0', 'K1', 'K2', 'K3']
 
-// Can a user whose ceiling is `maxSensitivityTier` view CONTENT (audio/transcript) of a
-// call classified `callTier`? Deny-by-default: unknown tiers and K4 always deny.
+// Can a user whose ceiling is `maxSensitivityTier` view CONTENT (audio/transcript) of a call
+// classified `callTier`? Deny-by-default: unknown tiers and K4 always deny.
 export function canViewCallContent(maxSensitivityTier: string, callTier: string): boolean {
   if (callTier === 'K4') return false
   const max = SENSITIVITY_ORDER.indexOf(maxSensitivityTier)
   const need = SENSITIVITY_ORDER.indexOf(callTier)
-  if (max < 0 || need < 0) return false // unknown tier → deny
+  if (max < 0 || need < 0) return false
   return max >= need
 }

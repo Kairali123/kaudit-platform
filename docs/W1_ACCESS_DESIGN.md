@@ -12,15 +12,21 @@ This is the design + migration plan for **review before anything runs**.
 1. **`kaudit_user`** — the people who use the system (auditors, admins, finance, clinical
    reviewers, …), keyed by `email` (same `resolveIdentity` logic already built). Service
    actors (`w3-backfill`, …) are `kind='system'`.
-2. **Access model — two orthogonal, deny-by-default controls:**
-   - **Roles → functional permissions** ("who can do what"). Stored in
-     **`kaudit_user_role`** (a user may hold several roles). Role→permission mapping lives
-     in versioned application code (`src/identity/access.ts`), not DB rows.
+2. **Access model — two roles + one content gate, all deny-by-default:**
+   - **Two roles** (`kaudit_user_role`, code in `src/identity/access.ts`):
+     - **`admin`** → everything: user management, config/connections, financial approvals,
+       and granting/changing a user's health-content ceiling.
+     - **`user`** → day-to-day operational (`call:read/review`, `finding:confirm`,
+       `invoice:reconcile`, `cluster:confirm`, `action:route`, `metrics:read`,
+       `snapshot:read`) — **not** admin actions.
+     - **`unassigned`** (seed default) / unknown → nothing.
+     - *(Judgment call to confirm: money-approval + `reconciliation:close` are admin-only,
+       keeping a do-vs-approve split. Move to `user` if operational staff should close.)*
    - **Health-content access** — **`kaudit_user.max_sensitivity_tier`** decides who may open
-     **K2/K3 call content** (audio/transcript) vs. who only sees general findings/billing.
-     Default **`K1`** (deny health); **K4 is never viewable by anyone**. This is the control
-     that actually matters for Kairali, and it is **independent of roles** — a billing
-     analyst can reconcile invoices without being allowed to open a health recording.
+     **K2/K3 call content** (audio/transcript). Default **`K1`** (deny health); **K4 never
+     viewable by anyone**. Independent of roles — a `user` with operational permissions still
+     cannot open health audio. **Only an admin may change a ceiling** (`sensitivity:grant`),
+     and the change is written to the audit log.
 
 ## Pure core (built & synthetic-tested — `npm run test:w1`)
 
@@ -48,16 +54,13 @@ That's the whole plan. There is no Step C/D/E — the `tenant_id` column + backf
 contract phases are gone. This is dramatically smaller and lower-risk than the multi-tenant
 version (no 127k-row backfill, no unique-key surgery).
 
-## Proposals in this design that need your sign-off
+## Locked model (confirmed)
 
-1. **The role catalog** (`ROLE_PERMISSIONS` in `access.ts`) — a starting set
-   (platform_admin, audit_manager, call_auditor, billing_analyst, finance_approver,
-   corrective_action_triager, clinical_safety_reviewer, security_privacy_admin,
-   operations_viewer, management_viewer). The exact roles/permissions are a Kairali call.
-2. **Health access via `max_sensitivity_tier` on the user** (vs. a role like
-   "clinical_reviewer" implying access). Recommended because it's explicit, per-user, and
-   auditable — but confirm.
-3. **Default seed role = `unassigned`** (non-authorizing) — as you approved.
+1. **Two roles only: `admin` and `user`** (+ `unassigned` = nothing). Admin = everything;
+   user = day-to-day operational, excluding admin actions.
+2. **Health access via `max_sensitivity_tier` on the user**, changeable **only by an admin**
+   (`sensitivity:grant`) as an audited action — not tied to a separate clinical-reviewer role.
+3. **Default seed role = `unassigned`** (non-authorizing).
 
 ## Scope boundaries (unchanged)
 
