@@ -77,7 +77,9 @@ export async function backfillSourceUrl(
 
   const rawUrl = typeof rec.recordingUrl === 'string' && rec.recordingUrl.length ? rec.recordingUrl : null
   if (!rawUrl) {
-    if (!opts.dryRun) await ports.repo.recordIssue(c.callArtifactId, 'no_recording_url', c.logicalCallKey)
+    // EXPECTED, benign state (KServe had no recording for this call). Counted in the
+    // summary but NOT logged per-row — at scale that is tens of thousands of benign
+    // audit rows. Only the genuine anomalies below are written to the audit log.
     return { id: c.callArtifactId, outcome: 'no_recording_url' }
   }
 

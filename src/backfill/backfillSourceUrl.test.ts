@@ -81,7 +81,7 @@ test('a non-record JSON shape (e.g. array) is a call_not_in_export finding', asy
   assert.equal(res.outcome, 'call_not_in_export')
 })
 
-test('record present but no recordingUrl is a finding (independent of old fetch_status)', async () => {
+test('no recordingUrl is an expected state — counted, but NOT logged per-row', async () => {
   const c = candidate()
   const raw = new InMemoryRawStore()
   raw.set(TASK, { number: '9xxxxx', callConnectedTime: null }) // no recordingUrl key
@@ -89,6 +89,7 @@ test('record present but no recordingUrl is a finding (independent of old fetch_
 
   const res = await backfillSourceUrl(c, { rawStore: raw, repo }, opts())
   assert.equal(res.outcome, 'no_recording_url')
+  assert.equal(repo.issues.length, 0) // benign — not written to the audit log
 })
 
 test('unrecognized recording host is a finding, not stored', async () => {
