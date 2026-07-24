@@ -4,33 +4,36 @@ Decoupled application for the **Kairali Voice Agent Call Audit & Billing Platfor
 
 Separate from the KCRM Next.js app (per the architecture's "audit system is its own
 system" principle). Connects to the **same MySQL** (`kaudit_*` tables) — a data-location
-decision made by the director — but the audit ingestion, storage, tenancy, and automation
-logic live here, not inside the CRM app.
+decision made by the director — but the audit logic lives here, not inside the CRM app.
 
-Architecture package: `../voice-agent-call-audit-architecture` (see its
-`PHASE1_REMEDIATION_PLAN.md`, `AGENTS.md`, and numbered docs).
+Architecture package: `../voice-agent-call-audit-architecture`.
 
 ## Status
 
-Greenfield. First workstream: **W3 — evidence storage migration** (off local-disk / local
-MinIO onto durable, versioned, Object-Lock, KMS-encrypted object storage). See
-`docs/W3_STORAGE_MIGRATION.md`.
+Greenfield. First workstream: **W3 — evidence integrity**.
+
+> **⚠️ Trade-off in effect (D-13, cost-driven, made knowingly):** recordings are
+> referenced by their **KServe URL** and are **not** copied into independent Kairali
+> storage. Evidence is vendor-hosted. The sha256 gate is the only safeguard and works
+> only while the URL resolves; if KServe expires/deletes a recording we keep a hash but
+> cannot reproduce the bytes. This weakens dispute-evidence strength and the audit's
+> independence for these recordings. See `docs/W3_STORAGE_MIGRATION.md`.
 
 ## Requirements
 
 - **Node >= 24** — native TypeScript type-stripping; tests run with `node --test`, no build.
 
-## Test (synthetic fixtures — no DB, no cloud, no real data)
+## Test (synthetic fixtures — no DB, no network, no real data)
 
 ```
 npm run test:w3
 ```
 
-Runs the storage-migration core against in-memory fixtures. No network, no real evidence.
+Covers URL reachability/safety, hash-on-ingestion, hash-mismatch (evidence_altered)
+detection, and missing-URL (source_missing) handling.
 
-## Running the real migration (gated)
+## Verification pass (gated)
 
-`npm run w3:migrate` defaults to **dry-run**. It refuses to write unless
-`KAUDIT_MIGRATION_MODE=EXECUTE`, and even then must only be run as an approved, supervised
-W3 operation against provisioned durable storage — never casually. Build and verify on
-synthetic fixtures first.
+`npm run w3:verify` defaults to **dry-run** (fetch + report, write nothing). It writes
+hashes/verifications/findings only when `KAUDIT_VERIFY_MODE=EXECUTE`, touches the
+production DB in that mode, and must be run as an approved, supervised pass.

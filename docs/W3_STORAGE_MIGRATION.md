@@ -1,48 +1,61 @@
-# W3 — Evidence Storage Migration
+# W3 — Evidence Integrity (vendor-hosted / KServe-URL reference)
 
-Implements workstream **W3** in
-`../voice-agent-call-audit-architecture/PHASE1_REMEDIATION_PLAN.md`: move evidence off
-local-disk / local MinIO onto durable, versioned, Object-Lock (WORM), KMS-encrypted object
-storage — **verify-then-migrate**, never overwriting raw bytes or trusting a copy blindly.
+Supersedes the original W3 "migrate bytes to durable storage" design.
 
-## Current state (from the reference KCRM repo)
+## ⚠️ Conscious trade-off (D-13) — read this first
 
-- `kaudit_evidence_object.object_bucket` is a mix of `local-disk` (legacy, some with no
-  recoverable bytes) and `kaudit-local` (local MinIO at `.data/kaudit-minio`).
-- The existing `objectStore.ts` is already S3-shaped (region `ap-south-1`, KMS/SSE,
-  `ChecksumSHA256`, captures `versionId`) — so this is a re-target + copy-verify, not a
-  rewrite.
+**Decision (cost-driven, made knowingly by leadership, 2026-07-24):** recordings are
+referenced by their **KServe URL**. Bytes are **not** copied into independent,
+Kairali-controlled object storage.
+
+This is a deliberate override of the architecture's intent. It means:
+
+- The evidence used to audit KServe now lives on **KServe's own infrastructure** — the
+  exact situation ADR-018 and the launch-gate non-negotiable warn against ("a supplier
+  cannot be the sole custodian of the evidence used to verify its own invoice").
+- The sha256 integrity gate is **our only safeguard**, and it can only detect alteration
+  **while the URL still resolves**. If KServe expires or deletes a recording, we keep a
+  hash but **cannot reproduce the bytes** — which is weak evidence against a counterparty
+  in a dispute.
+- It also stores a long-lived vendor URL in the DB (server-side only), contrary to the
+  "no long-lived recording URLs in the DB" rule. `source_url` must never reach the
+  browser, logs, or exports.
+
+**Net:** dispute-evidence strength and the audit's independence are materially reduced for
+these recordings. Recorded as **D-13** in the architecture package's `DECISIONS_NEEDED.md`.
+Recommended mitigation: a contractual KServe obligation to preserve recordings through the
+dispute window, plus monitoring of `source_missing` / `evidence_altered` rates.
+
+## What W3 now does
+
+Integrity by **fetch-and-hash**, not by moving bytes:
+
+1. **Ingestion baseline** — on the first successful fetch of a recording URL, hash the
+   bytes and store `sha256` + `last_verified_at`. → `hash_recorded`
+2. **Re-verification pass** — refetch the URL and compare:
+   - matches baseline → `verified` (update `last_verified_at`)
+   - differs → **`evidence_altered`** finding (quarantine + audit log) — never a silent pass
+3. **Missing evidence** — URL 404 / expired / unreachable → **`source_missing`** finding.
+4. **URL safety** — every fetch is preceded by an allowlist + SSRF guard
+   (`isSafeVendorUrl`): HTTPS only, host on the approved allowlist, no loopback/private/
+   link-local; the fetch adapter also uses `redirect: 'error'`. A failure → `unsafe_url`.
+5. Rows with no URL → `no_url` finding.
+
+Outcomes: `hash_recorded | verified | evidence_altered | source_missing | unsafe_url | no_url`.
 
 ## Design
 
-Pure, injectable core (`src/storage/migrateEvidenceStorage.ts`) with three ports:
+Pure, injectable core (`src/storage/verifyEvidenceUrl.ts`) with two ports:
 
-- `SourceReader` — reads bytes from the current store (`localSourceReader.ts`).
-- `DurableTarget` — versioned + Object-Lock + KMS bucket (`s3DurableTarget.ts`).
-- `EvidenceRepo` — reads candidates, updates location, records issues (`mysqlEvidenceRepo.ts`).
+- `UrlFetcher` — fetches vendor bytes (`httpUrlFetcher.ts`; size cap + timeout + no redirect).
+- `EvidenceRepo` — reads rows, records hash/verified/findings (`mysqlEvidenceRepo.ts`).
 
-### Per-object algorithm
+Plus `isSafeVendorUrl` (`src/security/urlSafety.ts`) as a pure pre-fetch guard.
 
-1. Already on the durable bucket → **skip** (idempotent).
-2. Read source bytes; missing → **`source_missing`** finding (not fatal).
-3. **Integrity gate:** `sha256(bytes)` must equal the row's recorded `sha256`; mismatch →
-   **`hash_mismatch`**, quarantined, **not** written to durable storage.
-4. Match → put to durable (Object-Lock retention + SSE), capture `versionId`, update the row.
-5. Resume-safe: if the object is already on the target (interrupted prior run), reuse its
-   version instead of re-uploading.
+## Schema note (additive migration)
 
-Outcomes: `migrated | skipped_already_durable | would_migrate | source_missing | hash_mismatch`.
-
-## Safety & gating
-
-- **Infra precondition:** the durable bucket must be created with **Versioning + Object
-  Lock** enabled first (the adapter sets per-object retention, not bucket-level lock).
-- The CLI (`npm run w3:migrate`) defaults to **dry-run**; it writes only when
-  `KAUDIT_MIGRATION_MODE=EXECUTE`.
-- Even in EXECUTE mode this operates on **production** evidence + DB and must be run only as
-  an approved, supervised operation — batch by batch, with the exception list reviewed.
-- `hash_mismatch` / `source_missing` are **findings written to the audit log**, resolved by
-  a human — the migration never fixes them silently.
+Uses a dedicated server-only `source_url` column and a `last_verified_at` column on
+`kaudit_evidence_object`. `source_url` is never exposed to the browser/exports.
 
 ## Verification (synthetic, runs now)
 
@@ -50,16 +63,15 @@ Outcomes: `migrated | skipped_already_durable | would_migrate | source_missing |
 npm run test:w3
 ```
 
-Covers: successful migrate + row update; hash-mismatch quarantine (no durable write);
-missing source; idempotent already-durable skip; no duplicate upload on re-run; dry-run
-writes nothing; batch outcome counting. No DB, no cloud, no real data.
+Covers: ingestion hash recording; re-verify match; **hash-mismatch → evidence_altered**;
+**404/expired → source_missing**; unsafe/private URL rejected before fetch; no-URL; dry-run
+writes nothing; batch counting; plus the URL-safety guard matrix. No DB, no network.
 
-## Before the real run (checklist)
+## Before a real verification pass (checklist)
 
-- [ ] Durable bucket provisioned (India region, Versioning + Object Lock + KMS).
-- [ ] `.env` set from `.env.example`; `KAUDIT_MIGRATION_MODE=dry-run` first.
-- [ ] Dry-run a batch; confirm the `local-disk` key→path mapping resolves (or is reported
-      `source_missing` honestly).
-- [ ] Review `hash_mismatch` / `source_missing` findings with the owner.
-- [ ] Run EXECUTE in bounded batches; keep local source as read fallback until 100% verified.
-- [ ] Decommission local-disk / MinIO only after full verification.
+- [ ] `.env` set from `.env.example`; `KAUDIT_ALLOWED_RECORDING_HOSTS` = the real KServe hosts.
+- [ ] Add `source_url` + `last_verified_at` columns (additive migration).
+- [ ] `KAUDIT_VERIFY_MODE=dry-run` first; review reachability + would-be findings.
+- [ ] Run EXECUTE in bounded batches; review `evidence_altered` / `source_missing` findings.
+- [ ] Track the `source_missing` rate — a rising rate means KServe is expiring evidence we
+      can no longer independently substantiate.

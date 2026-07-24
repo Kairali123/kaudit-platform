@@ -7,9 +7,9 @@
   "engines": { "node": ">=24" },
   "scripts": {
     "test": "node --test \"src/**/*.test.ts\"",
-    "test:w3": "node --test src/storage/migrateEvidenceStorage.test.ts",
+    "test:w3": "node --test src/storage/verifyEvidenceUrl.test.ts src/security/urlSafety.test.ts",
     "typecheck": "tsc --noEmit",
-    "w3:migrate": "node src/cli/run-migration.ts"
+    "w3:verify": "node src/cli/run-verification.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1093.0",

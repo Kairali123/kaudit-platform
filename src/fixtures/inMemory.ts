@@ -1,56 +1,44 @@
 import type { EvidenceRow } from '../domain/types.ts'
-import type { DurableTarget, EvidenceRepo, SourceReader } from '../storage/ports.ts'
+import type { EvidenceRepo, FetchResult, UrlFetcher } from '../storage/ports.ts'
 
-// Synthetic, in-memory fakes for testing the migration core with no DB, no cloud,
-// and no real evidence bytes.
+// Synthetic, in-memory fakes for testing the verification core with no DB,
+// no network, and no real evidence bytes.
 
-export class InMemorySource implements SourceReader {
-  private readonly objects = new Map<string, Buffer>()
-  set(bucket: string, key: string, body: Buffer): void {
-    this.objects.set(`${bucket}/${key}`, body)
+export class InMemoryFetcher implements UrlFetcher {
+  private readonly responses = new Map<string, FetchResult>()
+  readonly calls: string[] = []
+  set(url: string, result: FetchResult): void {
+    this.responses.set(url, result)
   }
-  async read(bucket: string, key: string): Promise<Buffer | null> {
-    return this.objects.get(`${bucket}/${key}`) ?? null
+  async fetch(url: string): Promise<FetchResult> {
+    this.calls.push(url)
+    return this.responses.get(url) ?? { ok: false, status: 404, error: 'not found' }
   }
 }
 
-export class InMemoryDurableTarget implements DurableTarget {
-  readonly bucket: string
-  readonly puts: { key: string; sha256: string }[] = []
-  private readonly store = new Map<string, { versionId: string }>()
-  private seq = 0
-  constructor(bucket: string) {
-    this.bucket = bucket
-  }
-  async has(key: string): Promise<{ present: boolean; versionId: string | null }> {
-    const hit = this.store.get(key)
-    return { present: !!hit, versionId: hit?.versionId ?? null }
-  }
-  async put(key: string, _body: Buffer, sha256: string): Promise<{ versionId: string | null }> {
-    this.seq += 1
-    const versionId = `v${this.seq}`
-    this.store.set(key, { versionId })
-    this.puts.push({ key, sha256 })
-    return { versionId }
-  }
-}
-
-export class InMemoryRepo implements EvidenceRepo {
+export class InMemoryVerifyRepo implements EvidenceRepo {
   rows: EvidenceRow[]
+  readonly hashes: { id: string; sha256: string; at: string }[] = []
+  readonly verified: { id: string; at: string }[] = []
   readonly issues: { id: string; code: string; detail: string }[] = []
   constructor(rows: EvidenceRow[]) {
     this.rows = rows
   }
-  async listCandidates(limit: number): Promise<EvidenceRow[]> {
+  async listForVerification(limit: number): Promise<EvidenceRow[]> {
     return this.rows.slice(0, limit)
   }
-  async updateLocation(id: string, bucket: string, key: string, versionId: string | null): Promise<void> {
+  async recordHash(id: string, sha256: string, at: string): Promise<void> {
+    this.hashes.push({ id, sha256, at })
     const row = this.rows.find((r) => r.id === id)
     if (row) {
-      row.objectBucket = bucket
-      row.objectKey = key
-      row.objectVersionId = versionId
+      row.sha256 = sha256
+      row.lastVerifiedAt = at
     }
+  }
+  async recordVerified(id: string, at: string): Promise<void> {
+    this.verified.push({ id, at })
+    const row = this.rows.find((r) => r.id === id)
+    if (row) row.lastVerifiedAt = at
   }
   async recordIssue(id: string, code: string, detail: string): Promise<void> {
     this.issues.push({ id, code, detail })
