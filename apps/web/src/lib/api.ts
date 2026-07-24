@@ -25,6 +25,14 @@ export interface Profile {
   contentAccess: string
 }
 
+export interface AuthConfig {
+  mode: 'oidc' | 'local' | 'preview'
+  providerLabel: string
+  loginUrl: string | null
+  accessControlEnforced: boolean
+  passwordLoginSupported: false
+}
+
 export interface OverviewData {
   generatedAt: string
   tiles: Tile[]

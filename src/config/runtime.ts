@@ -26,6 +26,7 @@ export interface RuntimeConfig {
         issuer: string
         audience: string
         jwksUri: string
+        loginUrl: string | null
         tokenCookie: string | null
         algorithms: string[]
       }
@@ -153,6 +154,12 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
             required(env, 'KAUDIT_OIDC_JWKS_URI'),
             'KAUDIT_OIDC_JWKS_URI',
           ),
+          loginUrl: optional(env, 'KAUDIT_OIDC_LOGIN_URL')
+            ? httpsUrl(
+                required(env, 'KAUDIT_OIDC_LOGIN_URL'),
+                'KAUDIT_OIDC_LOGIN_URL',
+              )
+            : null,
           tokenCookie: safeCookieName(optional(env, 'KAUDIT_OIDC_TOKEN_COOKIE')),
           algorithms: (env.KAUDIT_OIDC_ALGORITHMS || 'RS256,PS256,ES256')
             .split(',')

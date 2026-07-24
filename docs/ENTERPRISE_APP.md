@@ -8,6 +8,7 @@ numbers, evidence URLs, audio, transcripts, customer identifiers, or health cont
 
 | Route | Purpose | Live source |
 |---|---|---|
+| `/login` | Public sign-in entry point; Kairali SSO or explicit local preview | public auth configuration only |
 | `/` | Home/Profile: identity, role, permissions, sensitivity ceiling | `kaudit_user`, `kaudit_user_role` |
 | `/overview` | Headline coverage and release gates only | call/evidence aggregates and configured gates |
 | `/evidence` | Ingestion, references, hash baselines, integrity events | call/evidence/audit aggregates |
@@ -18,6 +19,20 @@ numbers, evidence URLs, audio, transcripts, customer identifiers, or health cont
 
 Each endpoint returns only the data used by its page. `/overview` does not return
 findings, billing, or snapshot payloads.
+
+## Login behavior
+
+- The app does not implement password authentication and never collects a password.
+- `/login` and `/api/v1/auth/config` are public; they expose no business data.
+- In OIDC mode, the button uses the validated HTTPS `KAUDIT_OIDC_LOGIN_URL` owned by
+  Kairali's identity provider or approved identity-aware proxy.
+- In local mode, the button continues with the configured, already-provisioned user.
+- In preview mode, the page is visibly labeled unauthenticated and offers only the
+  loopback preview entry.
+- Unauthenticated browser navigation to protected app routes redirects to `/login`.
+  Protected API requests continue to return `401` JSON rather than an HTML redirect.
+- Static frontend assets are public because they contain code only; all aggregate
+  business APIs remain server-authorized.
 
 ## Run the local preview with real aggregate data
 
@@ -65,6 +80,16 @@ Production-shaped authenticated build:
 ```bash
 npm run app:start
 ```
+
+For OIDC browser login, configure:
+
+```text
+KAUDIT_OIDC_LOGIN_URL=https://<approved-kairali-identity-entry>
+```
+
+The identity provider/proxy must return a validated bearer token or secure HttpOnly
+cookie according to the existing OIDC server configuration. D-14 remains open until
+that provider, client, MFA policy, callback/proxy behavior, and logout path are approved.
 
 Open `http://127.0.0.1:4175`. Static assets are served from the authenticated
 server with a same-origin CSP.

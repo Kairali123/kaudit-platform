@@ -53,6 +53,7 @@ interface Dependencies {
 
 const APP_ROUTES = new Set([
   '/',
+  '/login',
   '/overview',
   '/evidence',
   '/findings',
@@ -70,6 +71,8 @@ const API_ROUTES = new Set([
   '/api/v1/reports',
   '/api/v1/operations',
 ])
+
+const PUBLIC_API_ROUTES = new Set(['/api/v1/auth/config'])
 
 function userAgent(request: IncomingMessage): string | null {
   const value = request.headers['user-agent']
@@ -258,6 +261,22 @@ function permissionsFor(roles: readonly string[]): string[] {
     : roles.includes('user')
       ? [...USER_PERMISSIONS]
       : []
+}
+
+function publicAuthConfig(dependencies: Dependencies): unknown {
+  const auth = dependencies.config.auth
+  return {
+    mode: auth.mode,
+    providerLabel:
+      auth.mode === 'oidc'
+        ? 'Kairali SSO'
+        : auth.mode === 'local'
+          ? 'Configured local user'
+          : 'Local preview',
+    loginUrl: auth.mode === 'oidc' ? auth.loginUrl : null,
+    accessControlEnforced: auth.mode !== 'preview',
+    passwordLoginSupported: false,
+  }
 }
 
 async function apiResponse(
@@ -453,6 +472,7 @@ export function createEnterpriseDashboardServer(
     }
     const isKnownRoute =
       API_ROUTES.has(url.pathname) ||
+      PUBLIC_API_ROUTES.has(url.pathname) ||
       APP_ROUTES.has(url.pathname) ||
       url.pathname.startsWith('/assets/')
     if (!isKnownRoute) {
@@ -461,6 +481,37 @@ export function createEnterpriseDashboardServer(
         404,
         'NOT_FOUND',
         'Not found',
+        correlation,
+      )
+      return
+    }
+
+    if (PUBLIC_API_ROUTES.has(url.pathname)) {
+      sendJson(
+        response,
+        correlation,
+        publicAuthConfig(dependencies),
+      )
+      return
+    }
+
+    if (
+      url.pathname === '/login' ||
+      url.pathname.startsWith('/assets/')
+    ) {
+      const served = await serveApp(
+        url.pathname,
+        response,
+        correlation,
+        dependencies.webDistRoot ??
+          path.resolve(process.cwd(), 'apps/web/dist'),
+      )
+      if (served) return
+      problem(
+        response,
+        503,
+        'APP_NOT_BUILT',
+        'Web application is not built',
         correlation,
       )
       return
@@ -557,6 +608,15 @@ export function createEnterpriseDashboardServer(
       }
       process.stderr.write(`${JSON.stringify(safeLog)}\n`)
       if (authFailure) {
+        if (APP_ROUTES.has(url.pathname)) {
+          response.writeHead(302, {
+            ...HTML_SECURITY_HEADERS,
+            location: '/login',
+            'x-correlation-id': correlation,
+          })
+          response.end()
+          return
+        }
         problem(
           response,
           error.status,

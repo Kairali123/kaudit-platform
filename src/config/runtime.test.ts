@@ -74,6 +74,34 @@ test('rejects weak or unapproved OIDC algorithms', () => {
   assert.throws(() => loadRuntimeConfig(env), /unapproved algorithm/)
 })
 
+test('validates an optional browser login URL as HTTPS', () => {
+  const oidc = {
+    ...base(),
+    KAUDIT_AUTH_MODE: 'oidc',
+    KAUDIT_OIDC_ISSUER: 'https://identity.example.test',
+    KAUDIT_OIDC_AUDIENCE: 'kaudit-api',
+    KAUDIT_OIDC_JWKS_URI: 'https://identity.example.test/jwks',
+  }
+  assert.throws(
+    () =>
+      loadRuntimeConfig({
+        ...oidc,
+        KAUDIT_OIDC_LOGIN_URL: 'http://identity.example.test/login',
+      }),
+    /KAUDIT_OIDC_LOGIN_URL must be an HTTPS URL/,
+  )
+  const config = loadRuntimeConfig({
+    ...oidc,
+    KAUDIT_OIDC_LOGIN_URL: 'https://identity.example.test/login',
+  })
+  assert.equal(
+    config.auth.mode === 'oidc'
+      ? config.auth.loginUrl
+      : null,
+    'https://identity.example.test/login',
+  )
+})
+
 test('K2/K3 automation fails closed without completed calibration and named owner', () => {
   const env = {
     ...base(),

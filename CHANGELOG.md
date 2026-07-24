@@ -11,6 +11,9 @@
   user provisioning without weakening the authenticated startup path.
 - Moved the built preview to port 4176 and added a clear startup message for occupied
   ports, avoiding collisions with the development API on 4175.
+- Added a public `/login` page, public non-sensitive auth configuration endpoint,
+  protected-page redirects, and validated Kairali SSO login URL support without adding
+  app-owned password authentication.
 - Preserved visible D-03, calibration, D-12, and K2/K3 authority warnings.
 - Added production configuration validation and fail-closed OIDC authentication.
 - Added database-backed role authorization for the aggregate dashboard.

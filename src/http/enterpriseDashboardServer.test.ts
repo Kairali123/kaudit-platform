@@ -5,7 +5,10 @@ import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import type { Pool } from 'mysql2/promise'
-import type { AccessRepository } from '../auth/types.ts'
+import type {
+  AccessRepository,
+  TokenVerifier,
+} from '../auth/types.ts'
 import type { AuditEvent, AuditSink } from '../audit/types.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
 import { createEnterpriseDashboardServer } from './enterpriseDashboardServer.ts'
@@ -60,6 +63,7 @@ async function withServer(
   run: (baseUrl: string) => Promise<void>,
   webDistRoot?: string,
   runtimeConfig: RuntimeConfig = config,
+  verifier: TokenVerifier | null = null,
 ): Promise<void> {
   const pool = {
     async query() {
@@ -71,7 +75,7 @@ async function withServer(
     pool,
     access,
     audit,
-    verifier: null,
+    verifier,
     webDistRoot,
   })
   await new Promise<void>((resolve) =>
@@ -122,6 +126,15 @@ test('preview mode uses a non-authorizing identity and never writes access audit
       },
     },
     async (baseUrl) => {
+      const authConfig = await fetch(
+        `${baseUrl}/api/v1/auth/config`,
+      )
+      assert.equal(authConfig.status, 200)
+      const publicConfig =
+        (await authConfig.json()) as Record<string, unknown>
+      assert.equal(publicConfig.mode, 'preview')
+      assert.equal(publicConfig.passwordLoginSupported, false)
+
       const me = await fetch(`${baseUrl}/api/v1/me`)
       assert.equal(me.status, 200)
       const profile = (await me.json()) as Record<string, unknown>
@@ -164,6 +177,8 @@ test('authenticated app routes serve the built shell with a script-safe CSP', as
       },
     },
     async (baseUrl) => {
+      const login = await fetch(`${baseUrl}/login`)
+      assert.equal(login.status, 200)
       const page = await fetch(`${baseUrl}/billing`)
       assert.equal(page.status, 200)
       assert.match(
@@ -178,6 +193,55 @@ test('authenticated app routes serve the built shell with a script-safe CSP', as
       )
     },
     root,
+  )
+})
+
+test('unauthenticated OIDC browser navigation redirects to the public login page', async () => {
+  const root = await mkdtemp(path.join(os.tmpdir(), 'kaudit-login-test-'))
+  await mkdir(path.join(root, 'assets'))
+  await writeFile(
+    path.join(root, 'index.html'),
+    '<!doctype html><div id="root"></div>',
+  )
+  const oidcConfig: RuntimeConfig = {
+    ...config,
+    auth: {
+      mode: 'oidc',
+      issuer: 'https://identity.example.test/',
+      audience: 'kaudit',
+      jwksUri: 'https://identity.example.test/jwks',
+      loginUrl: 'https://identity.example.test/login',
+      tokenCookie: 'kaudit_session',
+      algorithms: ['RS256'],
+    },
+  }
+  await withServer(
+    {
+      async record() {},
+      async readiness() {
+        return true
+      },
+    },
+    async (baseUrl) => {
+      const login = await fetch(`${baseUrl}/login`)
+      assert.equal(login.status, 200)
+
+      const app = await fetch(`${baseUrl}/overview`, {
+        redirect: 'manual',
+      })
+      assert.equal(app.status, 302)
+      assert.equal(app.headers.get('location'), '/login')
+
+      const api = await fetch(`${baseUrl}/api/v1/me`)
+      assert.equal(api.status, 401)
+    },
+    root,
+    oidcConfig,
+    {
+      async verify() {
+        throw new Error('no token expected')
+      },
+    },
   )
 })
 

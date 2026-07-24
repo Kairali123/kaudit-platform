@@ -78,7 +78,8 @@ Do not apply migrations or point this path at production until the staged sequen
 
 The application is page-based: `/` is Home/Profile, `/overview` is overview only, and
 `/evidence`, `/findings`, `/billing`, `/reports`, and `/operations` contain their
-dedicated aggregate views.
+dedicated aggregate views. `/login` is the public sign-in entry point. It never
+collects passwords: production login delegates to the configured Kairali SSO/proxy.
 
 For a loopback-only preview using real aggregate data:
 

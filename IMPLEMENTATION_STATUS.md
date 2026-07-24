@@ -49,7 +49,7 @@ No production-readiness claim is made while these remain open.
 ## Verification evidence for this branch
 
 - `npm run check`: passed; secret scan, backend/frontend TypeScript, production web
-  build, **110** tests passed, and the isolated-MySQL integration test was correctly
+  build, **112** tests passed, and the isolated-MySQL integration test was correctly
   skipped without its gated socket.
 - Migrations 0003 and 0004: applied successfully to a disposable MySQL 9.6 database.
 - Audit writer integration: two synthetic events produced distinct hashes,
