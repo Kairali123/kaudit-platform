@@ -1,0 +1,22 @@
+{
+  "name": "kaudit-platform",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "description": "Kairali Voice Agent Call Audit & Billing Platform — decoupled audit application (separate from the KCRM app; connects to the same MySQL kaudit_* tables).",
+  "engines": { "node": ">=24" },
+  "scripts": {
+    "test": "node --test \"src/**/*.test.ts\"",
+    "test:w3": "node --test src/storage/migrateEvidenceStorage.test.ts",
+    "typecheck": "tsc --noEmit",
+    "w3:migrate": "node src/cli/run-migration.ts"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.1093.0",
+    "mysql2": "^3.18.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.6.0",
+    "@types/node": "^22.0.0"
+  }
+}
