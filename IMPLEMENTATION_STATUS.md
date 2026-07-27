@@ -1,6 +1,6 @@
 # Implementation status
 
-Updated: 2026-07-24
+Updated: 2026-07-27
 
 ## Current slice
 
@@ -22,10 +22,12 @@ Implemented with synthetic tests:
   billing, D-12 reports, and operations pages.
 - Page-scoped authenticated aggregate APIs and production static-asset serving.
 - Runtime release gates that fail closed for uncalibrated/K2-K3 automation.
+- Idempotent administrator provisioning with an explicit K3 sensitivity grant
+  and a compatible audit entry; application-owned passwords remain prohibited.
 
 Not run/applied:
 
-- Migrations 0003/0004 against the real database.
+- Migration 0004 against the real database. Migration 0003 is present.
 - OIDC integration with Kairali's identity provider.
 - Deployment, production data mutation, rate-card publication, calibration, or automated
   financial/health decisions.
@@ -49,9 +51,13 @@ No production-readiness claim is made while these remain open.
 ## Verification evidence for this branch
 
 - `npm run check`: passed; secret scan, backend/frontend TypeScript, production web
-  build, **113** tests passed, and the isolated-MySQL integration test was correctly
+  build, **119** tests passed, and the isolated-MySQL integration test was correctly
   skipped without its gated socket.
-- Migrations 0003 and 0004: applied successfully to a disposable MySQL 9.6 database.
+- Migrations 0003 and 0004: applied successfully to a disposable MySQL 9.6 database
+  and are now present in the configured real database.
+- `dme@kairali.com` is provisioned as an active `admin` with a K3 sensitivity
+  ceiling. The grant has an audit entry; application-owned password storage remains
+  disabled.
 - Audit writer integration: two synthetic events produced distinct hashes,
   `chain_ok`, and `head_ok`.
 - The latest frontend install reported two high-severity advisories, but the approved

@@ -27,11 +27,12 @@
     "ui:monitor": "node --env-file-if-exists=.env src/cli/run-monitor.ts",
     "ui:sample": "node src/cli/render-sample.ts",
     "ui:dashboard": "node --env-file-if-exists=.env src/cli/run-full-dashboard.ts",
-    "ui:secure": "node --env-file-if-exists=.env src/cli/run-secure-dashboard.ts",
+    "ui:secure": "node --env-file-if-exists=.env --env-file-if-exists=.env.local src/cli/run-secure-dashboard.ts",
     "ui:dashboard:sample": "node src/cli/render-full-sample.ts",
     "w3:verify": "node --env-file-if-exists=.env src/cli/run-verification.ts",
     "w3:backfill": "node --env-file-if-exists=.env src/cli/run-backfill.ts",
-    "w1:identity": "node --env-file-if-exists=.env src/cli/run-identity-backfill.ts"
+    "w1:identity": "node --env-file-if-exists=.env src/cli/run-identity-backfill.ts",
+    "w1:grant-admin": "node --env-file-if-exists=.env src/cli/run-admin-grant.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1093.0",

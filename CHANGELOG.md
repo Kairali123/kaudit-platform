@@ -19,6 +19,8 @@
 - Preserved visible D-03, calibration, D-12, and K2/K3 authority warnings.
 - Added production configuration validation and fail-closed OIDC authentication.
 - Added database-backed role authorization for the aggregate dashboard.
+- Added idempotent, audited administrator provisioning and configured the approved
+  local identity as full-access `admin` with a K3 sensitivity ceiling.
 - Added privacy-safe API/problem responses, readiness checks, security headers, and
   correlation IDs.
 - Added an additive migration and writer for hash-chained security audit events.
