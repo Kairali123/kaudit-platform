@@ -197,6 +197,18 @@ function rateCardApproved(
   )
 }
 
+function billingCalculationsAuthoritative(
+  billing: Awaited<ReturnType<typeof collectBilling>>,
+): boolean {
+  return (
+    rateCardApproved(billing) &&
+    billing.calculations != null &&
+    billing.calculations > 0 &&
+    billing.authoritativeCalculations === billing.calculations &&
+    billing.unresolvedAutomatedDecisions === 0
+  )
+}
+
 function releaseGates(
   dependencies: Dependencies,
   approvedRateCard: boolean,
@@ -219,7 +231,7 @@ function releaseGates(
       label: 'Rate card approval',
       detail: approvedRateCard
         ? 'Published with named approval'
-        : 'D-03 open; billing is provisional',
+        : 'Approved interpretation is not yet published in the database',
       status: approvedRateCard ? 'ready' : 'blocked',
     },
     {
@@ -340,7 +352,7 @@ async function apiResponse(
     const billing = await collectBilling(dependencies.pool)
     return {
       generatedAt: new Date().toISOString(),
-      authority: rateCardApproved(billing)
+      authority: billingCalculationsAuthoritative(billing)
         ? 'authoritative'
         : 'provisional',
       billing: buildBillingView(billing),
@@ -354,7 +366,7 @@ async function apiResponse(
     return {
       generatedAt: new Date().toISOString(),
       authority:
-        rateCardApproved(billing) &&
+        billingCalculationsAuthoritative(billing) &&
         dependencies.config.releaseGates.reportingApproved
           ? 'authoritative'
           : 'provisional',

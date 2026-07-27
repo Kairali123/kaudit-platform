@@ -13,10 +13,16 @@ Architecture package: `../voice-agent-call-audit-architecture`.
 Active remediation/build. W3 evidence-reference integrity, W1 identity/access
 primitives, the aggregate dashboard, and the first production security foundation
 are implemented on feature branches with synthetic tests. The platform is **not
-production-ready yet**: D-03 rate-card approval, calibration, K2/K3 safety ownership,
-retention/compliance controls, reliable ingestion/jobs, reconciliation, corrective
-actions, infrastructure, and shadow-month acceptance remain gated. See
+production-ready yet**: D-03 rate-card publication/recalculation, calibration, K2/K3
+safety ownership, retention/compliance controls, reliable ingestion/jobs,
+reconciliation, corrective actions, infrastructure, and shadow-month acceptance remain
+gated. See
 `IMPLEMENTATION_STATUS.md`.
+
+The finance interpretation for D-03 is now locked in code with fixed-precision,
+synthetic boundary tests. The existing database card and 43,245 legacy calculations
+have not been changed: migration 0006 and publication of a new hashed rate-card version
+remain supervised operations. See `docs/VERIFIED_BILLING_V2.md`.
 
 > **⚠️ Trade-off in effect (D-13, cost-driven, made knowingly):** recordings are
 > referenced by their **KServe URL** and are **not** copied into independent Kairali
@@ -43,6 +49,19 @@ detection, and missing-URL (source_missing) handling.
 `npm run w3:verify` defaults to **dry-run** (fetch + report, write nothing). It writes
 hashes/verifications/findings only when `KAUDIT_VERIFY_MODE=EXECUTE`, touches the
 production DB in that mode, and must be run as an approved, supervised pass.
+
+## Independently verified billing core
+
+```bash
+npm run test:billing
+```
+
+This covers the approved INR 4.75/INR 9.50 boundaries, 60-second wrap-up grace,
+whole-minute ceiling, strict one-way-tail alert, calibration/low-confidence handling,
+K2/K3 activation gate, ruleset publication checks, and reproducible decision traces.
+
+Migration `0006_verified_billing_trace.sql` and the MySQL writer are not applied or
+invoked by this command. Existing production calculations remain untouched.
 
 ## Local dashboards
 

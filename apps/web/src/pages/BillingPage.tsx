@@ -25,9 +25,10 @@ export function BillingPage() {
         }
       />
       {data.authority === 'provisional' && (
-        <Notice tone="warning" title="Pending formal rate-card approval (D-03)">
-          Existing calculations used a draft rate card. Amounts are visible for
-          monitoring only and must not be treated as payable, receivable, or recovered.
+        <Notice tone="warning" title="Billing calculation is still provisional">
+          A published rate card alone is not enough. Existing legacy calculations
+          remain non-authoritative until they are superseded by final, evidence-hashed
+          conversation-duration calculations. Amounts are for monitoring only.
         </Notice>
       )}
       <MetricGrid tiles={data.billing.tiles} />
@@ -41,6 +42,15 @@ export function BillingPage() {
           <span>Reconciliation</span>
           <strong>{data.billing.reconciliationStatus}</strong>
           <p>Variance remains identified—not recovered—until a closed reconciliation.</p>
+        </article>
+        <article>
+          <span>Calculation authority</span>
+          <strong>
+            {data.billing.calculationsAuthoritative
+              ? 'Authoritative'
+              : 'Provisional'}
+          </strong>
+          <p>{data.billing.calculationAuthorityLabel}</p>
         </article>
       </section>
       <UpdatedAt value={data.generatedAt} />

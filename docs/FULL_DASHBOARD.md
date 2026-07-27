@@ -36,8 +36,9 @@ aggregate database values.
 - **Access control not enforced:** W1 defines `admin` / `user` and sensitivity
   ceilings, but the local server has no login or request-level permission guard.
   It binds to loopback only and must not be deployed or distributed.
-- **Billing provisional:** D-03 remains open. Monetary values are visibly labeled
-  provisional while the referenced rate card is draft/unapproved.
+- **Billing provisional:** D-03's interpretation is approved, but the new hashed card
+  is not published and the legacy vendor-duration rows are not independently traced.
+  Monetary values remain provisional until final calculations supersede them.
 - **Findings uncalibrated:** model confidence is shown but never represented as
   measured accuracy.
 - **Snapshots provisional:** the four D-12 cards are live projections over existing

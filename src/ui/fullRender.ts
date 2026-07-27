@@ -181,7 +181,7 @@ export function renderFullDashboard(view: FullDashboardView): string {
     <main class="main">
       <div class="gate-grid" aria-label="Data status">
         ${accessGate}
-        <div class="gate warn"><strong>Billing is provisional</strong><span>D-03 open: rate card is draft/unapproved.</span></div>
+        <div class="gate warn"><strong>Billing is provisional</strong><span>Approved rules are not published/recalculated in SQL.</span></div>
         <div class="gate warn"><strong>Findings are uncalibrated</strong><span>Confidence is not measured accuracy.</span></div>
       </div>
 
@@ -202,8 +202,8 @@ export function renderFullDashboard(view: FullDashboardView): string {
       </section>
 
       <section id="billing">
-        <div class="section-heading"><div><h2>Billing & revenue</h2><p>Current independent calculation and reconciliation position.</p></div><span class="status-pill provisional">provisional · D-03</span></div>
-        <div class="notice warn"><span class="icon">!</span><div><strong>Pending formal rate-card approval.</strong><p>All monetary figures below were calculated against a draft rate card and are non-authoritative. “Variance identified” is not money recovered or saved.</p></div></div>
+        <div class="section-heading"><div><h2>Billing & revenue</h2><p>Current calculation and reconciliation position.</p></div><span class="status-pill provisional">provisional</span></div>
+        <div class="notice warn"><span class="icon">!</span><div><strong>Pending database publication and verified recalculation.</strong><p>A published rate card alone is insufficient: legacy vendor-duration rows stay non-authoritative until final evidence-hashed calculations supersede them. “Variance identified” is not money recovered or saved.</p></div></div>
         <div class="metric-grid">${view.billing.tiles.map(tile).join('')}</div>
         <div class="billing-meta">
           <span>Rate card: ${esc(view.billing.rateCardLabel)}</span>
@@ -214,7 +214,7 @@ export function renderFullDashboard(view: FullDashboardView): string {
 
       <section id="reports">
         <div class="section-heading"><div><h2>Revenue snapshots</h2><p>D-12 headline view · weekly, monthly, fiscal quarterly, and fiscal yearly.</p></div><span class="status-pill provisional">provisional</span></div>
-        <div class="notice warn"><span class="icon">!</span><div><strong>Live projections—not approved management snapshots.</strong><p>Periods use ISO Mon–Sun weeks and the Indian Apr–Mar fiscal calendar. Amounts stay provisional until D-03 and calibration clear.</p></div></div>
+        <div class="notice warn"><span class="icon">!</span><div><strong>Live projections—not approved management snapshots.</strong><p>Periods use ISO Mon–Sun weeks and the Indian Apr–Mar fiscal calendar. Amounts stay provisional until rate-card publication, verified recalculation, and calibration clear.</p></div></div>
         <div class="snapshot-grid">${view.snapshots.map(snapshotCard).join('')}</div>
       </section>
 

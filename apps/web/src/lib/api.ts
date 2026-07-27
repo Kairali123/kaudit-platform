@@ -71,6 +71,8 @@ export interface BillingData {
     rateCardLabel: string
     rateCardApproved: boolean
     rateCardApprovalLabel: string
+    calculationsAuthoritative: boolean
+    calculationAuthorityLabel: string
     reconciliationStatus: string
   }
 }

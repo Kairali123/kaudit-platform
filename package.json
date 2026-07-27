@@ -14,6 +14,8 @@
     "test:w3": "node --test src/storage/verifyEvidenceUrl.test.ts src/security/urlSafety.test.ts src/adapters/proxyResolvingFetcher.test.ts",
     "test:backfill": "node --test src/backfill/normalizeRecordingUrl.test.ts src/backfill/backfillSourceUrl.test.ts",
     "test:w1": "node --test src/identity/resolveIdentity.test.ts src/identity/buildUserSet.test.ts src/identity/access.test.ts",
+    "test:billing": "node --test src/billing/*.test.ts",
+    "test:billing:mysql": "node --test src/adapters/mysqlVerifiedBilling.integration.test.ts",
     "test:reliability:mysql": "node --test src/adapters/mysqlReliableProcessing.integration.test.ts",
     "test:ui": "node --test src/ui/metrics.test.ts src/ui/render.test.ts src/ui/decimal.test.ts src/ui/periods.test.ts src/ui/fullDashboard.test.ts src/ui/fullRender.test.ts",
     "typecheck": "tsc --noEmit",

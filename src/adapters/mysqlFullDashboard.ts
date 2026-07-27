@@ -100,7 +100,7 @@ export async function collectQuality(pool: Pool): Promise<RawQualityMetrics> {
 }
 
 export async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
-  const [summary, rateCard, reconciliation] = await Promise.all([
+  const [summary, authority, rateCard, reconciliation] = await Promise.all([
     one(
       pool,
       `SELECT
@@ -112,6 +112,52 @@ export async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
        WHERE NOT EXISTS (
          SELECT 1 FROM kaudit_billing_calculation newer
          WHERE newer.supersedes_calculation_id = bc.id
+       )`,
+    ),
+    one(
+      pool,
+      `SELECT
+         COUNT(*) AS current_calculations,
+         SUM(
+           CASE
+             WHEN current.status = 'final'
+              AND current.calculation_basis IN (
+                'independent_conversation_end',
+                'accepted_as_billed_unverified'
+              )
+              AND current.audit_run_id IS NOT NULL
+              AND current.input_manifest_sha256 IS NOT NULL
+              AND current.ruleset_sha256 IS NOT NULL
+              AND current.decision_trace_sha256 IS NOT NULL
+              AND current.finalized_at IS NOT NULL
+             THEN 1 ELSE 0
+           END
+         ) AS authoritative_calculations,
+         SUM(
+           CASE
+             WHEN current.status = 'final'
+              AND current.calculation_basis =
+                'independent_conversation_end'
+             THEN 1 ELSE 0
+           END
+         ) AS independent_final_calculations,
+         (
+           SELECT COUNT(*)
+           FROM kaudit_automated_decision decision_row
+           WHERE decision_row.decision_type =
+                   'verified_call_billing'
+             AND decision_row.decision_status = 'unresolved'
+             AND NOT EXISTS (
+               SELECT 1
+               FROM kaudit_automated_decision newer_decision
+               WHERE newer_decision.supersedes_decision_id =
+                     decision_row.id
+             )
+         ) AS unresolved_automated_decisions
+       FROM kaudit_billing_calculation current
+       WHERE NOT EXISTS (
+         SELECT 1 FROM kaudit_billing_calculation newer
+         WHERE newer.supersedes_calculation_id = current.id
        )`,
     ),
     one(
@@ -132,6 +178,9 @@ export async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
 
   return {
     calculations: n(summary?.calculations),
+    authoritativeCalculations: n(authority?.authoritative_calculations),
+    independentFinalCalculations: n(authority?.independent_final_calculations),
+    unresolvedAutomatedDecisions: n(authority?.unresolved_automated_decisions),
     calculatedTotal: s(summary?.calculated_total),
     billableMinutes: s(summary?.billable_minutes),
     currency: s(reconciliation?.currency) ?? s(summary?.currency) ?? s(rateCard?.currency) ?? 'INR',

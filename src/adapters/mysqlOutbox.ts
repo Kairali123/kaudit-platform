@@ -5,7 +5,10 @@ import type {
   ResultSetHeader,
   RowDataPacket,
 } from 'mysql2/promise'
-import { canonicalJson } from '../messaging/canonicalJson.ts'
+import {
+  canonicalJson,
+  type JsonValue,
+} from '../messaging/canonicalJson.ts'
 import { MessageIntegrityError, LeaseLostError } from '../messaging/errors.ts'
 import type {
   ClaimedOutboxMessage,
@@ -27,7 +30,7 @@ interface OutboxRow extends RowDataPacket {
   aggregate_type: string
   aggregate_id: string
   event_type: string
-  payload_json: string
+  payload_json: string | JsonValue
   payload_sha256: string
   correlation_id: string | null
   attempts: number
@@ -101,13 +104,17 @@ function assertLimit(limit: number): number {
 }
 
 function mapOutbox(row: OutboxRow): ClaimedOutboxMessage {
+  const payloadJson =
+    typeof row.payload_json === 'string'
+      ? row.payload_json
+      : canonicalJson(row.payload_json)
   return {
     id: row.id,
     messageId: row.message_id,
     aggregateType: row.aggregate_type,
     aggregateId: row.aggregate_id,
     eventType: row.event_type,
-    payloadJson: row.payload_json,
+    payloadJson,
     payloadSha256: row.payload_sha256,
     correlationId: row.correlation_id,
     attempts: Number(row.attempts),

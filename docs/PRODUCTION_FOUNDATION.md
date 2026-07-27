@@ -36,8 +36,9 @@ linked synthetic audit events were verified in a disposable MySQL 9.6 instance
    but is not a substitute for an independently administered archive.
 5. Add real React/NestJS deployable units and generated OpenAPI contract. This slice
    secures the existing dashboard; it does not claim the complete target stack.
-6. Complete D-03, calibration, K2/K3 owner sign-off, retention/legal-hold controls,
-   queue/outbox processing, reconciliation, disputes, corrective actions, backup/restore,
+6. Publish the approved D-03 ruleset and run the verified recalculation; complete
+   calibration, K2/K3 owner sign-off, retention/legal-hold controls, queue/outbox
+   processing, reconciliation, disputes, corrective actions, backup/restore,
    performance/security tests, and the historical/live shadow cycles.
 
 ## Deliberate limits
@@ -46,4 +47,4 @@ linked synthetic audit events were verified in a disposable MySQL 9.6 instance
   active user and role; production configuration rejects it.
 - Protected routes are read-only aggregates. Raw audio, transcript, URLs, phone numbers,
   customer identifiers, and health content are not exposed.
-- Rate-card approval and finding calibration gates remain visible and unchanged.
+- Rate-card publication/recalculation and finding-calibration gates remain visible.

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+- Added the finance-approved KServe verified-billing V2 core: final-customer-exchange
+  basis, 60-second wrap-up grace, strict 60-second one-way-tail alert, INR 4.75 short
+  call and whole-minute INR 9.50 rounding, all using integer/fixed-precision math.
+- Added calibration, per-threshold, automated re-check, and K2/K3 fail-closed authority
+  gates to the pure billing decision path.
+- Added reproducible model/ruleset/confidence/evidence-hash traces, an additive
+  automated-decision schema, append-only superseding calculation writer, transactional
+  outbox event, and isolated-MySQL integration coverage.
+- Prevented a published rate card alone from making legacy vendor-duration
+  calculations appear authoritative in the dashboard.
 - Added a React/Vite application with Home/Profile as `/` and separate Overview,
   Evidence, Findings, Billing, Reports, and Operations routes.
 - Split the secure aggregate API into page-scoped endpoints.

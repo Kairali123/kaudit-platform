@@ -12,7 +12,7 @@ test('renders all requested sections with visible gates', () => {
     'Billing & revenue',
     'Revenue snapshots',
     'ACCESS CONTROL NOT YET ENFORCED',
-    'Pending formal rate-card approval',
+    'Pending database publication and verified recalculation',
     'Accuracy has not been measured',
     'provisional',
   ]) {

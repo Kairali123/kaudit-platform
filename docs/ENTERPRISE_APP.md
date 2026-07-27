@@ -103,14 +103,16 @@ access is written to the hash-chained audit log in authenticated modes.
 
 ## Authority labels
 
-- Billing becomes `authoritative` only when the newest rate card is `published` and
-  has both `approved_by` and `approved_at`.
+- Billing becomes `authoritative` only when the newest rate card is `published` with
+  `approved_by`/`approved_at`, every current calculation is final with an approved
+  calculation basis, input/ruleset/decision-trace hashes are present, and no current
+  automated billing decision is unresolved.
 - Findings remain `uncalibrated` unless `KAUDIT_CALIBRATION_COMPLETE=true` is set
   after the approved calibration protocol is complete.
 - K2/K3 automation cannot start unless calibration is complete and
   `KAUDIT_K23_CLINICAL_SAFETY_OWNER` is named. Configuration fails closed if
   enablement is attempted without both.
-- Reports remain `provisional` until the rate card is approved and
+- Reports remain `provisional` until billing calculations are authoritative and
   `KAUDIT_REPORTING_APPROVED=true`.
 
 These flags change labels and release posture. They do not retroactively validate,
@@ -118,7 +120,7 @@ recalculate, or finalize existing data.
 
 ## Production boundary
 
-This app is production-shaped, not production-approved. D-03, calibration, K2/K3
-ownership, privacy/retention, OIDC, infrastructure, and shadow-run acceptance remain
-release blockers. Do not expose the Vite server or use local authentication outside
-loopback development.
+This app is production-shaped, not production-approved. D-03 publication/recalculation,
+calibration, K2/K3 ownership, privacy/retention, OIDC, infrastructure, and shadow-run
+acceptance remain release blockers. Do not expose the Vite server or use local
+authentication outside loopback development.

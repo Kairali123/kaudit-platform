@@ -90,7 +90,7 @@ export function buildDashboard(m: RawMetrics): DashboardView {
     generatedAt: m.generatedAt,
     reachable,
     caveat:
-      'Read-only monitoring — evidence integrity & ingestion only. Billing, findings-quality, and financial figures are intentionally excluded (non-authoritative pending rate-card approval D-03 and calibration). No customer or health content is shown.',
+      'Read-only monitoring — evidence integrity & ingestion only. Billing, findings-quality, and financial figures are intentionally excluded (non-authoritative pending rate-card publication, verified recalculation, and calibration). No customer or health content is shown.',
     tiles,
     findings: m.findings,
   }

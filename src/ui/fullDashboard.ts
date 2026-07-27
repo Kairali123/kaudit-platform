@@ -28,6 +28,9 @@ export interface RawQualityMetrics {
 
 export interface RawBillingMetrics {
   calculations: number | null
+  authoritativeCalculations: number | null
+  independentFinalCalculations: number | null
+  unresolvedAutomatedDecisions: number | null
   calculatedTotal: string | null
   billableMinutes: string | null
   currency: string
@@ -75,6 +78,8 @@ export interface BillingView {
   rateCardLabel: string
   rateCardApproved: boolean
   rateCardApprovalLabel: string
+  calculationsAuthoritative: boolean
+  calculationAuthorityLabel: string
   reconciliationStatus: string
 }
 
@@ -192,12 +197,28 @@ export function buildQualityView(q: RawQualityMetrics, totalCalls: number | null
 export function buildBillingView(b: RawBillingMetrics): BillingView {
   const rateCardApproved =
     b.rateCardStatus === 'published' && Boolean(b.rateCardApprovedBy) && Boolean(b.rateCardApprovedAt)
+  const calculationsAuthoritative =
+    rateCardApproved &&
+    b.calculations != null &&
+    b.calculations > 0 &&
+    b.authoritativeCalculations === b.calculations &&
+    b.unresolvedAutomatedDecisions === 0
+  const authorityCoverageLabel =
+    b.authoritativeCalculations == null
+      ? `authority telemetry unavailable for ${fmtCount(b.calculations)} current calculations`
+      : `${fmtCount(b.authoritativeCalculations)} of ` +
+        `${fmtCount(b.calculations)} current calculations are authoritative`
   const billingTiles: Tile[] = [
     {
-      label: 'Calculated billable amount',
+      label: 'Current calculated amount',
       value: formatMoney(b.calculatedTotal, b.currency),
-      sub: `${fmtCount(b.calculations)} call calculations`,
-      status: b.calculatedTotal == null ? 'pending' : rateCardApproved ? 'good' : 'warn',
+      sub: authorityCoverageLabel,
+      status:
+        b.calculatedTotal == null
+          ? 'pending'
+          : calculationsAuthoritative
+            ? 'good'
+            : 'warn',
     },
     {
       label: 'Invoice / vendor claim',
@@ -217,8 +238,10 @@ export function buildBillingView(b: RawBillingMetrics): BillingView {
     {
       label: 'Billable minutes',
       value: b.billableMinutes == null ? '—' : Number(b.billableMinutes).toLocaleString('en-IN', { maximumFractionDigits: 1 }),
-      sub: rateCardApproved ? 'approved rate-card calculation' : 'draft rate-card calculation',
-      status: b.billableMinutes == null ? 'pending' : rateCardApproved ? 'good' : 'warn',
+      sub: calculationsAuthoritative
+        ? 'approved, independently traced calculations'
+        : 'contains legacy/provisional calculation basis',
+      status: b.billableMinutes == null ? 'pending' : calculationsAuthoritative ? 'good' : 'warn',
     },
   ]
   return {
@@ -229,7 +252,15 @@ export function buildBillingView(b: RawBillingMetrics): BillingView {
     rateCardApproved,
     rateCardApprovalLabel: rateCardApproved
       ? `Published with named approval on ${b.rateCardApprovedAt}`
-      : 'D-03 open — draft/unapproved rate card',
+      : 'D-03 interpretation approved; database publication pending',
+    calculationsAuthoritative,
+    calculationAuthorityLabel: calculationsAuthoritative
+      ? 'All current calculations are final, traced, and use an approved basis'
+      : b.independentFinalCalculations == null ||
+          b.unresolvedAutomatedDecisions == null
+        ? 'Migration 0006 authority telemetry is not available in this database'
+        : `${fmtCount(b.independentFinalCalculations)} independently verified; ` +
+          `${fmtCount(b.unresolvedAutomatedDecisions)} unresolved automated decisions`,
     reconciliationStatus: b.reconciliationStatus ?? 'not started',
   }
 }

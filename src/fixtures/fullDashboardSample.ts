@@ -26,6 +26,9 @@ export const sampleFullRaw: RawFullDashboard = {
   },
   billing: {
     calculations: 43245, calculatedTotal: '80310.00000000',
+    authoritativeCalculations: 0,
+    independentFinalCalculations: 0,
+    unresolvedAutomatedDecisions: 0,
     billableMinutes: '8453.68421000', currency: 'INR',
     rateCardVersion: '2026-02-28-v1', rateCardStatus: 'draft',
     rateCardApprovedBy: null, rateCardApprovedAt: null,
