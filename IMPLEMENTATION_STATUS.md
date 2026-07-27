@@ -24,7 +24,7 @@ Updated: 2026-07-27
 ## Current slice
 
 Phase 1-5 production work remains in progress. The current implementation slice is on
-`feature/billing-v2-engine`.
+`feature/full-call-reaudit`.
 
 Implemented with synthetic tests:
 
@@ -40,6 +40,10 @@ Implemented with synthetic tests:
 - Routed React application with Home/Profile, overview-only, calls/evidence, findings,
   billing, D-12 reports, and operations pages.
 - Page-scoped authenticated aggregate APIs and production static-asset serving.
+- Admin-only Audit Monitor page/API showing real processing coverage and
+  privacy-safe call-level output metadata. Both the page and endpoint require
+  `audit:inspect`; raw audio, transcripts, phone numbers, source URLs, health
+  content, remarks, and model explanations are excluded.
 - Runtime release gates that fail closed for uncalibrated/K2-K3 automation.
 - Idempotent administrator provisioning with an explicit K3 sensitivity grant
   and a compatible audit entry; application-owned passwords remain prohibited.
@@ -84,9 +88,14 @@ No production-readiness claim is made while these remain open.
 
 ## Verification evidence for this branch
 
-- `npm run check`: passed with the isolated test socket enabled; secret scan,
-  backend/frontend TypeScript, production web build, and **133/133** tests passed,
-  including reliable-processing and verified-billing MySQL integration.
+- `npm run check`: passed; secret scan, backend/frontend TypeScript, production
+  web build, and **137/137 runnable tests** passed (**2 MySQL integration tests
+  skipped** because their isolated test socket was not enabled in this run).
+- Admin Audit Monitor: inspected against the configured real database in the
+  local browser. It reports 224/43,245 legacy AI-audited calls, 16,147
+  recording-eligible calls still pending, 26,874 calls with no recording, and
+  zero persisted V2 re-audits; the Hindi filter returned 23 results and the
+  browser emitted no console errors.
 - Migrations 0003 and 0004: applied successfully to a disposable MySQL 9.6 database
   and are now present in the configured real database.
 - `dme@kairali.com` is provisioned as an active `admin` with a K3 sensitivity

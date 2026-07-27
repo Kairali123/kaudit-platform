@@ -64,6 +64,7 @@ async function withServer(
   webDistRoot?: string,
   runtimeConfig: RuntimeConfig = config,
   verifier: TokenVerifier | null = null,
+  accessRepository: AccessRepository = access,
 ): Promise<void> {
   const pool = {
     async query() {
@@ -73,7 +74,7 @@ async function withServer(
   const server = createEnterpriseDashboardServer({
     config: runtimeConfig,
     pool,
-    access,
+    access: accessRepository,
     audit,
     verifier,
     webDistRoot,
@@ -332,5 +333,87 @@ test('overview API is page-scoped and never exposes raw call content', async () 
       assert.equal(JSON.stringify(body).includes('transcript'), false)
       assert.equal(events.at(-1)?.action, 'overview.read')
     },
+  )
+})
+
+test('audit monitor is admin-only and excludes raw content fields', async () => {
+  const deniedEvents: AuditEvent[] = []
+  await withServer(
+    {
+      async record(event) {
+        deniedEvents.push(event)
+      },
+      async readiness() {
+        return true
+      },
+    },
+    async (baseUrl) => {
+      const deniedPage = await fetch(`${baseUrl}/audits`, {
+        redirect: 'manual',
+      })
+      assert.equal(deniedPage.status, 403)
+      const denied = await fetch(`${baseUrl}/api/v1/audits`)
+      assert.equal(denied.status, 403)
+      const problem = (await denied.json()) as Record<string, unknown>
+      assert.equal(problem.code, 'PERMISSION_DENIED')
+      assert.equal(deniedEvents.at(-1)?.outcome, 'denied')
+    },
+  )
+
+  const adminEvents: AuditEvent[] = []
+  const adminAccess: AccessRepository = {
+    ...access,
+    async findByEmail(email) {
+      return {
+        id: 'admin-1',
+        email,
+        status: 'active',
+        maxSensitivityTier: 'K3',
+        roles: ['admin'],
+      }
+    },
+  }
+  await withServer(
+    {
+      async record(event) {
+        adminEvents.push(event)
+      },
+      async readiness() {
+        return true
+      },
+    },
+    async (baseUrl) => {
+      const allowed = await fetch(`${baseUrl}/api/v1/audits`)
+      assert.equal(allowed.status, 200)
+      const body = await allowed.json()
+      const keys = new Set<string>()
+      const visit = (value: unknown): void => {
+        if (Array.isArray(value)) {
+          value.forEach(visit)
+        } else if (value && typeof value === 'object') {
+          for (const [key, item] of Object.entries(value)) {
+            keys.add(key)
+            visit(item)
+          }
+        }
+      }
+      visit(body)
+      for (const forbidden of [
+        'transcript',
+        'sourceUrl',
+        'recordingUrl',
+        'phone',
+        'remarks',
+        'explanation',
+      ]) {
+        assert.equal(keys.has(forbidden), false)
+      }
+      assert.equal(adminEvents.at(-1)?.action, 'audits.read')
+      assert.equal(adminEvents.at(-1)?.outcome, 'success')
+    },
+    undefined,
+    config,
+    null,
+    adminAccess,
   )
 })

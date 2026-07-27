@@ -26,6 +26,7 @@ import {
 } from '../adapters/mysqlFullDashboard.ts'
 import { collectMetrics } from '../adapters/mysqlMetrics.ts'
 import { collectOperations } from '../adapters/mysqlOperations.ts'
+import { collectAuditMonitor } from '../adapters/mysqlAuditMonitor.ts'
 import { USER_PERMISSIONS } from '../identity/access.ts'
 import {
   buildBillingView,
@@ -60,6 +61,7 @@ const APP_ROUTES = new Set([
   '/billing',
   '/reports',
   '/operations',
+  '/audits',
 ])
 
 const API_ROUTES = new Set([
@@ -70,6 +72,7 @@ const API_ROUTES = new Set([
   '/api/v1/billing',
   '/api/v1/reports',
   '/api/v1/operations',
+  '/api/v1/audits',
 ])
 
 const PUBLIC_API_ROUTES = new Set(['/api/v1/auth/config'])
@@ -293,10 +296,11 @@ function publicAuthConfig(dependencies: Dependencies): unknown {
 }
 
 async function apiResponse(
-  pathname: string,
+  url: URL,
   dependencies: Dependencies,
   context: AuthContext,
 ): Promise<unknown> {
+  const pathname = url.pathname
   if (pathname === '/api/v1/me') {
     return {
       id: context.user.id,
@@ -376,10 +380,37 @@ async function apiResponse(
   if (pathname === '/api/v1/operations') {
     return collectOperations(dependencies.pool)
   }
+  if (pathname === '/api/v1/audits') {
+    const integer = (
+      name: string,
+      fallback: number,
+      min: number,
+      max: number,
+    ): number => {
+      const raw = url.searchParams.get(name)
+      const value = raw == null ? fallback : Number(raw)
+      return Number.isInteger(value) && value >= min && value <= max
+        ? value
+        : fallback
+    }
+    const safeFilter = (name: string): string | null => {
+      const value = url.searchParams.get(name)?.trim() || null
+      return value && /^[A-Za-z0-9_-]{1,80}$/.test(value)
+        ? value
+        : null
+    }
+    return collectAuditMonitor(dependencies.pool, {
+      page: integer('page', 1, 1, 100_000),
+      pageSize: integer('pageSize', 25, 10, 100),
+      category: safeFilter('category'),
+      language: safeFilter('language'),
+    })
+  }
   throw new Error('Unsupported API route')
 }
 
 function apiPermission(pathname: string): string {
+  if (pathname === '/api/v1/audits') return 'audit:inspect'
   return pathname === '/api/v1/reports'
     ? 'snapshot:read'
     : 'metrics:read'
@@ -564,7 +595,7 @@ export function createEnterpriseDashboardServer(
             ? 'identity.read'
             : `${url.pathname.split('/').at(-1)}.read`
         const body = await apiResponse(
-          url.pathname,
+          url,
           dependencies,
           context,
         )
@@ -579,7 +610,10 @@ export function createEnterpriseDashboardServer(
         sendJson(response, correlation, body)
         return
       }
-      requirePermission(context, 'metrics:read')
+      requirePermission(
+        context,
+        url.pathname === '/audits' ? 'audit:inspect' : 'metrics:read',
+      )
       if (url.pathname.startsWith('/assets/')) {
         const served = await serveApp(
           url.pathname,
@@ -645,7 +679,7 @@ export function createEnterpriseDashboardServer(
       }
       process.stderr.write(`${JSON.stringify(safeLog)}\n`)
       if (authFailure) {
-        if (APP_ROUTES.has(url.pathname)) {
+        if (APP_ROUTES.has(url.pathname) && error.status === 401) {
           response.writeHead(302, {
             ...HTML_SECURITY_HEADERS,
             location: '/login',

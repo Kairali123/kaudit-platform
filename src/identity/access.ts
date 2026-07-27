@@ -39,6 +39,7 @@ export const ADMIN_ONLY_PERMISSIONS: readonly string[] = [
   'access:review',
   'legalhold:manage',
   'policy:publish',
+  'audit:inspect',
 ]
 
 // True if the user's roles grant the permission. Admin ⇒ everything.

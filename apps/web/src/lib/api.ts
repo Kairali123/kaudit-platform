@@ -111,6 +111,59 @@ export interface OperationsData {
   auditChainConfigured: boolean | null
 }
 
+export interface AuditMonitorRow {
+  callReference: string
+  billingPeriodDate: string | null
+  sensitivityTier: string
+  category: string
+  outcomeTaxonomyVersion: string | null
+  confidence: string | null
+  confirmationStatus: string
+  language: string
+  asrProvider: string | null
+  asrModel: string | null
+  asrModelVersion: string | null
+  auditEngineVersion: string | null
+  recordedDurationMs: number | null
+  speechDurationMs: number | null
+  conversationEndMs: number | null
+  graceAdjustedDurationMs: number | null
+  vendorConnectedDurationMs: number | null
+  varianceDurationMs: number | null
+  evidenceHashRecorded: boolean
+  lastEvidenceVerifiedAt: string | null
+  auditedAt: string | null
+}
+
+export interface AuditMonitorData {
+  generatedAt: string
+  summary: {
+    totalCalls: number
+    aiAuditedCalls: number
+    auditCoveragePercent: string
+    recordingAvailableCalls: number
+    pendingEligibleCalls: number
+    noRecordingCalls: number
+    processingFailureCalls: number
+    reauditV2Calls: number
+  }
+  rows: AuditMonitorRow[]
+  pagination: {
+    page: number
+    pageSize: number
+    totalRows: number
+    totalPages: number
+  }
+  filters: {
+    category: string | null
+    language: string | null
+    availableCategories: string[]
+    availableLanguages: string[]
+  }
+  authority: 'uncalibrated'
+  contentBoundary: string
+}
+
 export class ApiError extends Error {
   constructor(
     message: string,

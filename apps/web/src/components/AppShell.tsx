@@ -10,6 +10,7 @@ import {
   Shield,
   ShieldCheck,
   Sparkles,
+  ScanSearch,
   X,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
@@ -63,7 +64,12 @@ export function AppShell() {
           </button>
         </div>
         <nav aria-label="Primary">
-          {navigation.map(({ to, label, icon: Icon, end }) => (
+          {[
+            ...navigation,
+            ...(profile?.roles.includes('admin')
+              ? [{ to: '/audits', label: 'Audit monitor', icon: ScanSearch }]
+              : []),
+          ].map(({ to, label, icon: Icon, end }) => (
             <NavLink
               key={to}
               to={to}
