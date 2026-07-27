@@ -7,6 +7,7 @@ import { createOidcVerifier } from '../auth/oidcVerifier.ts'
 import { loadRuntimeConfig } from '../config/runtime.ts'
 import { createEnterpriseDashboardServer } from '../http/enterpriseDashboardServer.ts'
 import { createMysqlCycleImportService } from '../adapters/mysqlCycleImport.ts'
+import { createImportAnalysisService } from '../imports/analysis.ts'
 
 const config = loadRuntimeConfig(process.env)
 const ssl = config.database.sslCaFile
@@ -42,6 +43,9 @@ const imports = createMysqlCycleImportService(pool, {
     .map((value) => value.trim())
     .filter(Boolean),
 })
+const importAnalysis = createImportAnalysisService(
+  process.env.OPENAI_API_KEY?.trim() || null,
+)
 const verifier =
   config.auth.mode === 'oidc'
     ? createOidcVerifier({
@@ -57,6 +61,7 @@ const server = createEnterpriseDashboardServer({
   access,
   audit,
   imports,
+  importAnalysis,
   verifier,
 })
 let shuttingDown = false

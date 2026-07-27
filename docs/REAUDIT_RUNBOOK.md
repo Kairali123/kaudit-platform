@@ -46,6 +46,10 @@ Store the real `OPENAI_API_KEY` outside the repository in
 `$HOME/.kcrm-audit/.env.local`. Both re-audit commands load that ignored
 external file after the project-local non-secret configuration.
 
+Never place the key in `.env.example`, source code, browser storage, or a
+Git-tracked file. If a key appears in terminal output or a tracked file, rotate
+it before starting paid work.
+
 Run a bounded first batch:
 
 ```bash
@@ -59,6 +63,15 @@ After inspecting `/audits`, keep it running for new/due calls:
 KAUDIT_AUDIT_MODE=EXECUTE KAUDIT_AUDIT_BATCH=10 \
   KAUDIT_AUDIT_WATCH=true npm run audit:worker
 ```
+
+Or start the local dashboard and continuous worker as one operational stack:
+
+```bash
+npm run app:operate
+```
+
+The worker remains a separate process even in this convenience command. It
+does not run merely because a user opens the dashboard.
 
 The candidate query excludes every already-audited call, including the 224
 legacy results. Success persists the evidence hash, Whisper and classifier

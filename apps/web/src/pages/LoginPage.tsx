@@ -1,4 +1,8 @@
-import { useQuery } from '@tanstack/react-query'
+import {
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import {
   ArrowRight,
   Building2,
@@ -6,9 +10,17 @@ import {
   LockKeyhole,
   ShieldCheck,
 } from 'lucide-react'
-import { getJson, type AuthConfig } from '../lib/api'
+import { type FormEvent } from 'react'
+import { useNavigate } from 'react-router-dom'
+import {
+  getJson,
+  postJson,
+  type AuthConfig,
+} from '../lib/api'
 
 export function LoginPage() {
+  const navigate = useNavigate()
+  const client = useQueryClient()
   const query = useQuery({
     queryKey: ['auth-config'],
     queryFn: () =>
@@ -22,6 +34,25 @@ export function LoginPage() {
   const destination =
     auth?.mode === 'oidc' ? auth.loginUrl : '/'
   const ready = Boolean(destination)
+  const login = useMutation({
+    mutationFn: (input: { email: string; password: string }) =>
+      postJson<{ authenticated: true; email: string }>(
+        '/api/v1/auth/login',
+        input,
+      ),
+    onSuccess: async () => {
+      await client.invalidateQueries({ queryKey: ['me'] })
+      navigate('/', { replace: true })
+    },
+  })
+  const submit = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const form = new FormData(event.currentTarget)
+    login.mutate({
+      email: String(form.get('email') || ''),
+      password: String(form.get('password') || ''),
+    })
+  }
 
   return (
     <main className="login-page">
@@ -66,8 +97,8 @@ export function LoginPage() {
           <span className="eyebrow">Secure access</span>
           <h2>Sign in to your workspace</h2>
           <p className="login-intro">
-            Use your approved Kairali identity. This application does
-            not collect or store account passwords.
+            Use your approved Kairali identity. Local credentials are
+            accepted only by this loopback development server.
           </p>
 
           {query.isLoading && (
@@ -113,8 +144,9 @@ export function LoginPage() {
 
               {local && (
                 <div className="login-message info">
-                  Local development uses the preconfigured,
-                  provisioned user. No credentials are entered here.
+                  Local sign-in is for development only. The password
+                  is verified server-side and is never stored in the
+                  browser.
                 </div>
               )}
 
@@ -125,13 +157,51 @@ export function LoginPage() {
                 </div>
               )}
 
-              {ready ? (
+              {local ? (
+                <form className="login-form" onSubmit={submit}>
+                  <label>
+                    Email
+                    <input
+                      required
+                      type="email"
+                      name="email"
+                      autoComplete="username"
+                      autoFocus
+                    />
+                  </label>
+                  <label>
+                    Password
+                    <input
+                      required
+                      type="password"
+                      name="password"
+                      autoComplete="current-password"
+                    />
+                  </label>
+                  {login.error && (
+                    <div
+                      className="login-message danger"
+                      role="alert"
+                    >
+                      {login.error.message}
+                    </div>
+                  )}
+                  <button
+                    className="login-button"
+                    disabled={login.isPending}
+                    type="submit"
+                  >
+                    {login.isPending
+                      ? 'Signing in…'
+                      : 'Sign in'}
+                    <ArrowRight size={17} aria-hidden />
+                  </button>
+                </form>
+              ) : ready ? (
                 <a className="login-button" href={destination!}>
                   {preview
                     ? 'Enter local preview'
-                    : local
-                      ? 'Continue as local user'
-                      : 'Continue with Kairali SSO'}
+                    : 'Continue with Kairali SSO'}
                   <ArrowRight size={17} aria-hidden />
                 </a>
               ) : (

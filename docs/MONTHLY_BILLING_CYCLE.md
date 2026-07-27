@@ -33,17 +33,24 @@ The supported source contract is one row per KServe task with:
 
 The implemented CSV import path is:
 
-1. An admin uploads the monthly KServe CSV and invoice PDF at `/imports/new`.
-   XLSX must currently be exported to CSV first.
-2. The server computes a file hash and creates one
+1. An admin selects the monthly KServe CSV at `/imports/new`. The server
+   performs a non-persistent deterministic preview, validates the locked
+   columns, derives the period, and counts rows with/without recording URLs.
+2. The admin selects the invoice PDF. OpenAI reads the PDF into a strict
+   metadata schema and suggests invoice dates and totals. These suggestions
+   are editable and are not authoritative.
+3. The admin checks the suggested fields and presses the separate
+   `Submit usage` and `Submit invoice` buttons. Analysis alone writes nothing
+   to SQL. XLSX must currently be exported to CSV first.
+4. On submit, the server computes a file hash and creates one
    `kaudit_ingestion_batch`. Re-uploading identical bytes replays the existing
    result instead of creating duplicate calls.
-3. Header/schema validation runs before row writes. An invalid file is rejected
+5. Header/schema validation runs before row writes. An invalid file is rejected
    before SQL normalization starts.
-4. Accepted rows are normalized into `kaudit_call`,
+6. Accepted rows are normalized into `kaudit_call`,
    `kaudit_call_external_reference`, call timing/provider-cost records, and
    `kaudit_call_artifact.source_url`.
-5. A row with an optional approved `Recording URL` is committed with an
+7. A row with an optional approved `Recording URL` is committed with an
    idempotent audit-request outbox message. The locked eight-column sheet does
    not contain recording URLs, so those calls remain explicitly without
    recording evidence until a separate manifest/API feed supplies one.
@@ -55,7 +62,11 @@ after import.
 
 ## Automatic audit
 
-The outbox publisher delivers one idempotent audit job per call. The worker:
+The import records one idempotent audit-request outbox message per
+recording-backed call for traceability and future queue delivery. In the
+current build, the continuous worker does not consume that outbox; it safely
+polls eligible SQL call/artifact rows, uses a database advisory lock, and skips
+every call that already has a completed audit. The worker:
 
 1. fetches the KServe recording through the unpod proxy;
 2. hashes the returned audio and checks the stored baseline;
@@ -77,6 +88,18 @@ KAUDIT_AUDIT_MODE=EXECUTE KAUDIT_AUDIT_WATCH=true npm run audit:worker
 Watch mode continues polling for newly imported/due calls. It skips any call
 already backed by a completed legacy or V2 audit. The dashboard process never
 starts paid OpenAI work merely because a user opens a page.
+
+For local operation, one command starts the built dashboard and the continuous
+worker together:
+
+```bash
+npm run app:operate
+```
+
+`npm run app:start` intentionally starts only the dashboard. Opening a browser
+must never be the trigger for paid or long-running audit work. In production,
+the API and worker must be separate supervised services with restart policy,
+health checks, and centralized secret management.
 
 ## Bill and report release
 

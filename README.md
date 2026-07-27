@@ -101,17 +101,20 @@ Do not apply migrations or point this path at production until the staged sequen
 The application is page-based: `/` is Home/Profile, `/overview` is overview only, and
 `/evidence`, `/findings`, `/billing`, `/reports`, and `/operations` contain their
 dedicated aggregate views. `/login` is the public sign-in entry point. It never
-collects passwords: production login and logout delegate to the configured Kairali
-SSO/proxy.
+stores passwords in the browser. Loopback development verifies a one-way
+scrypt password hash from ignored `.env.local` and issues a signed, expiring,
+HttpOnly, SameSite session cookie. Production login and logout delegate to the
+configured Kairali SSO/proxy; local password mode is rejected in production.
 
-For a loopback-only preview using real aggregate data:
+For loopback development with the local sign-in page:
 
 ```bash
 npm run app:dev
 ```
 
-Open `http://127.0.0.1:4173`. It is visibly unauthenticated and must not be exposed.
-Use `npm run app:preview` for the built local preview on `127.0.0.1:4176`.
+Open `http://127.0.0.1:4173`. Unauthenticated users are redirected to
+`/login`. Use `npm run app:preview` only for the explicitly unauthenticated,
+built preview on `127.0.0.1:4176`; it must not be exposed.
 
 After identity migrations and user/OIDC provisioning, use `npm run app:dev:secure`
 or `npm run app:start`. See `docs/ENTERPRISE_APP.md`.
@@ -119,7 +122,11 @@ or `npm run app:start`. See `docs/ENTERPRISE_APP.md`.
 ## Monthly import and continuous audit
 
 An administrator uploads the KServe usage CSV and invoice PDF at
-`/imports/new`. Original bytes are content-addressed under the private,
+`/imports/new`. File selection first runs a non-persistent preview: CSV
+columns/period/recording coverage are validated deterministically across every
+row, and OpenAI suggests editable invoice metadata from the PDF using a strict
+schema. Separate `Submit usage` and `Submit invoice` actions are required
+before anything is written. Original bytes are then content-addressed under the private,
 gitignored `KAUDIT_IMPORT_ROOT` and normalized into the shared `kaudit_*`
 tables. A usage row may include an optional `Recording URL`; without a
 recording URL the call is retained but cannot enter audio audit.
@@ -133,3 +140,13 @@ KAUDIT_AUDIT_MODE=EXECUTE KAUDIT_AUDIT_WATCH=true npm run audit:worker
 It processes only recording-backed, unaudited calls and skips every call that
 already has a completed audit. Opening the dashboard never starts paid OpenAI
 work.
+
+For local operation, start the built dashboard and continuous audit worker
+together:
+
+```bash
+npm run app:operate
+```
+
+This is a convenience wrapper around two separate processes. Production still
+requires independently supervised API and worker services.

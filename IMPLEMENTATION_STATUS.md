@@ -1,5 +1,20 @@
 # Implementation status
 
+## 2026-07-27 — Local access, assisted imports, and response performance
+
+- ✅ Added loopback-only local password sign-in using a one-way scrypt hash and
+  signed, expiring HttpOnly/SameSite cookie. Unauthenticated app routes redirect
+  to `/login`; production still rejects local auth and requires OIDC.
+- ✅ Added non-persistent import previews: deterministic full-file CSV
+  validation/period autofill and strict-schema OpenAI invoice PDF extraction.
+  Both flows retain editable fields and separate explicit submit actions.
+- ✅ Added short-lived, in-flight-deduplicating aggregate API caching. Measured
+  repeat navigation fell from roughly 2–3 seconds on the heaviest uncached pages
+  to roughly 0.28–0.36 seconds while retaining per-request identity checks and
+  access-audit writes.
+- ✅ Added `npm run app:operate` to run the local dashboard and continuous,
+  skip-completed audit worker as separate managed child processes.
+
 ## Self-contained import and persistent audit worker — 2026-07-27
 
 - ✅ Added admin-only `/imports/new` for monthly KServe usage CSV and invoice

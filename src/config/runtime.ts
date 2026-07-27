@@ -20,6 +20,10 @@ export interface RuntimeConfig {
     | {
         mode: 'local'
         email: string
+        passwordHash: string
+        sessionSecret: string
+        sessionCookie: string
+        sessionTtlSeconds: number
       }
     | {
         mode: 'oidc'
@@ -141,6 +145,25 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
       ? {
           mode,
           email: required(env, 'KAUDIT_DEV_USER_EMAIL').toLowerCase(),
+          passwordHash: required(
+            env,
+            'KAUDIT_LOCAL_PASSWORD_HASH',
+          ),
+          sessionSecret: required(
+            env,
+            'KAUDIT_LOCAL_SESSION_SECRET',
+          ),
+          sessionCookie: safeCookieName(
+            optional(env, 'KAUDIT_LOCAL_SESSION_COOKIE') ??
+              'kaudit_local_session',
+          ) as string,
+          sessionTtlSeconds: integer(
+            env,
+            'KAUDIT_LOCAL_SESSION_TTL_SEC',
+            28_800,
+            300,
+            86_400,
+          ),
         }
       : {
           mode,
@@ -181,6 +204,14 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   ) {
     throw new ConfigurationError(
       'KAUDIT_OIDC_ALGORITHMS contains an unapproved algorithm',
+    )
+  }
+  if (
+    auth.mode === 'local' &&
+    auth.sessionSecret.length < 32
+  ) {
+    throw new ConfigurationError(
+      'KAUDIT_LOCAL_SESSION_SECRET must contain at least 32 characters',
     )
   }
 

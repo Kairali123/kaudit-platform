@@ -77,9 +77,22 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .82rem; }
 .login-message.info { color: #2d5870; background: #eaf4f8; border-color: #bedce7; }
 .login-message.danger { color: var(--red); background: var(--red-soft); border-color: #eac1bd; }
 .login-loading { padding: 15px 0; color: var(--muted); font-size: .77rem; }
+.login-form { display: grid; gap: 13px; margin-top: 16px; }
+.login-form label {
+  display: grid; gap: 6px; color: var(--muted);
+  font-size: .7rem; font-weight: 750;
+}
+.login-form input {
+  min-height: 43px; padding: 9px 11px; color: var(--ink);
+  background: var(--paper); border: 1px solid var(--line);
+}
+.login-form input:focus {
+  outline: 3px solid rgba(19,124,114,.14);
+  border-color: var(--teal);
+}
 .login-button {
   display: flex; align-items: center; justify-content: space-between; width: 100%;
-  margin-top: 16px; padding: 13px 15px; color: #fff; background: var(--teal);
+  margin-top: 3px; padding: 13px 15px; color: #fff; background: var(--teal);
   border: 1px solid var(--teal); text-decoration: none; font-size: .8rem; font-weight: 750; cursor: pointer;
 }
 .login-button:hover { background: #0f6a62; }

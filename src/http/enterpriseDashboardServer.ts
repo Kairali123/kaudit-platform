@@ -12,6 +12,13 @@ import {
   extractBearerToken,
   requirePermission,
 } from '../auth/authenticate.ts'
+import {
+  clearLocalSessionCookie,
+  issueLocalSession,
+  localSessionCookie,
+  verifyLocalPassword,
+  verifyLocalSession,
+} from '../auth/localSession.ts'
 import type {
   AccessRepository,
   AuthContext,
@@ -19,6 +26,7 @@ import type {
 } from '../auth/types.ts'
 import type { AuditSink } from '../audit/types.ts'
 import type { CycleImportService } from '../imports/types.ts'
+import type { ImportAnalysisService } from '../imports/analysis.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
 import {
   collectBilling,
@@ -51,6 +59,7 @@ interface Dependencies {
   audit: AuditSink
   verifier: TokenVerifier | null
   imports?: CycleImportService
+  importAnalysis?: ImportAnalysisService
   webDistRoot?: string
 }
 
@@ -80,9 +89,14 @@ const API_ROUTES = new Set([
 ])
 
 const PUBLIC_API_ROUTES = new Set(['/api/v1/auth/config'])
+const PUBLIC_POST_ROUTES = new Set(['/api/v1/auth/login'])
 const IMPORT_WRITE_ROUTES = new Set([
   '/api/v1/imports/usage',
   '/api/v1/imports/invoice',
+])
+const IMPORT_ANALYSIS_ROUTES = new Set([
+  '/api/v1/imports/analyze-usage',
+  '/api/v1/imports/analyze-invoice',
 ])
 
 function userAgent(request: IncomingMessage): string | null {
@@ -138,8 +152,26 @@ async function authenticate(
     }
   }
   if (dependencies.config.auth.mode === 'local') {
+    const auth = dependencies.config.auth
+    const token = extractBearerToken(
+      undefined,
+      request.headers.cookie,
+      auth.sessionCookie,
+    )
+    const email = verifyLocalSession(
+      token,
+      auth.sessionSecret,
+      auth.email,
+    )
+    if (!email) {
+      throw new AuthFailure(
+        401,
+        'AUTH_REQUIRED',
+        'Authentication is required',
+      )
+    }
     return authenticateLocal(
-      dependencies.config.auth.email,
+      email,
       dependencies.access,
     )
   }
@@ -189,11 +221,13 @@ function sendJson(
   response: ServerResponse,
   correlation: string,
   value: unknown,
+  headers: Record<string, string> = {},
 ): void {
   response.writeHead(200, {
     ...JSON_SECURITY_HEADERS,
     'content-type': 'application/json; charset=utf-8',
     'x-correlation-id': correlation,
+    ...headers,
   })
   response.end(JSON.stringify(value))
 }
@@ -304,12 +338,12 @@ function publicAuthConfig(dependencies: Dependencies): unknown {
       auth.mode === 'oidc'
         ? 'Kairali SSO'
         : auth.mode === 'local'
-          ? 'Configured local user'
+          ? 'Local Kairali account'
           : 'Local preview',
     loginUrl: auth.mode === 'oidc' ? auth.loginUrl : null,
     logoutUrl: auth.mode === 'oidc' ? auth.logoutUrl : '/login',
     accessControlEnforced: auth.mode !== 'preview',
-    passwordLoginSupported: false,
+    passwordLoginSupported: auth.mode === 'local',
   }
 }
 
@@ -445,7 +479,11 @@ async function apiResponse(
     if (!dependencies.imports) {
       throw new Error('Cycle import service is not configured')
     }
-    return dependencies.imports.status()
+    return {
+      ...(await dependencies.imports.status()),
+      invoiceAiEnabled:
+        dependencies.importAnalysis?.invoiceAiEnabled ?? false,
+    }
   }
   throw new Error('Unsupported API route')
 }
@@ -465,6 +503,61 @@ function contentType(filePath: string): string {
   if (filePath.endsWith('.png')) return 'image/png'
   if (filePath.endsWith('.woff2')) return 'font/woff2'
   return 'application/octet-stream'
+}
+
+interface ApiCacheEntry {
+  expiresAt: number
+  value: Promise<unknown>
+}
+
+function pruneApiCache(cache: Map<string, ApiCacheEntry>): void {
+  const now = Date.now()
+  for (const [key, entry] of cache) {
+    if (entry.expiresAt <= now) cache.delete(key)
+  }
+  while (cache.size >= 200) {
+    const oldest = cache.keys().next()
+    if (oldest.done) break
+    cache.delete(oldest.value)
+  }
+}
+
+function cacheTtlMs(pathname: string): number {
+  if (pathname === '/api/v1/me') return 0
+  if (
+    pathname === '/api/v1/audits' ||
+    pathname === '/api/v1/imports'
+  ) {
+    return 5_000
+  }
+  return 15_000
+}
+
+async function cachedApiResponse(
+  url: URL,
+  dependencies: Dependencies,
+  context: AuthContext,
+  cache: Map<string, ApiCacheEntry>,
+): Promise<unknown> {
+  const ttl = cacheTtlMs(url.pathname)
+  if (ttl === 0) return apiResponse(url, dependencies, context)
+  const key = `${context.user.roles.slice().sort().join(',')}:${url.pathname}${url.search}`
+  const existing = cache.get(key)
+  if (existing && existing.expiresAt > Date.now()) {
+    return existing.value
+  }
+  pruneApiCache(cache)
+  const value = apiResponse(url, dependencies, context)
+  cache.set(key, {
+    expiresAt: Date.now() + ttl,
+    value,
+  })
+  try {
+    return await value
+  } catch (error) {
+    cache.delete(key)
+    throw error
+  }
 }
 
 async function serveApp(
@@ -498,6 +591,7 @@ async function serveApp(
 export function createEnterpriseDashboardServer(
   dependencies: Dependencies,
 ): http.Server {
+  const apiCache = new Map<string, ApiCacheEntry>()
   return http.createServer(async (request, response) => {
     const correlation = correlationId(
       request.headers['x-correlation-id'],
@@ -505,8 +599,16 @@ export function createEnterpriseDashboardServer(
     const url = requestUrl(request)
     const isImportPost =
       request.method === 'POST' &&
-      IMPORT_WRITE_ROUTES.has(url.pathname)
-    if (request.method === 'GET' && IMPORT_WRITE_ROUTES.has(url.pathname)) {
+      (IMPORT_WRITE_ROUTES.has(url.pathname) ||
+        IMPORT_ANALYSIS_ROUTES.has(url.pathname))
+    const isPublicPost =
+      request.method === 'POST' &&
+      PUBLIC_POST_ROUTES.has(url.pathname)
+    if (
+      request.method === 'GET' &&
+      (IMPORT_WRITE_ROUTES.has(url.pathname) ||
+        IMPORT_ANALYSIS_ROUTES.has(url.pathname))
+    ) {
       problem(
         response,
         405,
@@ -516,7 +618,11 @@ export function createEnterpriseDashboardServer(
       )
       return
     }
-    if (request.method !== 'GET' && !isImportPost) {
+    if (
+      request.method !== 'GET' &&
+      !isImportPost &&
+      !isPublicPost
+    ) {
       problem(
         response,
         405,
@@ -572,7 +678,9 @@ export function createEnterpriseDashboardServer(
     const isKnownRoute =
       API_ROUTES.has(url.pathname) ||
       PUBLIC_API_ROUTES.has(url.pathname) ||
+      PUBLIC_POST_ROUTES.has(url.pathname) ||
       IMPORT_WRITE_ROUTES.has(url.pathname) ||
+      IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
       APP_ROUTES.has(url.pathname) ||
       url.pathname === '/logout' ||
       url.pathname.startsWith('/assets/')
@@ -605,6 +713,13 @@ export function createEnterpriseDashboardServer(
         ...HTML_SECURITY_HEADERS,
         location,
         'x-correlation-id': correlation,
+        ...(auth.mode === 'local'
+          ? {
+              'set-cookie': clearLocalSessionCookie(
+                auth.sessionCookie,
+              ),
+            }
+          : {}),
       })
       response.end()
       return
@@ -616,6 +731,129 @@ export function createEnterpriseDashboardServer(
         correlation,
         publicAuthConfig(dependencies),
       )
+      return
+    }
+
+    if (PUBLIC_POST_ROUTES.has(url.pathname)) {
+      const auth = dependencies.config.auth
+      if (auth.mode !== 'local') {
+        problem(
+          response,
+          404,
+          'NOT_FOUND',
+          'Not found',
+          correlation,
+        )
+        return
+      }
+      let context: AuthContext | null = null
+      try {
+        const contentType = request.headers['content-type'] || ''
+        if (
+          typeof contentType !== 'string' ||
+          !contentType
+            .toLowerCase()
+            .startsWith('application/json')
+        ) {
+          const error = new Error(
+            'Login requires application/json',
+          )
+          Object.assign(error, {
+            code: 'INVALID_LOGIN_REQUEST',
+            status: 400,
+          })
+          throw error
+        }
+        const bytes = await readRequestBody(request, 8 * 1024)
+        const input = JSON.parse(bytes.toString('utf8')) as {
+          email?: unknown
+          password?: unknown
+        }
+        const email =
+          typeof input.email === 'string'
+            ? input.email.trim().toLowerCase()
+            : ''
+        const password =
+          typeof input.password === 'string'
+            ? input.password
+            : ''
+        const passwordValid = verifyLocalPassword(
+          password,
+          auth.passwordHash,
+        )
+        if (email !== auth.email || !passwordValid) {
+          throw new AuthFailure(
+            401,
+            'AUTH_INVALID',
+            'Email or password is incorrect',
+          )
+        }
+        context = await authenticateLocal(email, dependencies.access)
+        const token = issueLocalSession(
+          email,
+          auth.sessionSecret,
+          auth.sessionTtlSeconds,
+        )
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          'auth.login',
+        )
+        sendJson(
+          response,
+          correlation,
+          {
+            authenticated: true,
+            email: context.user.email,
+          },
+          {
+            'set-cookie': localSessionCookie(
+              auth.sessionCookie,
+              token,
+              auth.sessionTtlSeconds,
+            ),
+          },
+        )
+      } catch (error) {
+        const authFailure = error instanceof AuthFailure
+        try {
+          await auditAccess(
+            dependencies,
+            request,
+            context,
+            correlation,
+            authFailure ? 'denied' : 'failure',
+            'auth.login',
+          )
+        } catch {
+          // Authentication still fails closed if audit storage is unavailable.
+        }
+        if (authFailure) {
+          problem(
+            response,
+            error.status,
+            error.code,
+            error.message,
+            correlation,
+          )
+          return
+        }
+        const shaped = error as {
+          status?: number
+          code?: string
+          message?: string
+        }
+        problem(
+          response,
+          shaped.status ?? 400,
+          shaped.code ?? 'INVALID_LOGIN_REQUEST',
+          shaped.message ?? 'Login request is invalid',
+          correlation,
+        )
+      }
       return
     }
 
@@ -646,21 +884,41 @@ export function createEnterpriseDashboardServer(
       context = await authenticate(request, dependencies)
       if (isImportPost) {
         requirePermission(context, 'import:write')
-        if (!dependencies.imports) {
-          throw new Error('Cycle import service is not configured')
-        }
         const bytes = await readRequestBody(request)
         const filename = header(request, 'x-kaudit-filename')
-        const body =
-          url.pathname === '/api/v1/imports/usage'
-            ? await dependencies.imports.importUsage({
+        let body: unknown
+        if (IMPORT_ANALYSIS_ROUTES.has(url.pathname)) {
+          if (!dependencies.importAnalysis) {
+            const error = new Error(
+              'OpenAI invoice analysis is not configured',
+            )
+            Object.assign(error, {
+              code: 'IMPORT_ANALYSIS_NOT_CONFIGURED',
+              status: 503,
+            })
+            throw error
+          }
+          body =
+            url.pathname === '/api/v1/imports/analyze-usage'
+              ? await dependencies.importAnalysis.analyzeUsage(bytes)
+              : await dependencies.importAnalysis.analyzeInvoice(
+                  bytes,
+                  filename,
+                )
+        } else {
+          if (!dependencies.imports) {
+            throw new Error('Cycle import service is not configured')
+          }
+          body =
+            url.pathname === '/api/v1/imports/usage'
+              ? await dependencies.imports.importUsage({
                 bytes,
                 filename,
                 periodStart: header(request, 'x-kaudit-period-start'),
                 periodEnd: header(request, 'x-kaudit-period-end'),
                 correlationId: correlation,
               })
-            : await dependencies.imports.importInvoice({
+              : await dependencies.imports.importInvoice({
                 bytes,
                 filename,
                 invoiceNumber: header(request, 'x-kaudit-invoice-number'),
@@ -672,16 +930,22 @@ export function createEnterpriseDashboardServer(
                 totalAmount: header(request, 'x-kaudit-total-amount'),
                 correlationId: correlation,
               })
+        }
         await auditAccess(
           dependencies,
           request,
           context,
           correlation,
           'success',
-          url.pathname.endsWith('/usage')
-            ? 'usage_import.create'
-            : 'invoice_import.create',
+          url.pathname.endsWith('/analyze-usage')
+            ? 'usage_import.analyze'
+            : url.pathname.endsWith('/analyze-invoice')
+              ? 'invoice_import.analyze'
+              : url.pathname.endsWith('/usage')
+                ? 'usage_import.create'
+                : 'invoice_import.create',
         )
+        apiCache.clear()
         sendJson(response, correlation, body)
         return
       }
@@ -691,10 +955,11 @@ export function createEnterpriseDashboardServer(
           url.pathname === '/api/v1/me'
             ? 'identity.read'
             : `${url.pathname.split('/').at(-1)}.read`
-        const body = await apiResponse(
+        const body = await cachedApiResponse(
           url,
           dependencies,
           context,
+          apiCache,
         )
         await auditAccess(
           dependencies,

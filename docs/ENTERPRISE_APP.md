@@ -8,7 +8,7 @@ numbers, evidence URLs, audio, transcripts, customer identifiers, or health cont
 
 | Route | Purpose | Live source |
 |---|---|---|
-| `/login` | Public sign-in entry point; Kairali SSO or explicit local preview | public auth configuration only |
+| `/login` | Public sign-in entry point; local loopback credentials or Kairali SSO | public auth configuration only |
 | `/` | Home/Profile: identity, role, permissions, sensitivity ceiling | `kaudit_user`, `kaudit_user_role` |
 | `/overview` | Headline coverage and release gates only | call/evidence aggregates and configured gates |
 | `/evidence` | Ingestion, references, hash baselines, integrity events | call/evidence/audit aggregates |
@@ -22,14 +22,18 @@ findings, billing, or snapshot payloads.
 
 ## Login behavior
 
-- The app does not implement password authentication and never collects a password.
+- Local loopback mode accepts email/password on `/login`, verifies a one-way
+  scrypt hash from ignored `.env.local`, and issues a signed, expiring HttpOnly,
+  SameSite cookie. The plaintext password is never stored in the browser,
+  database, source code, or environment file.
 - `/login` and `/api/v1/auth/config` are public; they expose no business data.
 - In OIDC mode, the button uses the validated HTTPS `KAUDIT_OIDC_LOGIN_URL` owned by
   Kairali's identity provider or approved identity-aware proxy.
 - The top-bar logout button calls `/logout`. OIDC mode delegates session termination
   to the validated HTTPS `KAUDIT_OIDC_LOGOUT_URL`; local/preview mode returns to
   `/login`.
-- In local mode, the button continues with the configured, already-provisioned user.
+- In local mode, a valid session is required for every protected app/API request;
+  logout clears the local session cookie.
 - In preview mode, the page is visibly labeled unauthenticated and offers only the
   loopback preview entry.
 - Unauthenticated browser navigation to protected app routes redirects to `/login`.
@@ -37,22 +41,18 @@ findings, billing, or snapshot payloads.
 - Static frontend assets are public because they contain code only; all aggregate
   business APIs remain server-authorized.
 
-## Run the local preview with real aggregate data
+## Run local authenticated development with real aggregate data
 
-The preview requires only the existing database variables in the gitignored `.env`:
+This requires the database variables in gitignored `.env` and local identity,
+password-hash, and session settings in gitignored `.env.local`:
 
 ```bash
 npm run app:dev
 ```
 
-Open `http://127.0.0.1:4173`. Vite serves the UI and proxies `/api` to the secure
-server at `127.0.0.1:4175`. This command explicitly uses `preview` mode:
-
-- it is accepted only on a loopback host outside production;
-- it uses a synthetic K0 identity with the standard read permissions;
-- it reads real aggregate business data;
-- it does not write access-audit events;
-- the UI visibly labels access control as unenforced.
+Open `http://127.0.0.1:4173`. Vite serves the UI and proxies `/api` to the
+authenticated server at `127.0.0.1:4175`. Unauthenticated navigation redirects
+to `/login`, and successful/denied requests are access-audited.
 
 To preview the built bundle instead of Vite:
 
@@ -82,6 +82,12 @@ Production-shaped authenticated build:
 
 ```bash
 npm run app:start
+```
+
+Local dashboard plus the continuous skip-completed audit worker:
+
+```bash
+npm run app:operate
 ```
 
 For OIDC browser login, configure:

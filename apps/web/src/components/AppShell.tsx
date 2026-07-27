@@ -16,8 +16,15 @@ import {
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
-import { NavLink, Outlet } from 'react-router-dom'
 import {
+  Navigate,
+  NavLink,
+  Outlet,
+  useLocation,
+} from 'react-router-dom'
+import { ErrorState, LoadingState } from './States'
+import {
+  ApiError,
   getJson,
   type AuthConfig,
   type Profile,
@@ -35,16 +42,41 @@ const navigation = [
 
 export function AppShell() {
   const [open, setOpen] = useState(false)
-  const profile = useQuery({
+  const location = useLocation()
+  const profileQuery = useQuery({
     queryKey: ['me'],
     queryFn: () => getJson<Profile>('/api/v1/me'),
-  }).data
-  const auth = useQuery({
+    retry: false,
+  })
+  const authQuery = useQuery({
     queryKey: ['auth-config'],
     queryFn: () =>
       getJson<AuthConfig>('/api/v1/auth/config'),
     staleTime: 60_000,
-  }).data
+  })
+  if (
+    profileQuery.error instanceof ApiError &&
+    profileQuery.error.status === 401
+  ) {
+    return (
+      <Navigate
+        to="/login"
+        replace
+        state={{ from: location.pathname }}
+      />
+    )
+  }
+  if (profileQuery.isLoading) return <LoadingState />
+  if (profileQuery.error) {
+    return (
+      <ErrorState
+        error={profileQuery.error}
+        retry={() => void profileQuery.refetch()}
+      />
+    )
+  }
+  const profile = profileQuery.data
+  const auth = authQuery.data
   const secured = profile?.accessControlEnforced === true
   return (
     <div className="app-shell">

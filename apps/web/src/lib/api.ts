@@ -30,7 +30,7 @@ export interface AuthConfig {
   loginUrl: string | null
   logoutUrl: string | null
   accessControlEnforced: boolean
-  passwordLoginSupported: false
+  passwordLoginSupported: boolean
 }
 
 export interface OverviewData {
@@ -219,8 +219,36 @@ export async function getJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>
 }
 
+export async function postJson<T>(
+  path: string,
+  value: unknown,
+): Promise<T> {
+  const response = await fetch(path, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      accept: 'application/json',
+      'content-type': 'application/json',
+    },
+    body: JSON.stringify(value),
+  })
+  const correlationId = response.headers.get('x-correlation-id')
+  if (!response.ok) {
+    let message = 'The request could not be completed.'
+    try {
+      const problem = (await response.json()) as { title?: string }
+      message = problem.title || message
+    } catch {
+      // Keep the privacy-safe fallback.
+    }
+    throw new ApiError(message, response.status, correlationId)
+  }
+  return response.json() as Promise<T>
+}
+
 export interface ImportStatus {
   enabled: boolean
+  invoiceAiEnabled: boolean
   storageBoundary: string
   recentBatches: Array<{
     id: string
@@ -242,6 +270,32 @@ export interface ImportStatus {
     totalAmount: string
     status: string
   }>
+}
+
+export interface UsageImportPreview {
+  method: 'deterministic'
+  periodStart: string
+  periodEnd: string
+  rowCount: number
+  recordingUrlCount: number
+  missingRecordingUrlCount: number
+  recognizedColumns: string[]
+  warnings: string[]
+}
+
+export interface InvoiceImportPreview {
+  method: 'openai'
+  model: string
+  invoiceNumber: string
+  invoiceDate: string
+  periodStart: string
+  periodEnd: string
+  subtotalAmount: string
+  taxAmount: string
+  totalAmount: string
+  currency: 'INR'
+  confidence: string
+  warnings: string[]
 }
 
 export interface ImportResult {

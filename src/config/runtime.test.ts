@@ -11,6 +11,10 @@ function base(): NodeJS.ProcessEnv {
     DB_PASSWORD: 'synthetic-secret',
     KAUDIT_AUTH_MODE: 'local',
     KAUDIT_DEV_USER_EMAIL: 'operator@example.test',
+    KAUDIT_LOCAL_PASSWORD_HASH:
+      'scrypt$c3ludGhldGljLXNhbHQ$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    KAUDIT_LOCAL_SESSION_SECRET:
+      'synthetic-session-secret-at-least-32-characters',
     KAUDIT_SECURE_HOST: '127.0.0.1',
   }
 }
@@ -20,6 +24,12 @@ test('accepts loopback-only local authentication outside production', () => {
   assert.equal(config.auth.mode, 'local')
   assert.equal(config.host, '127.0.0.1')
   assert.equal(config.database.password, 'synthetic-secret')
+  assert.equal(
+    config.auth.mode === 'local'
+      ? config.auth.sessionTtlSeconds
+      : null,
+    28_800,
+  )
 })
 
 test('accepts explicit loopback-only preview without OIDC or a user email', () => {

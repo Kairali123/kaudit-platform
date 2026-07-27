@@ -11,6 +11,10 @@ import type {
 } from '../auth/types.ts'
 import type { AuditEvent, AuditSink } from '../audit/types.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
+import {
+  createLocalPasswordHash,
+  issueLocalSession,
+} from '../auth/localSession.ts'
 import { createEnterpriseDashboardServer } from './enterpriseDashboardServer.ts'
 
 const config: RuntimeConfig = {
@@ -29,6 +33,14 @@ const config: RuntimeConfig = {
   auth: {
     mode: 'local',
     email: 'operator@example.test',
+    passwordHash: createLocalPasswordHash(
+      'synthetic-password',
+      Buffer.alloc(16, 3),
+    ),
+    sessionSecret:
+      'synthetic-session-secret-at-least-32-characters',
+    sessionCookie: 'kaudit_local_session',
+    sessionTtlSeconds: 3600,
   },
   releaseGates: {
     calibrationComplete: false,
@@ -54,6 +66,18 @@ const access: AccessRepository = {
   async readiness() {
     return true
   },
+}
+
+function localCookie(runtimeConfig: RuntimeConfig = config): string {
+  if (runtimeConfig.auth.mode !== 'local') {
+    throw new Error('Synthetic local config is required')
+  }
+  const token = issueLocalSession(
+    runtimeConfig.auth.email,
+    runtimeConfig.auth.sessionSecret,
+    runtimeConfig.auth.sessionTtlSeconds,
+  )
+  return `${runtimeConfig.auth.sessionCookie}=${encodeURIComponent(token)}`
 }
 
 async function withServer(
@@ -185,9 +209,33 @@ test('authenticated app routes serve the built shell with a script-safe CSP', as
     async (baseUrl) => {
       const login = await fetch(`${baseUrl}/login`)
       assert.equal(login.status, 200)
-      const page = await fetch(`${baseUrl}/billing`)
+      const unauthenticated = await fetch(`${baseUrl}/billing`, {
+        redirect: 'manual',
+      })
+      assert.equal(unauthenticated.status, 302)
+      assert.equal(unauthenticated.headers.get('location'), '/login')
+
+      const signIn = await fetch(`${baseUrl}/api/v1/auth/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({
+          email: 'operator@example.test',
+          password: 'synthetic-password',
+        }),
+      })
+      assert.equal(signIn.status, 200)
+      const cookie = signIn.headers
+        .get('set-cookie')
+        ?.split(';')[0]
+      assert.ok(cookie)
+
+      const page = await fetch(`${baseUrl}/billing`, {
+        headers: { cookie },
+      })
       assert.equal(page.status, 200)
-      const imports = await fetch(`${baseUrl}/imports/new`)
+      const imports = await fetch(`${baseUrl}/imports/new`, {
+        headers: { cookie },
+      })
       assert.equal(imports.status, 403)
       assert.match(
         page.headers.get('content-security-policy') ?? '',
@@ -199,8 +247,51 @@ test('authenticated app routes serve the built shell with a script-safe CSP', as
         asset.headers.get('content-type'),
         'text/javascript; charset=utf-8',
       )
+
+      const logout = await fetch(`${baseUrl}/logout`, {
+        redirect: 'manual',
+        headers: { cookie },
+      })
+      assert.equal(logout.status, 302)
+      assert.match(
+        logout.headers.get('set-cookie') ?? '',
+        /Max-Age=0/,
+      )
     },
     root,
+  )
+})
+
+test('local login rejects an invalid password without issuing a session', async () => {
+  await withServer(
+    {
+      async record() {},
+      async readiness() {
+        return true
+      },
+    },
+    async (baseUrl) => {
+      const authConfig = await fetch(
+        `${baseUrl}/api/v1/auth/config`,
+      )
+      const publicConfig =
+        (await authConfig.json()) as Record<string, unknown>
+      assert.equal(publicConfig.passwordLoginSupported, true)
+
+      const response = await fetch(
+        `${baseUrl}/api/v1/auth/login`,
+        {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({
+            email: 'operator@example.test',
+            password: 'wrong-password',
+          }),
+        },
+      )
+      assert.equal(response.status, 401)
+      assert.equal(response.headers.get('set-cookie'), null)
+    },
   )
 })
 
@@ -276,7 +367,10 @@ test('local authenticated me endpoint enforces role lookup and audits access', a
     },
     async (baseUrl) => {
       const response = await fetch(`${baseUrl}/api/v1/me`, {
-        headers: { 'x-correlation-id': 'synthetic-request-1' },
+        headers: {
+          'x-correlation-id': 'synthetic-request-1',
+          cookie: localCookie(),
+        },
       })
       assert.equal(response.status, 200)
       assert.equal(response.headers.get('x-correlation-id'), 'synthetic-request-1')
@@ -301,7 +395,9 @@ test('protected response fails closed when the audit sink is unavailable', async
       },
     },
     async (baseUrl) => {
-      const response = await fetch(`${baseUrl}/api/v1/me`)
+      const response = await fetch(`${baseUrl}/api/v1/me`, {
+        headers: { cookie: localCookie() },
+      })
       assert.equal(response.status, 500)
       const body = (await response.json()) as Record<string, unknown>
       assert.equal(body.code, 'INTERNAL_ERROR')
@@ -322,7 +418,9 @@ test('overview API is page-scoped and never exposes raw call content', async () 
       },
     },
     async (baseUrl) => {
-      const response = await fetch(`${baseUrl}/api/v1/overview`)
+      const response = await fetch(`${baseUrl}/api/v1/overview`, {
+        headers: { cookie: localCookie() },
+      })
       assert.equal(response.status, 200)
       const body = (await response.json()) as Record<string, unknown>
       assert.ok(Array.isArray(body.tiles))
@@ -350,9 +448,12 @@ test('audit monitor is admin-only and excludes raw content fields', async () => 
     async (baseUrl) => {
       const deniedPage = await fetch(`${baseUrl}/audits`, {
         redirect: 'manual',
+        headers: { cookie: localCookie() },
       })
       assert.equal(deniedPage.status, 403)
-      const denied = await fetch(`${baseUrl}/api/v1/audits`)
+      const denied = await fetch(`${baseUrl}/api/v1/audits`, {
+        headers: { cookie: localCookie() },
+      })
       assert.equal(denied.status, 403)
       const problem = (await denied.json()) as Record<string, unknown>
       assert.equal(problem.code, 'PERMISSION_DENIED')
@@ -383,7 +484,9 @@ test('audit monitor is admin-only and excludes raw content fields', async () => 
       },
     },
     async (baseUrl) => {
-      const allowed = await fetch(`${baseUrl}/api/v1/audits`)
+      const allowed = await fetch(`${baseUrl}/api/v1/audits`, {
+        headers: { cookie: localCookie() },
+      })
       assert.equal(allowed.status, 200)
       const body = await allowed.json()
       const keys = new Set<string>()

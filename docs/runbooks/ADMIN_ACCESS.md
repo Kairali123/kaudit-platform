@@ -10,7 +10,7 @@ full-access role. Health-sensitive content is controlled separately by
 `kaudit_user.max_sensitivity_tier`; the highest viewable tier is `K3`. `K4`
 payment/authentication content is never viewable.
 
-The application does not store passwords. Production authentication must be
+The application does not store plaintext passwords. Production authentication must be
 provided by the approved Kairali OIDC identity provider with MFA. The
 administrator's OIDC issuer and subject must be bound to the pre-provisioned
 `kaudit_user` before production login.
@@ -43,9 +43,14 @@ Local mode is for development on this computer only:
 ```dotenv
 KAUDIT_AUTH_MODE=local
 KAUDIT_DEV_USER_EMAIL=person@kairali.com
+KAUDIT_LOCAL_PASSWORD_HASH=scrypt$<salt>$<digest>
+KAUDIT_LOCAL_SESSION_SECRET=<at-least-32-random-characters>
+KAUDIT_LOCAL_SESSION_COOKIE=kaudit_local_session
+KAUDIT_LOCAL_SESSION_TTL_SEC=28800
 ```
 
-The ignored `.env.local` may hold these non-secret local identity settings while
-database credentials remain in `.env`. Run `npm run app:start`. Local mode never
-accepts a password and is rejected on non-loopback hosts or in production. Do
-not expose it over a network.
+The ignored `.env.local` holds the local identity, one-way password hash, and
+random session secret while database credentials remain in `.env`. It must stay
+mode `0600` and must never be committed. Run `npm run app:start`. Local mode is
+rejected on non-loopback hosts and in production. Do not expose it over a
+network; production requires OIDC with MFA.
