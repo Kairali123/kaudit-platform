@@ -14,6 +14,8 @@
 - Added a public `/login` page, public non-sensitive auth configuration endpoint,
   protected-page redirects, and validated Kairali SSO login URL support without adding
   app-owned password authentication.
+- Added a visible top-bar logout action and `/logout` route. Preview/local sessions
+  return to login; OIDC logout redirects only to a validated HTTPS provider endpoint.
 - Preserved visible D-03, calibration, D-12, and K2/K3 authority warnings.
 - Added production configuration validation and fail-closed OIDC authentication.
 - Added database-backed role authorization for the aggregate dashboard.

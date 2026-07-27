@@ -29,6 +29,7 @@ export interface AuthConfig {
   mode: 'oidc' | 'local' | 'preview'
   providerLabel: string
   loginUrl: string | null
+  logoutUrl: string | null
   accessControlEnforced: boolean
   passwordLoginSupported: false
 }

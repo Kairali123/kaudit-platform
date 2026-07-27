@@ -26,6 +26,9 @@ findings, billing, or snapshot payloads.
 - `/login` and `/api/v1/auth/config` are public; they expose no business data.
 - In OIDC mode, the button uses the validated HTTPS `KAUDIT_OIDC_LOGIN_URL` owned by
   Kairali's identity provider or approved identity-aware proxy.
+- The top-bar logout button calls `/logout`. OIDC mode delegates session termination
+  to the validated HTTPS `KAUDIT_OIDC_LOGOUT_URL`; local/preview mode returns to
+  `/login`.
 - In local mode, the button continues with the configured, already-provisioned user.
 - In preview mode, the page is visibly labeled unauthenticated and offers only the
   loopback preview entry.
@@ -85,6 +88,7 @@ For OIDC browser login, configure:
 
 ```text
 KAUDIT_OIDC_LOGIN_URL=https://<approved-kairali-identity-entry>
+KAUDIT_OIDC_LOGOUT_URL=https://<approved-kairali-session-endpoint>
 ```
 
 The identity provider/proxy must return a validated bearer token or secure HttpOnly

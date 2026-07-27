@@ -134,6 +134,13 @@ test('preview mode uses a non-authorizing identity and never writes access audit
         (await authConfig.json()) as Record<string, unknown>
       assert.equal(publicConfig.mode, 'preview')
       assert.equal(publicConfig.passwordLoginSupported, false)
+      assert.equal(publicConfig.logoutUrl, '/login')
+
+      const logout = await fetch(`${baseUrl}/logout`, {
+        redirect: 'manual',
+      })
+      assert.equal(logout.status, 302)
+      assert.equal(logout.headers.get('location'), '/login')
 
       const me = await fetch(`${baseUrl}/api/v1/me`)
       assert.equal(me.status, 200)
@@ -211,6 +218,7 @@ test('unauthenticated OIDC browser navigation redirects to the public login page
       audience: 'kaudit',
       jwksUri: 'https://identity.example.test/jwks',
       loginUrl: 'https://identity.example.test/login',
+      logoutUrl: 'https://identity.example.test/logout',
       tokenCookie: 'kaudit_session',
       algorithms: ['RS256'],
     },
@@ -234,6 +242,15 @@ test('unauthenticated OIDC browser navigation redirects to the public login page
 
       const api = await fetch(`${baseUrl}/api/v1/me`)
       assert.equal(api.status, 401)
+
+      const logout = await fetch(`${baseUrl}/logout`, {
+        redirect: 'manual',
+      })
+      assert.equal(logout.status, 302)
+      assert.equal(
+        logout.headers.get('location'),
+        'https://identity.example.test/logout',
+      )
     },
     root,
     oidcConfig,

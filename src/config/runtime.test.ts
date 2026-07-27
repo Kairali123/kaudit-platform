@@ -102,6 +102,36 @@ test('validates an optional browser login URL as HTTPS', () => {
   )
 })
 
+test('validates an optional browser logout URL as HTTPS', () => {
+  const oidc = {
+    ...base(),
+    KAUDIT_AUTH_MODE: 'oidc',
+    KAUDIT_OIDC_ISSUER: 'https://identity.example.test',
+    KAUDIT_OIDC_AUDIENCE: 'kaudit-api',
+    KAUDIT_OIDC_JWKS_URI: 'https://identity.example.test/jwks',
+  }
+  assert.throws(
+    () =>
+      loadRuntimeConfig({
+        ...oidc,
+        KAUDIT_OIDC_LOGOUT_URL:
+          'http://identity.example.test/logout',
+      }),
+    /KAUDIT_OIDC_LOGOUT_URL must be an HTTPS URL/,
+  )
+  const config = loadRuntimeConfig({
+    ...oidc,
+    KAUDIT_OIDC_LOGOUT_URL:
+      'https://identity.example.test/logout',
+  })
+  assert.equal(
+    config.auth.mode === 'oidc'
+      ? config.auth.logoutUrl
+      : null,
+    'https://identity.example.test/logout',
+  )
+})
+
 test('K2/K3 automation fails closed without completed calibration and named owner', () => {
   const env = {
     ...base(),

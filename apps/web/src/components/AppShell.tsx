@@ -5,6 +5,7 @@ import {
   FileChartColumn,
   Gauge,
   Home,
+  LogOut,
   Menu,
   Shield,
   ShieldCheck,
@@ -14,7 +15,11 @@ import {
 import { useQuery } from '@tanstack/react-query'
 import { useState } from 'react'
 import { NavLink, Outlet } from 'react-router-dom'
-import { getJson, type Profile } from '../lib/api'
+import {
+  getJson,
+  type AuthConfig,
+  type Profile,
+} from '../lib/api'
 
 const navigation = [
   { to: '/', label: 'Home', icon: Home, end: true },
@@ -31,6 +36,12 @@ export function AppShell() {
   const profile = useQuery({
     queryKey: ['me'],
     queryFn: () => getJson<Profile>('/api/v1/me'),
+  }).data
+  const auth = useQuery({
+    queryKey: ['auth-config'],
+    queryFn: () =>
+      getJson<AuthConfig>('/api/v1/auth/config'),
+    staleTime: 60_000,
   }).data
   const secured = profile?.accessControlEnforced === true
   return (
@@ -102,6 +113,16 @@ export function AppShell() {
                 : 'Access control not enforced'}
             </span>
             <Shield size={16} aria-label="Session managed by identity provider" />
+            {auth?.logoutUrl && (
+              <a className="logout-button" href="/logout">
+                <LogOut size={15} aria-hidden />
+                <span>
+                  {auth.mode === 'preview'
+                    ? 'Exit preview'
+                    : 'Log out'}
+                </span>
+              </a>
+            )}
           </div>
         </div>
         <main className="page">

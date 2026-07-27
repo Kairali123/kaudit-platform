@@ -128,6 +128,13 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .82rem; }
 .environment { display: flex; align-items: center; gap: 8px; color: #40545d; font-size: .78rem; font-weight: 650; }
 .environment > span { width: 7px; height: 7px; border-radius: 50%; background: #2fa477; box-shadow: 0 0 0 3px #ddf3ea; }
 .topbar-right { display: flex; align-items: center; gap: 13px; color: var(--muted); font-size: .75rem; }
+.logout-button {
+  display: inline-flex; align-items: center; gap: 6px; padding: 7px 9px;
+  color: #40545d; background: #f7f9f8; border: 1px solid var(--line);
+  text-decoration: none; font-size: .7rem; font-weight: 700;
+}
+.logout-button:hover { color: var(--teal); border-color: #9fc9c2; }
+.logout-button:focus-visible { outline: 3px solid rgba(19,124,114,.2); outline-offset: 2px; }
 .page { max-width: 1320px; margin: 0 auto; padding: 44px 44px 70px; }
 .page-header { display: flex; align-items: flex-end; justify-content: space-between; gap: 30px; margin-bottom: 27px; }
 .eyebrow { color: var(--teal); text-transform: uppercase; letter-spacing: .12em; font-size: .68rem; font-weight: 800; }

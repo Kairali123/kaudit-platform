@@ -274,6 +274,7 @@ function publicAuthConfig(dependencies: Dependencies): unknown {
           ? 'Configured local user'
           : 'Local preview',
     loginUrl: auth.mode === 'oidc' ? auth.loginUrl : null,
+    logoutUrl: auth.mode === 'oidc' ? auth.logoutUrl : '/login',
     accessControlEnforced: auth.mode !== 'preview',
     passwordLoginSupported: false,
   }
@@ -474,6 +475,7 @@ export function createEnterpriseDashboardServer(
       API_ROUTES.has(url.pathname) ||
       PUBLIC_API_ROUTES.has(url.pathname) ||
       APP_ROUTES.has(url.pathname) ||
+      url.pathname === '/logout' ||
       url.pathname.startsWith('/assets/')
     if (!isKnownRoute) {
       problem(
@@ -483,6 +485,29 @@ export function createEnterpriseDashboardServer(
         'Not found',
         correlation,
       )
+      return
+    }
+
+    if (url.pathname === '/logout') {
+      const auth = dependencies.config.auth
+      const location =
+        auth.mode === 'oidc' ? auth.logoutUrl : '/login'
+      if (!location) {
+        problem(
+          response,
+          503,
+          'LOGOUT_NOT_CONFIGURED',
+          'Logout is not configured',
+          correlation,
+        )
+        return
+      }
+      response.writeHead(302, {
+        ...HTML_SECURITY_HEADERS,
+        location,
+        'x-correlation-id': correlation,
+      })
+      response.end()
       return
     }
 
