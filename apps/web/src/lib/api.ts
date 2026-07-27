@@ -218,3 +218,73 @@ export async function getJson<T>(path: string): Promise<T> {
   }
   return response.json() as Promise<T>
 }
+
+export interface ImportStatus {
+  enabled: boolean
+  storageBoundary: string
+  recentBatches: Array<{
+    id: string
+    type: string
+    periodStart: string | null
+    periodEnd: string | null
+    status: string
+    received: number
+    accepted: number
+    rejected: number
+    duplicates: number
+    startedAt: string
+  }>
+  recentInvoices: Array<{
+    id: string
+    invoiceNumber: string
+    periodStart: string
+    periodEnd: string
+    totalAmount: string
+    status: string
+  }>
+}
+
+export interface ImportResult {
+  outcome: 'imported' | 'duplicate'
+  referenceId: string
+  received: number
+  accepted: number
+  duplicates: number
+  auditJobsQueued: number
+  missingRecordingUrls: number
+}
+
+export async function postFile<T>(
+  path: string,
+  file: File,
+  metadata: Record<string, string>,
+): Promise<T> {
+  const response = await fetch(path, {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      accept: 'application/json',
+      'content-type': file.type || 'application/octet-stream',
+      'x-kaudit-filename': file.name,
+      ...Object.fromEntries(
+        Object.entries(metadata).map(([name, value]) => [
+          `x-kaudit-${name}`,
+          value,
+        ]),
+      ),
+    },
+    body: file,
+  })
+  const correlationId = response.headers.get('x-correlation-id')
+  if (!response.ok) {
+    let message = 'The upload could not be completed.'
+    try {
+      const problem = (await response.json()) as { title?: string }
+      message = problem.title || message
+    } catch {
+      // Keep the privacy-safe fallback.
+    }
+    throw new ApiError(message, response.status, correlationId)
+  }
+  return response.json() as Promise<T>
+}

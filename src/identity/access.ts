@@ -30,6 +30,7 @@ export const ADMIN_ONLY_PERMISSIONS: readonly string[] = [
   'user:manage',
   'config:manage',
   'connection:manage',
+  'import:write',
   'sensitivity:grant', // grant/change a user's max_sensitivity_tier (audited)
   'billing:approve',
   'reconciliation:close',

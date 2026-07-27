@@ -37,6 +37,11 @@ test('merges fragments using the approved pause, duration, and character limits'
 
 test('classification validation rejects impossible conversation ends', () => {
   const raw: ModelClassification = {
+    model: {
+      provider: 'openai',
+      name: 'synthetic-classifier',
+      version: 'synthetic-v1',
+    },
     category: 'OK',
     confidence: '0.90000000',
     customerBlockNumbers: [2],
@@ -98,6 +103,11 @@ test('read-only audit hashes audio, classifies, and projects without a repositor
     },
     async classify() {
       return {
+        model: {
+          provider: 'openai',
+          name: 'synthetic-classifier',
+          version: 'synthetic-v1',
+        },
         category: 'OK',
         confidence: '0.90000000',
         customerBlockNumbers: [2],

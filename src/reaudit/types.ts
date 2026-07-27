@@ -52,6 +52,11 @@ export interface NaturalSpeechBlock {
 }
 
 export interface ModelClassification {
+  model: {
+    provider: 'openai'
+    name: string
+    version: string
+  }
   category: ReauditCategory
   confidence: string
   customerBlockNumbers: number[]
@@ -107,6 +112,8 @@ export interface ReauditItemResult {
     | 'transcription_failed'
     | 'classification_failed'
   analysis?: ReauditAnalysis
+  transcription?: TranscriptionResult
+  classification?: ModelClassification
   projection?: ReauditProjection
   errorCode?: string
 }

@@ -1,10 +1,12 @@
 import fs from 'node:fs'
+import path from 'node:path'
 import mysql from 'mysql2/promise'
 import { createMysqlAccessRepository } from '../adapters/mysqlAccessRepo.ts'
 import { createMysqlAuditSink } from '../adapters/mysqlAuditSink.ts'
 import { createOidcVerifier } from '../auth/oidcVerifier.ts'
 import { loadRuntimeConfig } from '../config/runtime.ts'
 import { createEnterpriseDashboardServer } from '../http/enterpriseDashboardServer.ts'
+import { createMysqlCycleImportService } from '../adapters/mysqlCycleImport.ts'
 
 const config = loadRuntimeConfig(process.env)
 const ssl = config.database.sslCaFile
@@ -27,6 +29,19 @@ const pool = mysql.createPool({
 })
 const access = createMysqlAccessRepository(pool)
 const audit = createMysqlAuditSink(pool)
+const imports = createMysqlCycleImportService(pool, {
+  root: path.resolve(
+    process.env.KAUDIT_IMPORT_ROOT?.trim() || '.data/imports',
+  ),
+  sourceConnectionId:
+    process.env.KAUDIT_KSERVE_SOURCE_CONNECTION_ID?.trim() || null,
+  allowedRecordingHosts: (
+    process.env.KAUDIT_ALLOWED_RECORDING_HOSTS || ''
+  )
+    .split(',')
+    .map((value) => value.trim())
+    .filter(Boolean),
+})
 const verifier =
   config.auth.mode === 'oidc'
     ? createOidcVerifier({
@@ -41,6 +56,7 @@ const server = createEnterpriseDashboardServer({
   pool,
   access,
   audit,
+  imports,
   verifier,
 })
 let shuttingDown = false

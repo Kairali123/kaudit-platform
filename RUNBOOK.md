@@ -14,7 +14,8 @@ until you set the explicit `EXECUTE` switch.
 
 - **Node ≥ 24** and `npm install` in this repo.
 - **`.env`** (gitignored — **never** put real values in `.env.example`), copied from
-  `.env.example`, with real `DB_*`, `KAUDIT_SOURCE_RAW_ROOT`, and the allowlist/proxy set.
+  `.env.example`, with real `DB_*` and the allowlist/proxy set. The historical
+  `KAUDIT_SOURCE_RAW_ROOT` tool is not part of normal runtime processing.
   The npm scripts auto-load `.env` (`--env-file-if-exists`); no manual `--env-file` needed.
 - **Rotate the DB password** that was exposed earlier before using it here.
 - Run against a **low-traffic window**; keep batches small at first.
@@ -54,9 +55,11 @@ normalizes plain/signed/proxy-wrapped → canonical S3 object URL).
 The backfill reads **one file per call** at
 `{KAUDIT_SOURCE_RAW_ROOT}/raw/{batchUUID}/{taskId}.json`, matched by the call's
 `logical_call_key` (the taskId, e.g. `T…`) across the batch-UUID subfolders. So
-`KAUDIT_SOURCE_RAW_ROOT` must be the directory that *contains* `raw/` (e.g.
-`../kcrm/.data/kaudit-evidence`). It handles both a flat record and a `{taskId: {…}}`
-wrapper.
+`KAUDIT_SOURCE_RAW_ROOT` must be a **Kaudit-owned** directory that contains
+`raw/` (for example `.data/legacy-raw-imports`). Never point the running
+platform at KCRM. If historical export recovery is ever required, copy an
+approved snapshot into this private Kaudit directory first. The tool handles
+both a flat record and a `{taskId: {…}}` wrapper.
 
 ```bash
 # DRY-RUN — confirms KAUDIT_SOURCE_RAW_ROOT resolves the raw exports and shows what WOULD

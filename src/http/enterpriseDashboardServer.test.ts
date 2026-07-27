@@ -187,6 +187,8 @@ test('authenticated app routes serve the built shell with a script-safe CSP', as
       assert.equal(login.status, 200)
       const page = await fetch(`${baseUrl}/billing`)
       assert.equal(page.status, 200)
+      const imports = await fetch(`${baseUrl}/imports/new`)
+      assert.equal(imports.status, 403)
       assert.match(
         page.headers.get('content-security-policy') ?? '',
         /script-src 'self'/,

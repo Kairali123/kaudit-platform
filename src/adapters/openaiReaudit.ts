@@ -216,6 +216,11 @@ ${transcript}`,
         dispute_recommended: boolean
       }
       return {
+        model: {
+          provider: 'openai',
+          name: REAUDIT_CLASSIFICATION_MODEL,
+          version: REAUDIT_CLASSIFICATION_MODEL,
+        },
         category: raw.category,
         confidence: fixedConfidence(raw.confidence),
         customerBlockNumbers: raw.customer_block_numbers,

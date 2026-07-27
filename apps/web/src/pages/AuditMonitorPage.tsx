@@ -57,6 +57,7 @@ export function AuditMonitorPage() {
     queryKey: ['audit-monitor', page, category, language],
     queryFn: () =>
       getJson<AuditMonitorData>(`/api/v1/audits?${queryString}`),
+    refetchInterval: 15_000,
   })
   const tiles = useMemo<Tile[]>(() => {
     const summary = query.data?.summary

@@ -36,14 +36,42 @@ KAUDIT_REAUDIT_LIMIT=5 npm run reaudit:sample
 The initial real sample completed 5/5 with no processing errors. Its output is
 not a calibration result and is not authoritative.
 
+## Persistent audit worker
+
+This worker belongs entirely to `kaudit-platform`. It reads only shared MySQL
+`kaudit_*` rows and `kaudit_call_artifact.source_url`; it never reads the KCRM
+folder.
+
+Run a bounded first batch:
+
+```bash
+KAUDIT_AUDIT_MODE=EXECUTE KAUDIT_AUDIT_BATCH=10 \
+  KAUDIT_AUDIT_WATCH=false npm run audit:worker
+```
+
+After inspecting `/audits`, keep it running for new/due calls:
+
+```bash
+KAUDIT_AUDIT_MODE=EXECUTE KAUDIT_AUDIT_BATCH=10 \
+  KAUDIT_AUDIT_WATCH=true npm run audit:worker
+```
+
+The candidate query excludes every already-audited call, including the 224
+legacy results. Success persists the evidence hash, Whisper and classifier
+model/version, classifier ruleset hash/version, confidence, timestamp,
+transcript segments, media metrics, finding, and completed audit run. Failures
+receive bounded exponential retries; altered evidence and unsafe URLs are
+terminal visible findings. A MySQL advisory lock prevents two full workers from
+running concurrently.
+
 ## Full-run gates
 
 Do not launch a full paid run until all of the following are true:
 
-1. Migration `0006_verified_billing_trace.sql` has Data + Finance approval and
-   has been applied and verified.
-2. A resumable writer persists each result, model/version, classifier and billing
-   ruleset hashes, confidence, evidence SHA-256, timestamp, and failure state.
+1. Audit persistence requires migrations 0002 and 0005. Migration 0006 remains
+   required before authoritative verified-billing decisions are written.
+2. The resumable audit writer is implemented; verify it in staging before the
+   full paid run.
 3. A named finance approver publishes a new immutable rate-card version. Never
    convert the legacy draft card in place.
 4. Per-language/per-finding calibration has produced approved thresholds.

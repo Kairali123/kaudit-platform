@@ -9,6 +9,7 @@ import { OperationsPage } from './pages/OperationsPage'
 import { OverviewPage } from './pages/OverviewPage'
 import { ReportsPage } from './pages/ReportsPage'
 import { AuditMonitorPage } from './pages/AuditMonitorPage'
+import { ImportPage } from './pages/ImportPage'
 
 export function App() {
   return (
@@ -23,6 +24,7 @@ export function App() {
         <Route path="reports" element={<ReportsPage />} />
         <Route path="operations" element={<OperationsPage />} />
         <Route path="audits" element={<AuditMonitorPage />} />
+        <Route path="imports/new" element={<ImportPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

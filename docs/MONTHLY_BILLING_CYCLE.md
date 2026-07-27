@@ -31,24 +31,27 @@ The supported source contract is one row per KServe task with:
 - Duration (seconds) Without Ringing
 - Duration (minutes)
 
-The production import path will be:
+The implemented CSV import path is:
 
-1. An admin uploads the monthly KServe workbook/CSV through the platform's
-   cycle-import page (or a future approved service account delivers the same
-   file).
+1. An admin uploads the monthly KServe CSV and invoice PDF at `/imports/new`.
+   XLSX must currently be exported to CSV first.
 2. The server computes a file hash and creates one
    `kaudit_ingestion_batch`. Re-uploading identical bytes replays the existing
    result instead of creating duplicate calls.
-3. Header/schema validation runs before row writes. Invalid rows create
-   `kaudit_normalization_issue` records and block the batch from completion.
+3. Header/schema validation runs before row writes. An invalid file is rejected
+   before SQL normalization starts.
 4. Accepted rows are normalized into `kaudit_call`,
    `kaudit_call_external_reference`, call timing/provider-cost records, and
    `kaudit_call_artifact.source_url`.
-5. Each accepted call and its audit request are committed with an outbox
-   message in the same transaction.
+5. A row with an optional approved `Recording URL` is committed with an
+   idempotent audit-request outbox message. The locked eight-column sheet does
+   not contain recording URLs, so those calls remain explicitly without
+   recording evidence until a separate manifest/API feed supplies one.
 
-The application never continues its billing workflow from the user's local
-spreadsheet. SQL is the processing gate after import.
+Original files are content-addressed under `KAUDIT_IMPORT_ROOT` (default
+`.data/imports`, gitignored) and indexed by SHA-256. The application never reads
+KCRM source code or KCRM's local evidence folders. SQL is the processing gate
+after import.
 
 ## Automatic audit
 
@@ -65,10 +68,15 @@ The outbox publisher delivers one idempotent audit job per call. The worker:
 7. writes a final independent calculation only when calibration and the
    published rate card permit it.
 
-This is intended to start automatically after a successful import. The
-production write-side scheduler/executor is **not wired yet**; the repository
-currently has the read-only real-call shadow runner and tested pure/writer
-components.
+Run the persistent worker as a separate supervised process:
+
+```bash
+KAUDIT_AUDIT_MODE=EXECUTE KAUDIT_AUDIT_WATCH=true npm run audit:worker
+```
+
+Watch mode continues polling for newly imported/due calls. It skips any call
+already backed by a completed legacy or V2 audit. The dashboard process never
+starts paid OpenAI work merely because a user opens a page.
 
 ## Bill and report release
 
@@ -103,8 +111,9 @@ still pending implementation.
 | `Audit pending` bill withholding | Implemented |
 | Report-value withholding before audit completion | Implemented |
 | K2/K3-specific automation barrier | Retired |
-| Monthly workbook/CSV upload and normalization writer | Not implemented |
-| Automatic outbox-triggered full audit worker | Not implemented |
+| Monthly CSV upload and normalization writer | Implemented |
+| Resumable continuous full audit worker | Implemented; production execution not launched |
+| KServe recording manifest/API feed | Missing when the monthly CSV lacks Recording URL |
 | Cycle-close accepted-as-billed fallback writer | Not implemented |
 | Persisted D-12 snapshot generator | Not implemented |
 | PDF/Excel export and recipient notification | Not implemented |

@@ -46,12 +46,34 @@ export function createMysqlReauditReadRepo(pool: Pool) {
           AND ca.is_final = 1
          LEFT JOIN kaudit_provider_cost pc ON pc.call_id = c.id
          WHERE ca.source_url IS NOT NULL
-           AND (? = 1 OR NOT EXISTS (
-             SELECT 1
-             FROM kaudit_audit_run ar
-             WHERE ar.call_id = c.id
-               AND ar.engine_version = 'kairali-independent-reaudit/2.0.0'
-               AND ar.status = 'completed'
+           AND ca.audio_attempt_count < 8
+           AND (
+             ca.audio_next_attempt_at IS NULL
+             OR ca.audio_next_attempt_at <= current_timestamp(6)
+           )
+           AND ca.audio_processing_status NOT IN ('completed','exhausted')
+           AND (? = 1 OR (
+             NOT EXISTS (
+               SELECT 1
+               FROM kaudit_audit_run ar
+               WHERE ar.call_id = c.id
+                 AND ar.status = 'completed'
+             )
+             AND NOT (
+               c.canonical_outcome_code IS NOT NULL
+               AND EXISTS (
+                 SELECT 1 FROM kaudit_media_analysis ma
+                 WHERE ma.call_artifact_id = ca.id
+                   AND ma.status = 'completed'
+                   AND ma.classification_status = 'completed'
+               )
+               AND EXISTS (
+                 SELECT 1 FROM kaudit_transcript transcript
+                 WHERE transcript.call_id = c.id
+                   AND transcript.call_artifact_id = ca.id
+                   AND transcript.status = 'completed'
+               )
+             )
            ))
          GROUP BY c.id, ca.id, ca.source_url, ca.sha256
          ORDER BY c.billing_period_date, c.id

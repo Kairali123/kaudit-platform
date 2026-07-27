@@ -18,6 +18,7 @@ import type {
   TokenVerifier,
 } from '../auth/types.ts'
 import type { AuditSink } from '../audit/types.ts'
+import type { CycleImportService } from '../imports/types.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
 import {
   collectBilling,
@@ -49,6 +50,7 @@ interface Dependencies {
   access: AccessRepository
   audit: AuditSink
   verifier: TokenVerifier | null
+  imports?: CycleImportService
   webDistRoot?: string
 }
 
@@ -62,6 +64,7 @@ const APP_ROUTES = new Set([
   '/reports',
   '/operations',
   '/audits',
+  '/imports/new',
 ])
 
 const API_ROUTES = new Set([
@@ -73,9 +76,14 @@ const API_ROUTES = new Set([
   '/api/v1/reports',
   '/api/v1/operations',
   '/api/v1/audits',
+  '/api/v1/imports',
 ])
 
 const PUBLIC_API_ROUTES = new Set(['/api/v1/auth/config'])
+const IMPORT_WRITE_ROUTES = new Set([
+  '/api/v1/imports/usage',
+  '/api/v1/imports/invoice',
+])
 
 function userAgent(request: IncomingMessage): string | null {
   const value = request.headers['user-agent']
@@ -188,6 +196,40 @@ function sendJson(
     'x-correlation-id': correlation,
   })
   response.end(JSON.stringify(value))
+}
+
+async function readRequestBody(
+  request: IncomingMessage,
+  maximumBytes = 25 * 1024 * 1024,
+): Promise<Buffer> {
+  const chunks: Buffer[] = []
+  let size = 0
+  for await (const chunk of request) {
+    const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)
+    size += bytes.byteLength
+    if (size > maximumBytes) {
+      const error = new Error('Upload exceeds the 25 MB limit')
+      Object.assign(error, { code: 'UPLOAD_TOO_LARGE', status: 413 })
+      throw error
+    }
+    chunks.push(bytes)
+  }
+  if (size === 0) {
+    const error = new Error('Upload is empty')
+    Object.assign(error, { code: 'EMPTY_UPLOAD', status: 400 })
+    throw error
+  }
+  return Buffer.concat(chunks)
+}
+
+function header(request: IncomingMessage, name: string): string {
+  const value = request.headers[name]
+  if (typeof value !== 'string' || !value.trim()) {
+    const error = new Error(`${name} is required`)
+    Object.assign(error, { code: 'INVALID_IMPORT_REQUEST', status: 400 })
+    throw error
+  }
+  return value.trim()
 }
 
 function releaseGates(
@@ -399,11 +441,18 @@ async function apiResponse(
       language: safeFilter('language'),
     })
   }
+  if (pathname === '/api/v1/imports') {
+    if (!dependencies.imports) {
+      throw new Error('Cycle import service is not configured')
+    }
+    return dependencies.imports.status()
+  }
   throw new Error('Unsupported API route')
 }
 
 function apiPermission(pathname: string): string {
   if (pathname === '/api/v1/audits') return 'audit:inspect'
+  if (pathname.startsWith('/api/v1/imports')) return 'import:write'
   return pathname === '/api/v1/reports'
     ? 'snapshot:read'
     : 'metrics:read'
@@ -454,7 +503,20 @@ export function createEnterpriseDashboardServer(
       request.headers['x-correlation-id'],
     )
     const url = requestUrl(request)
-    if (request.method !== 'GET') {
+    const isImportPost =
+      request.method === 'POST' &&
+      IMPORT_WRITE_ROUTES.has(url.pathname)
+    if (request.method === 'GET' && IMPORT_WRITE_ROUTES.has(url.pathname)) {
+      problem(
+        response,
+        405,
+        'METHOD_NOT_ALLOWED',
+        'Method not allowed',
+        correlation,
+      )
+      return
+    }
+    if (request.method !== 'GET' && !isImportPost) {
       problem(
         response,
         405,
@@ -510,6 +572,7 @@ export function createEnterpriseDashboardServer(
     const isKnownRoute =
       API_ROUTES.has(url.pathname) ||
       PUBLIC_API_ROUTES.has(url.pathname) ||
+      IMPORT_WRITE_ROUTES.has(url.pathname) ||
       APP_ROUTES.has(url.pathname) ||
       url.pathname === '/logout' ||
       url.pathname.startsWith('/assets/')
@@ -581,6 +644,47 @@ export function createEnterpriseDashboardServer(
     let context: AuthContext | null = null
     try {
       context = await authenticate(request, dependencies)
+      if (isImportPost) {
+        requirePermission(context, 'import:write')
+        if (!dependencies.imports) {
+          throw new Error('Cycle import service is not configured')
+        }
+        const bytes = await readRequestBody(request)
+        const filename = header(request, 'x-kaudit-filename')
+        const body =
+          url.pathname === '/api/v1/imports/usage'
+            ? await dependencies.imports.importUsage({
+                bytes,
+                filename,
+                periodStart: header(request, 'x-kaudit-period-start'),
+                periodEnd: header(request, 'x-kaudit-period-end'),
+                correlationId: correlation,
+              })
+            : await dependencies.imports.importInvoice({
+                bytes,
+                filename,
+                invoiceNumber: header(request, 'x-kaudit-invoice-number'),
+                invoiceDate: header(request, 'x-kaudit-invoice-date'),
+                periodStart: header(request, 'x-kaudit-period-start'),
+                periodEnd: header(request, 'x-kaudit-period-end'),
+                subtotalAmount: header(request, 'x-kaudit-subtotal-amount'),
+                taxAmount: header(request, 'x-kaudit-tax-amount'),
+                totalAmount: header(request, 'x-kaudit-total-amount'),
+                correlationId: correlation,
+              })
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          url.pathname.endsWith('/usage')
+            ? 'usage_import.create'
+            : 'invoice_import.create',
+        )
+        sendJson(response, correlation, body)
+        return
+      }
       if (API_ROUTES.has(url.pathname)) {
         requirePermission(context, apiPermission(url.pathname))
         const action =
@@ -605,7 +709,11 @@ export function createEnterpriseDashboardServer(
       }
       requirePermission(
         context,
-        url.pathname === '/audits' ? 'audit:inspect' : 'metrics:read',
+        url.pathname === '/audits'
+          ? 'audit:inspect'
+          : url.pathname === '/imports/new'
+            ? 'import:write'
+            : 'metrics:read',
       )
       if (url.pathname.startsWith('/assets/')) {
         const served = await serveApp(
@@ -689,6 +797,25 @@ export function createEnterpriseDashboardServer(
           correlation,
         )
       } else {
+        const shaped = error as {
+          status?: number
+          code?: string
+          message?: string
+        }
+        if (
+          typeof shaped.status === 'number' &&
+          shaped.status >= 400 &&
+          shaped.status < 500
+        ) {
+          problem(
+            response,
+            shaped.status,
+            shaped.code ?? 'INVALID_REQUEST',
+            shaped.message ?? 'Invalid request',
+            correlation,
+          )
+          return
+        }
         problem(
           response,
           500,

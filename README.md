@@ -5,6 +5,8 @@ Decoupled application for the **Kairali Voice Agent Call Audit & Billing Platfor
 Separate from the KCRM Next.js app (per the architecture's "audit system is its own
 system" principle). Connects to the **same MySQL** (`kaudit_*` tables) — a data-location
 decision made by the director — but the audit logic lives here, not inside the CRM app.
+KCRM is not a runtime source: this application never imports its code or reads its
+local evidence folders.
 
 Architecture package: `../voice-agent-call-audit-architecture`.
 
@@ -113,3 +115,21 @@ Use `npm run app:preview` for the built local preview on `127.0.0.1:4176`.
 
 After identity migrations and user/OIDC provisioning, use `npm run app:dev:secure`
 or `npm run app:start`. See `docs/ENTERPRISE_APP.md`.
+
+## Monthly import and continuous audit
+
+An administrator uploads the KServe usage CSV and invoice PDF at
+`/imports/new`. Original bytes are content-addressed under the private,
+gitignored `KAUDIT_IMPORT_ROOT` and normalized into the shared `kaudit_*`
+tables. A usage row may include an optional `Recording URL`; without a
+recording URL the call is retained but cannot enter audio audit.
+
+Run the audit worker as its own supervised process:
+
+```bash
+KAUDIT_AUDIT_MODE=EXECUTE KAUDIT_AUDIT_WATCH=true npm run audit:worker
+```
+
+It processes only recording-backed, unaudited calls and skips every call that
+already has a completed audit. Opening the dashboard never starts paid OpenAI
+work.

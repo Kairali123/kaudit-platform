@@ -201,6 +201,7 @@ export async function auditOneCall(options: {
       DURATION_TOLERANCE_MS
 
   let analysis: ReauditAnalysis
+  let modelClassification: ModelClassification | null = null
   if (transcript.segments.length === 0 || !transcript.text.trim()) {
     analysis = {
       category: 'INACTIVE_CALL',
@@ -242,6 +243,7 @@ export async function auditOneCall(options: {
         errorCode: String((error as Error)?.message || error).slice(0, 500),
       }
     }
+    modelClassification = classification
     const roleSpeech = speechByRole(blocks, classification)
     analysis = {
       category: classification.category,
@@ -267,6 +269,25 @@ export async function auditOneCall(options: {
     artifactId: candidate.artifactId,
     outcome: 'projected',
     analysis,
+    transcription: transcript,
+    classification:
+      transcript.segments.length === 0 || !transcript.text.trim()
+        ? {
+            model: {
+              provider: 'openai',
+              name: 'deterministic-no-speech',
+              version: REAUDIT_ENGINE_VERSION,
+            },
+            category: 'INACTIVE_CALL',
+            confidence: '1.00000000',
+            customerBlockNumbers: [],
+            unclearBlockNumbers: [],
+            customerSpoke: false,
+            lastMeaningfulCustomerExchangeMs: null,
+            remarks: analysis.remarks,
+            disputeRecommended: analysis.disputeRecommended,
+          }
+        : (modelClassification as ModelClassification),
     projection: projectVerifiedCharge(analysis),
   }
 }

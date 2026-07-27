@@ -1,5 +1,23 @@
 # Implementation status
 
+## Self-contained import and persistent audit worker — 2026-07-27
+
+- ✅ Added admin-only `/imports/new` for monthly KServe usage CSV and invoice
+  PDF.
+- ✅ Uploads are content-addressed under Kaudit's own private
+  `KAUDIT_IMPORT_ROOT`; no runtime path reads KCRM.
+- ✅ Usage imports validate the locked column contract, deduplicate by file
+  hash and task ID, normalize calls/timing/vendor duration claims into SQL, and
+  enqueue audit requests for rows carrying an approved recording URL.
+- ✅ Added a resumable persistent audit worker. It skips all already-audited
+  calls, persists model/ruleset/confidence/evidence hashes and timestamps, and
+  applies bounded retry state to failures.
+- ⚠️ The locked KServe monthly sheet has no Recording URL column. It can be
+  imported, but a separate recording manifest/API feed (or an added optional
+  Recording URL column) is necessary for those calls to enter audio audit.
+- ⚠️ The worker has not been launched against production calls in this change.
+  Final billing remains gated by calibration and D-03 rate-card publication.
+
 ## Full-call re-audit preflight — 2026-07-27
 
 - ✅ Read-only production preflight confirms only 224/43,245 calls have a

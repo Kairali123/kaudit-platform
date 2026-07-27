@@ -11,6 +11,7 @@ import {
   ShieldCheck,
   Sparkles,
   ScanSearch,
+  UploadCloud,
   X,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
@@ -67,7 +68,10 @@ export function AppShell() {
           {[
             ...navigation,
             ...(profile?.roles.includes('admin')
-              ? [{ to: '/audits', label: 'Audit monitor', icon: ScanSearch }]
+              ? [
+                  { to: '/imports/new', label: 'Import billing cycle', icon: UploadCloud },
+                  { to: '/audits', label: 'Audit monitor', icon: ScanSearch },
+                ]
               : []),
           ].map(({ to, label, icon: Icon, end }) => (
             <NavLink
