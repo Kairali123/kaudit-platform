@@ -10,7 +10,6 @@ export interface AuditMonitorQuery {
 export interface AuditMonitorRow {
   callReference: string
   billingPeriodDate: string | null
-  sensitivityTier: string
   category: string
   outcomeTaxonomyVersion: string | null
   confidence: string | null
@@ -72,7 +71,6 @@ interface StatusSummaryRow extends RowDataPacket {
 interface DataRow extends RowDataPacket {
   call_reference: string
   billing_period_date: Date | string | null
-  sensitivity_tier: string
   category: string
   outcome_taxonomy_version: string | null
   confidence: string | null
@@ -233,7 +231,6 @@ export async function collectAuditMonitor(
          c.logical_call_key
        ) AS call_reference,
        c.billing_period_date,
-       c.sensitivity_tier,
        c.canonical_outcome_code AS category,
        c.outcome_taxonomy_version,
        CAST((
@@ -316,7 +313,6 @@ export async function collectAuditMonitor(
     rows: rowResult.map((row) => ({
       callReference: row.call_reference,
       billingPeriodDate: isoDate(row.billing_period_date),
-      sensitivityTier: row.sensitivity_tier,
       category: row.category,
       outcomeTaxonomyVersion: row.outcome_taxonomy_version,
       confidence: row.confidence,

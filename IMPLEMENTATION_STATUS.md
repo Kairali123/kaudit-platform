@@ -12,12 +12,32 @@
   database writes or transcript/customer content were emitted.
 - ⚠️ Only 16,371 calls have recording URLs. The other 26,874 are unauditable and
   must remain explicitly accepted-as-billed/unverified at cycle close.
-- ⚠️ All 43,245 calls currently default to K2. K2/K3 final automation remains
-  inactive because the clinical/safety owner is still unnamed.
+- ✅ The former K2/K3-specific automation gate is retired. Legacy sensitivity
+  values remain in MySQL for compatibility but do not control audit or billing
+  authority.
 - ⚠️ Calibration is incomplete, the only rate card is draft, and migration 0006
   has not been applied. A regenerated bill can therefore only be provisional.
 - ❌ The resumable production writer/full-batch executor has not been activated.
   See `docs/REAUDIT_RUNBOOK.md`.
+
+## Audit-gated billing — 2026-07-27
+
+- ✅ K2/K3-specific runtime and billing activation checks are retired. Legacy
+  sensitivity metadata is non-authorizing compatibility data.
+- ✅ The latest-cycle read model independently reports loaded, recording-backed,
+  V2-audited, explicitly accepted-as-billed, failed, unresolved, and final
+  calculation counts.
+- ✅ `/billing` now withholds the verified bill as `Audit pending` until every
+  cycle call is explicitly resolved, the rate card is published, and final
+  traced calculation coverage reaches 100%.
+- ✅ `/reports` withholds verified revenue, variance, and trend while the cycle
+  audit is pending; vendor claims remain clearly identified as claims.
+- ✅ Read-only production metadata confirms the May 2026 cycle is 0/43,245
+  resolved by V2, so the bill is correctly withheld.
+- ⚠️ Monthly workbook import, automatic audit scheduling/write-side execution,
+  cycle-close fallback writes, persisted snapshots, PDF/Excel generation, and
+  recipient notification are not implemented yet. See
+  `docs/MONTHLY_BILLING_CYCLE.md`.
 
 Updated: 2026-07-27
 
@@ -29,7 +49,7 @@ Phase 1-5 production work remains in progress. The current implementation slice 
 Implemented with synthetic tests:
 
 - W3 URL reference/backfill/hash verification tooling.
-- W1 two-role, deny-by-default identity and sensitivity model.
+- W1 two-role, deny-by-default internal identity model.
 - Local aggregate audit/billing/findings/D-12 dashboard.
 - Secure dashboard foundation: OIDC JWT verification, database-backed role checks,
   safe readiness, correlation/problem responses, and hash-chained access audit.
@@ -44,13 +64,14 @@ Implemented with synthetic tests:
   privacy-safe call-level output metadata. Both the page and endpoint require
   `audit:inspect`; raw audio, transcripts, phone numbers, source URLs, health
   content, remarks, and model explanations are excluded.
-- Runtime release gates that fail closed for uncalibrated/K2-K3 automation.
-- Idempotent administrator provisioning with an explicit K3 sensitivity grant
-  and a compatible audit entry; application-owned passwords remain prohibited.
+- Runtime release gates that fail closed for uncalibrated automation.
+- Idempotent administrator provisioning and compatible audit entries;
+  application-owned passwords remain prohibited.
 - Finance-approved KServe billing V2 pure core using verifier-derived conversation end,
   60-second wrap-up grace, fixed-precision INR calculations, and exact boundary tests.
-- Calibration/threshold/automated-recheck and K2/K3 activation gates in the billing
-  decision path.
+- Calibration/threshold/automated-recheck gates in the billing decision path.
+- Latest-cycle audit readiness and bill withholding: no verified bill or
+  verified report values are released while any cycle call remains unresolved.
 - Reproducible per-call decision traces containing model, classifier/deterministic
   rulesets, confidence/threshold, evidence hashes, timestamp, and every money
   intermediate.
@@ -76,7 +97,6 @@ Not run/applied:
 - Supervised publication of the approved D-03 ruleset as a new immutable rate-card
   version and versioned deterministic recalculation.
 - Calibration and per-language/per-finding thresholds.
-- Named clinical/safety owner before K2/K3 zero-human activation.
 - Full W3 baseline result and remediation of missing/altered evidence.
 - Retention/legal-hold/redaction approval and enforcement.
 - Carrier-independent evidence availability remains constrained.
@@ -89,7 +109,7 @@ No production-readiness claim is made while these remain open.
 ## Verification evidence for this branch
 
 - `npm run check`: passed; secret scan, backend/frontend TypeScript, production
-  web build, and **137/137 runnable tests** passed (**2 MySQL integration tests
+  web build, and **143/143 runnable tests** passed (**2 MySQL integration tests
   skipped** because their isolated test socket was not enabled in this run).
 - Admin Audit Monitor: inspected against the configured real database in the
   local browser. It reports 224/43,245 legacy AI-audited calls, 16,147
@@ -98,9 +118,8 @@ No production-readiness claim is made while these remain open.
   browser emitted no console errors.
 - Migrations 0003 and 0004: applied successfully to a disposable MySQL 9.6 database
   and are now present in the configured real database.
-- `dme@kairali.com` is provisioned as an active `admin` with a K3 sensitivity
-  ceiling. The grant has an audit entry; application-owned password storage remains
-  disabled.
+- `dme@kairali.com` is provisioned as an active `admin`. The grant has an audit
+  entry; application-owned password storage remains disabled.
 - Audit writer integration: two synthetic events produced distinct hashes,
   `chain_ok`, and `head_ok`.
 - The latest frontend install reported two high-severity advisories, but the approved
@@ -134,7 +153,7 @@ still lack append-only `call_event` history and projection rebuild behavior.
 | 2. Ingestion/evidence | Real aggregate UI exists; live ingestion is not yet moved onto the new outbox/idempotency path |
 | 3. Evidence/audio integrity | URL backfill and hash tooling exist; full baseline remediation remains open |
 | 4. Findings automation | UI/API exist; calibration, thresholds, automated re-check, and decision audit remain incomplete |
-| 5. Billing/reporting | UI, D-12 projections, and tested calculation/finalization core exist; migration 0006, card publication, full recalculation, reconciliation, and persisted snapshots remain incomplete |
+| 5. Billing/reporting | UI, audit-pending bill withholding, D-12 projections, and tested calculation/finalization core exist; migration 0006, card publication, monthly import, full recalculation, reconciliation, persisted snapshots, and report delivery remain incomplete |
 
 The application is useful for controlled monitoring, but it is not yet a
 production-authoritative audit/billing engine.

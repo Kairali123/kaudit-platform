@@ -117,7 +117,6 @@ function speechByRole(
 
 export function projectVerifiedCharge(
   analysis: ReauditAnalysis,
-  sensitivityTier: ReauditCandidate['sensitivityTier'],
 ): ReauditProjection {
   const end =
     analysis.conversationAssessment === 'established'
@@ -141,10 +140,7 @@ export function projectVerifiedCharge(
     oneWayTailMs,
     oneWayTailAlert: oneWayTailMs > KSERVE_ONE_WAY_TAIL_ALERT_MS,
     ruleCode: rounded.ruleCode,
-    authority:
-      sensitivityTier === 'K2' || sensitivityTier === 'K3'
-        ? 'provisional_k23_gated'
-        : 'provisional_uncalibrated',
+    authority: 'provisional_uncalibrated',
   }
 }
 
@@ -271,9 +267,6 @@ export async function auditOneCall(options: {
     artifactId: candidate.artifactId,
     outcome: 'projected',
     analysis,
-    projection: projectVerifiedCharge(
-      analysis,
-      candidate.sensitivityTier,
-    ),
+    projection: projectVerifiedCharge(analysis),
   }
 }

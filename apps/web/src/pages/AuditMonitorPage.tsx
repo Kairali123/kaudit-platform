@@ -108,7 +108,7 @@ export function AuditMonitorPage() {
       <Notice tone="warning" title="Model output is not calibrated ground truth">
         Use this view to detect implausible categories, confidence, durations, or
         stuck processing. These legacy outputs are not authoritative billing or
-        clinical decisions.
+        dispute decisions.
       </Notice>
       <MetricGrid tiles={tiles} />
 
@@ -185,7 +185,7 @@ export function AuditMonitorPage() {
                   <td>
                     <code>{row.callReference}</code>
                     <small className="cell-sub">
-                      {row.sensitivityTier} · {date(row.billingPeriodDate)}
+                      {date(row.billingPeriodDate)}
                     </small>
                   </td>
                   <td>{date(row.auditedAt)}</td>

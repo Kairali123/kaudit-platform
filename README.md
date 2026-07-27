@@ -13,8 +13,8 @@ Architecture package: `../voice-agent-call-audit-architecture`.
 Active remediation/build. W3 evidence-reference integrity, W1 identity/access
 primitives, the aggregate dashboard, and the first production security foundation
 are implemented on feature branches with synthetic tests. The platform is **not
-production-ready yet**: D-03 rate-card publication/recalculation, calibration, K2/K3
-safety ownership, retention/compliance controls, reliable ingestion/jobs,
+production-ready yet**: D-03 rate-card publication/recalculation, calibration,
+retention/compliance controls, reliable ingestion/jobs,
 reconciliation, corrective actions, infrastructure, and shadow-month acceptance remain
 gated. See
 `IMPLEMENTATION_STATUS.md`.
@@ -58,7 +58,8 @@ npm run test:billing
 
 This covers the approved INR 4.75/INR 9.50 boundaries, 60-second wrap-up grace,
 whole-minute ceiling, strict one-way-tail alert, calibration/low-confidence handling,
-K2/K3 activation gate, ruleset publication checks, and reproducible decision traces.
+ruleset publication checks, audit-cycle bill withholding, and reproducible decision
+traces.
 
 Migration `0006_verified_billing_trace.sql` and the MySQL writer are not applied or
 invoked by this command. Existing production calculations remain untouched.

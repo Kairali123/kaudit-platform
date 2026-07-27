@@ -146,7 +146,7 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .82rem; }
   text-transform: uppercase; letter-spacing: .055em;
 }
 .status-badge.ready, .status-badge.live, .status-badge.authoritative, .status-badge.calibrated { color: var(--green); background: var(--green-soft); }
-.status-badge.provisional, .status-badge.uncalibrated { color: var(--amber); background: var(--amber-soft); }
+.status-badge.provisional, .status-badge.uncalibrated, .status-badge.audit_pending { color: var(--amber); background: var(--amber-soft); }
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; }
 .metric-card {
   min-height: 142px; padding: 17px; background: var(--paper); border: 1px solid var(--line);

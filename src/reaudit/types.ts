@@ -20,7 +20,6 @@ export interface ReauditCandidate {
   artifactId: string
   sourceUrl: string
   baselineSha256: string | null
-  sensitivityTier: 'K0' | 'K1' | 'K2' | 'K3'
   claimedDurationMs: number | null
   connectedDurationMs: number | null
   vendorBilledMinutes: string | null
@@ -94,7 +93,7 @@ export interface ReauditProjection {
     | 'ZERO_DURATION_NOT_BILLED'
     | 'SHORT_CALL_FLAT'
     | 'PER_MINUTE_CEIL'
-  authority: 'provisional_uncalibrated' | 'provisional_k23_gated'
+  authority: 'provisional_uncalibrated'
 }
 
 export interface ReauditItemResult {

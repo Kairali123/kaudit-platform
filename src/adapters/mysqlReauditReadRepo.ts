@@ -6,7 +6,6 @@ interface CandidateRow extends RowDataPacket {
   artifact_id: string
   source_url: string
   baseline_sha256: string | null
-  sensitivity_tier: 'K0' | 'K1' | 'K2' | 'K3'
   claimed_duration_ms: string | number | null
   connected_duration_ms: string | number | null
   vendor_billed_minutes: string | null
@@ -27,7 +26,7 @@ export function createMysqlReauditReadRepo(pool: Pool) {
     }): Promise<ReauditCandidate[]> {
       const [rows] = await pool.execute<CandidateRow[]>(
         `SELECT c.id AS call_id, ca.id AS artifact_id, ca.source_url,
-                ca.sha256 AS baseline_sha256, c.sensitivity_tier,
+                ca.sha256 AS baseline_sha256,
                 MAX(CASE
                       WHEN pc.provider_sku = 'duration_with_ringing_sec'
                       THEN ROUND(pc.quantity_decimal * 1000)
@@ -54,7 +53,7 @@ export function createMysqlReauditReadRepo(pool: Pool) {
                AND ar.engine_version = 'kairali-independent-reaudit/2.0.0'
                AND ar.status = 'completed'
            ))
-         GROUP BY c.id, ca.id, ca.source_url, ca.sha256, c.sensitivity_tier
+         GROUP BY c.id, ca.id, ca.source_url, ca.sha256
          ORDER BY c.billing_period_date, c.id
          LIMIT ?`,
         [options.includePreviouslyClassified ? 1 : 0, options.limit],
@@ -64,7 +63,6 @@ export function createMysqlReauditReadRepo(pool: Pool) {
         artifactId: row.artifact_id,
         sourceUrl: row.source_url,
         baselineSha256: row.baseline_sha256,
-        sensitivityTier: row.sensitivity_tier,
         claimedDurationMs: nullableMs(row.claimed_duration_ms),
         connectedDurationMs: nullableMs(row.connected_duration_ms),
         vendorBilledMinutes: row.vendor_billed_minutes,

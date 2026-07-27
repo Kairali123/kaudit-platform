@@ -64,9 +64,9 @@ export function HomePage() {
           </article>
           <article>
             <LockKeyhole size={18} aria-hidden />
-            <span>Sensitivity ceiling</span>
-            <strong>{profile.maxSensitivityTier}</strong>
-            <small>Admin-managed and audited</small>
+            <span>Data boundary</span>
+            <strong>Aggregate only</strong>
+            <small>No raw call content in this app</small>
           </article>
         </div>
       </section>

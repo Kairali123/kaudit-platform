@@ -1,5 +1,10 @@
 # Administrator access
 
+> Compatibility note (2026-07-27): `max_sensitivity_tier` remains in the
+> existing schema and older grant workflow, but it is no longer used to decide
+> whether calls may be audited, billed, or reported. Admin authorization is
+> role-based.
+
 The application has two operational roles: `admin` and `user`. `admin` is the
 full-access role. Health-sensitive content is controlled separately by
 `kaudit_user.max_sensitivity_tier`; the highest viewable tier is `K3`. `K4`

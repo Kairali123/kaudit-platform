@@ -10,6 +10,7 @@ import type {
 } from '../ui/fullDashboard.ts'
 import { fromScaled, toScaled } from '../ui/decimal.ts'
 import { completedPeriods } from '../ui/periods.ts'
+import { collectLatestBillingCycle } from './mysqlBillingCycle.ts'
 
 // Aggregate-only, read-only adapter for the full local dashboard. No query selects
 // call IDs, phone data, transcript text, evidence URLs, or health content. Every
@@ -100,7 +101,7 @@ export async function collectQuality(pool: Pool): Promise<RawQualityMetrics> {
 }
 
 export async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
-  const [summary, authority, rateCard, reconciliation] = await Promise.all([
+  const [summary, authority, rateCard, reconciliation, cycle] = await Promise.all([
     one(
       pool,
       `SELECT
@@ -174,6 +175,7 @@ export async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
        FROM kaudit_reconciliation
        ORDER BY created_at DESC, version DESC LIMIT 1`,
     ),
+    collectLatestBillingCycle(pool),
   ])
 
   return {
@@ -192,6 +194,7 @@ export async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
     claimedSubtotal: s(reconciliation?.claimed_subtotal),
     verifiedSubtotal: s(reconciliation?.verified_subtotal),
     netVariance: s(reconciliation?.net_variance),
+    cycle,
   }
 }
 

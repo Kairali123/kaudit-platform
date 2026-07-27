@@ -199,18 +199,6 @@ function decideAuthority(
       nextAction: 'configure_threshold',
     }
   }
-  if (
-    (authority.sensitivityTier === 'K2' ||
-      authority.sensitivityTier === 'K3') &&
-    (!authority.k23AutomationEnabled ||
-      !authority.clinicalSafetyOwner?.trim())
-  ) {
-    return {
-      final: false,
-      reasonCode: 'K23_AUTOMATION_NOT_APPROVED',
-      nextAction: 'await_clinical_safety_approval',
-    }
-  }
   if (conversationAssessment === 'unresolved') {
     return {
       final: false,

@@ -85,7 +85,7 @@ async function main(): Promise<void> {
           languages,
           projectedBillableMinutes: Number(projectedHalfMinutes) / 2,
           projectedAmount: `INR ${(Number(projectedPaise) / 100).toFixed(2)}`,
-          authority: 'PROVISIONAL — uncalibrated; all calls are currently K2-gated',
+          authority: 'PROVISIONAL — calibration and rate-card publication still required',
           databaseWrites: 0,
         },
         null,

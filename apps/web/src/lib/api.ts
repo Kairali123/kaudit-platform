@@ -19,7 +19,6 @@ export interface Profile {
   email: string
   roles: string[]
   permissions: string[]
-  maxSensitivityTier: string
   authMode: string
   accessControlEnforced: boolean
   contentAccess: string
@@ -65,7 +64,7 @@ export interface QualityData {
 
 export interface BillingData {
   generatedAt: string
-  authority: 'provisional' | 'authoritative'
+  authority: 'audit_pending' | 'authoritative'
   billing: {
     tiles: Tile[]
     rateCardLabel: string
@@ -74,7 +73,34 @@ export interface BillingData {
     calculationsAuthoritative: boolean
     calculationAuthorityLabel: string
     reconciliationStatus: string
+    cycleStatusLabel: string
+    cycle: BillingCycle
   }
+}
+
+export interface BillingCycle {
+  periodStart: string | null
+  periodEnd: string | null
+  totalCalls: number
+  recordingAvailableCalls: number
+  completedAuditCalls: number
+  acceptedAsBilledCalls: number
+  finalCalculationCalls: number | null
+  unresolvedDecisionCalls: number | null
+  processingFailureCalls: number
+  resolvedAuditCalls: number
+  auditPendingCalls: number
+  auditCoveragePercent: string
+  rateCardApproved: boolean
+  calibrationComplete: boolean
+  status:
+    | 'no_data'
+    | 'audit_pending'
+    | 'calibration_pending'
+    | 'rate_card_pending'
+    | 'calculation_pending'
+    | 'ready'
+  billGenerated: boolean
 }
 
 export interface Snapshot {
@@ -92,7 +118,8 @@ export interface Snapshot {
 
 export interface ReportsData {
   generatedAt: string
-  authority: 'provisional' | 'authoritative'
+  authority: 'audit_pending' | 'provisional' | 'authoritative'
+  billingCycle: BillingCycle
   snapshots: Snapshot[]
 }
 
@@ -114,7 +141,6 @@ export interface OperationsData {
 export interface AuditMonitorRow {
   callReference: string
   billingPeriodDate: string | null
-  sensitivityTier: string
   category: string
   outcomeTaxonomyVersion: string | null
   confidence: string | null

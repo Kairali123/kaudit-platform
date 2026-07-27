@@ -34,6 +34,20 @@ export const sampleFullRaw: RawFullDashboard = {
     rateCardApprovedBy: null, rateCardApprovedAt: null,
     reconciliationStatus: 'open', claimedSubtotal: '82450.00000000',
     verifiedSubtotal: '80310.00000000', netVariance: '2140.00000000',
+    cycle: {
+      periodStart: '2026-06-01',
+      periodEnd: '2026-06-30',
+      totalCalls: 43245,
+      recordingAvailableCalls: 16371,
+      completedAuditCalls: 0,
+      acceptedAsBilledCalls: 0,
+      finalCalculationCalls: null,
+      unresolvedDecisionCalls: null,
+      processingFailureCalls: 4,
+      calculatedTotal: null,
+      billableMinutes: null,
+      currency: 'INR',
+    },
   },
   snapshots: [
     {

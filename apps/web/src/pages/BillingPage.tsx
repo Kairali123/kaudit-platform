@@ -20,15 +20,16 @@ export function BillingPage() {
         description="Independent calculation totals and the current reconciliation posture."
         badge={
           <span className={`status-badge ${data.authority}`}>
-            {data.authority}
+            {data.billing.cycleStatusLabel}
           </span>
         }
       />
-      {data.authority === 'provisional' && (
-        <Notice tone="warning" title="Billing calculation is still provisional">
-          A published rate card alone is not enough. Existing legacy calculations
-          remain non-authoritative until they are superseded by final, evidence-hashed
-          conversation-duration calculations. Amounts are for monitoring only.
+      {data.authority === 'audit_pending' && (
+        <Notice tone="warning" title="Verified bill withheld — audit pending">
+          The platform will not release Kairali&apos;s verified bill while this
+          cycle has unresolved calls. Calls without recordings count as resolved
+          only after the cycle-close fallback explicitly records them as
+          accepted-as-billed; they are never silently treated as audited.
         </Notice>
       )}
       <MetricGrid tiles={data.billing.tiles} />
@@ -44,13 +45,13 @@ export function BillingPage() {
           <p>Variance remains identified—not recovered—until a closed reconciliation.</p>
         </article>
         <article>
-          <span>Calculation authority</span>
-          <strong>
-            {data.billing.calculationsAuthoritative
-              ? 'Authoritative'
-              : 'Provisional'}
-          </strong>
-          <p>{data.billing.calculationAuthorityLabel}</p>
+          <span>Cycle completion</span>
+          <strong>{data.billing.cycle.auditCoveragePercent}%</strong>
+          <p>
+            {data.billing.cycle.resolvedAuditCalls.toLocaleString('en-IN')} of{' '}
+            {data.billing.cycle.totalCalls.toLocaleString('en-IN')} calls
+            resolved
+          </p>
         </article>
       </section>
       <UpdatedAt value={data.generatedAt} />

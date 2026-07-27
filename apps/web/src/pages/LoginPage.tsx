@@ -49,7 +49,7 @@ export function LoginPage() {
           </li>
           <li>
             <CheckCircle2 size={17} aria-hidden />
-            Role and sensitivity controls
+            Role-based internal access
           </li>
           <li>
             <CheckCircle2 size={17} aria-hidden />
@@ -147,8 +147,7 @@ export function LoginPage() {
             <LockKeyhole size={16} aria-hidden />
             <p>
               Raw audio, transcripts, customer identifiers, and
-              health-sensitive content are not displayed by this
-              application.
+              free-text call content are not displayed by this application.
             </p>
           </div>
         </div>

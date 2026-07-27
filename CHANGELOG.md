@@ -6,10 +6,9 @@
   SHA-256 evidence checks, Whisper timestamps, pinned GPT-4o-mini structured
   classification, and deterministic KServe charge projection.
 - Added synthetic tests for transcript-block merging, impossible model outputs,
-  60-second wrap-up grace, K2 provisional gating, and evidence alteration.
+  60-second wrap-up grace, uncalibrated authority, and evidence alteration.
 - Confirmed by metadata-only queries that 224/43,245 calls were classified,
-  16,371 have recording URLs, 26,874 do not, and all calls currently default to
-  K2.
+  16,371 have recording URLs, and 26,874 do not.
 - Ran five real shadow calls successfully with zero database writes.
 
 ## Unreleased
@@ -17,8 +16,13 @@
 - Added the finance-approved KServe verified-billing V2 core: final-customer-exchange
   basis, 60-second wrap-up grace, strict 60-second one-way-tail alert, INR 4.75 short
   call and whole-minute INR 9.50 rounding, all using integer/fixed-precision math.
-- Added calibration, per-threshold, automated re-check, and K2/K3 fail-closed authority
-  gates to the pure billing decision path.
+- Added calibration, per-threshold, and automated re-check authority gates to
+  the pure billing decision path.
+- Retired the K2/K3-specific runtime and billing authority gate; legacy
+  sensitivity metadata remains database-compatible but does not block calls.
+- Added latest-cycle audit readiness and withheld verified bill/report values
+  until all calls are independently audited or explicitly resolved through the
+  cycle-close accepted-as-billed fallback.
 - Added reproducible model/ruleset/confidence/evidence-hash traces, an additive
   automated-decision schema, append-only superseding calculation writer, transactional
   outbox event, and isolated-MySQL integration coverage.
@@ -28,7 +32,7 @@
   Evidence, Findings, Billing, Reports, and Operations routes.
 - Split the secure aggregate API into page-scoped endpoints.
 - Added real-data aggregate operations views for outbox/inbox/jobs/idempotency/audit.
-- Added fail-closed calibration and K2/K3 runtime gates.
+- Added fail-closed calibration runtime gates.
 - Added an explicit loopback-only preview mode so the real aggregate UI can run before
   user provisioning without weakening the authenticated startup path.
 - Moved the built preview to port 4176 and added a clear startup message for occupied
@@ -38,11 +42,11 @@
   app-owned password authentication.
 - Added a visible top-bar logout action and `/logout` route. Preview/local sessions
   return to login; OIDC logout redirects only to a validated HTTPS provider endpoint.
-- Preserved visible D-03, calibration, D-12, and K2/K3 authority warnings.
+- Preserved visible D-03, calibration, and D-12 authority warnings.
 - Added production configuration validation and fail-closed OIDC authentication.
 - Added database-backed role authorization for the aggregate dashboard.
-- Added idempotent, audited administrator provisioning and configured the approved
-  local identity as full-access `admin` with a K3 sensitivity ceiling.
+- Added idempotent, audited administrator provisioning and configured the
+  approved local identity as full-access `admin`.
 - Added privacy-safe API/problem responses, readiness checks, security headers, and
   correlation IDs.
 - Added an additive migration and writer for hash-chained security audit events.

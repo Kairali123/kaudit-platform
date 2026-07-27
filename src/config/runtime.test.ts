@@ -132,27 +132,15 @@ test('validates an optional browser logout URL as HTTPS', () => {
   )
 })
 
-test('K2/K3 automation fails closed without completed calibration and named owner', () => {
-  const env = {
-    ...base(),
-    KAUDIT_K23_AUTOMATION_ENABLED: 'true',
-  }
-  assert.throws(
-    () => loadRuntimeConfig(env),
-    /K2\/K3 automation requires completed calibration/,
-  )
-})
-
-test('K2/K3 automation can only enable with calibration and named owner', () => {
+test('legacy K2/K3 environment switches no longer affect runtime authority', () => {
   const config = loadRuntimeConfig({
     ...base(),
     KAUDIT_K23_AUTOMATION_ENABLED: 'true',
-    KAUDIT_CALIBRATION_COMPLETE: 'true',
     KAUDIT_K23_CLINICAL_SAFETY_OWNER: 'synthetic-owner',
   })
-  assert.equal(config.releaseGates.k23AutomationEnabled, true)
-  assert.equal(
-    config.releaseGates.clinicalSafetyOwner,
-    'synthetic-owner',
-  )
+  assert.equal(config.releaseGates.calibrationComplete, false)
+  assert.deepEqual(Object.keys(config.releaseGates).sort(), [
+    'calibrationComplete',
+    'reportingApproved',
+  ])
 })

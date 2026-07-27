@@ -61,8 +61,6 @@ function input(
       language: 'English',
       findingType: 'conversation_end',
       sensitivityTier: 'K1',
-      k23AutomationEnabled: false,
-      clinicalSafetyOwner: null,
       recheckAttempt: 0,
       maximumRechecks: 2,
     },
@@ -202,20 +200,18 @@ test('uncalibrated and low-confidence decisions remain unresolved', () => {
   )
 })
 
-test('K2/K3 decisions fail closed without named clinical activation', () => {
+test('legacy sensitivity metadata does not change automation authority', () => {
   const result = calculateVerifiedKServeCharge(
     input({
       authority: {
         ...input().authority,
         sensitivityTier: 'K3',
-        k23AutomationEnabled: false,
-        clinicalSafetyOwner: null,
       },
     }),
     publishedRateCard(),
   )
-  assert.equal(result.status, 'unresolved')
-  assert.equal(result.reasonCode, 'K23_AUTOMATION_NOT_APPROVED')
+  assert.equal(result.status, 'final')
+  assert.equal(result.reasonCode, 'AUTOMATED_CONFIDENCE_CONFIRMED')
 })
 
 test('draft or hash-mismatched rate cards cannot calculate money', () => {

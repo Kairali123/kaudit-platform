@@ -19,7 +19,6 @@ const candidate: ReauditCandidate = {
   sourceUrl:
     'https://cdr-storage-recs.s3.ap-south-1.amazonaws.com/media/private/synthetic.ogg',
   baselineSha256: null,
-  sensitivityTier: 'K2',
   claimedDurationMs: 125_000,
   connectedDurationMs: 120_000,
   vendorBilledMinutes: '2.00000000',
@@ -58,7 +57,7 @@ test('classification validation rejects impossible conversation ends', () => {
   )
 })
 
-test('projection adds 60-second wrap-up grace and remains K2 provisional', () => {
+test('projection adds 60-second wrap-up grace and remains uncalibrated', () => {
   const analysis: ReauditAnalysis = {
     category: 'OK',
     confidence: '0.95000000',
@@ -74,11 +73,11 @@ test('projection adds 60-second wrap-up grace and remains K2 provisional', () =>
     remarks: 'Synthetic',
     disputeRecommended: false,
   }
-  const projected = projectVerifiedCharge(analysis, 'K2')
+  const projected = projectVerifiedCharge(analysis)
   assert.equal(projected.adjustedChargeableDurationMs, 121_000)
   assert.equal(projected.billableMinutes, '3.00000000')
   assert.equal(projected.amount, '28.50000000')
-  assert.equal(projected.authority, 'provisional_k23_gated')
+  assert.equal(projected.authority, 'provisional_uncalibrated')
   assert.equal(projected.oneWayTailAlert, true)
 })
 

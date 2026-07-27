@@ -32,8 +32,6 @@ const config: RuntimeConfig = {
   },
   releaseGates: {
     calibrationComplete: false,
-    k23AutomationEnabled: false,
-    clinicalSafetyOwner: null,
     reportingApproved: false,
   },
 }
@@ -148,7 +146,7 @@ test('preview mode uses a non-authorizing identity and never writes access audit
       const profile = (await me.json()) as Record<string, unknown>
       assert.equal(profile.authMode, 'preview')
       assert.equal(profile.accessControlEnforced, false)
-      assert.equal(profile.maxSensitivityTier, 'K0')
+      assert.equal('maxSensitivityTier' in profile, false)
 
       const overview = await fetch(`${baseUrl}/api/v1/overview`)
       assert.equal(overview.status, 200)

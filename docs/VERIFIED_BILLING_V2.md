@@ -36,8 +36,8 @@ A calculation can become `final` only when all of these are true:
 2. the audit input has hashed evidence and a completed audit run identity;
 3. calibration is complete and a language/finding-specific threshold exists;
 4. model confidence meets that threshold; and
-5. K2/K3 automation additionally has its named clinical/safety owner and explicit
-   activation.
+5. every call in the billing cycle has an explicit audit resolution before the
+   cycle-level bill is released.
 
 Below-threshold calls become `unresolved` and request a secondary automated pass. When
 the configured automated attempts are exhausted, they remain unresolved until cycle
@@ -64,7 +64,8 @@ current calculation for that call.
 
 ## Intentional architecture overrides
 
-Leadership has overridden the original mandatory human-review flow for automated
-K0/K1 findings and billing. K2/K3 code may be built, but activation remains gated until
-the named clinical/safety owner signs off. This document does not authorize payment,
-vendor communication, production deployment, or mutation of existing financial rows.
+Leadership has overridden the original mandatory human-review flow for all automated
+findings and billing and retired the K2/K3-specific activation gate. Legacy sensitivity
+metadata remains for database compatibility but does not alter authority. This document
+does not authorize payment, vendor communication, production deployment, or mutation of
+existing financial rows.

@@ -55,8 +55,6 @@ function input(): VerifiedBillingInput {
       language: 'English',
       findingType: 'conversation_end',
       sensitivityTier: 'K1',
-      k23AutomationEnabled: false,
-      clinicalSafetyOwner: null,
       recheckAttempt: 0,
       maximumRechecks: 2,
     },

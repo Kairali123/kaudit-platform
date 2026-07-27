@@ -37,7 +37,7 @@ linked synthetic audit events were verified in a disposable MySQL 9.6 instance
 5. Add real React/NestJS deployable units and generated OpenAPI contract. This slice
    secures the existing dashboard; it does not claim the complete target stack.
 6. Publish the approved D-03 ruleset and run the verified recalculation; complete
-   calibration, K2/K3 owner sign-off, retention/legal-hold controls, queue/outbox
+   calibration, retention/legal-hold controls, queue/outbox
    processing, reconciliation, disputes, corrective actions, backup/restore,
    performance/security tests, and the historical/live shadow cycles.
 

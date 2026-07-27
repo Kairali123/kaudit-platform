@@ -21,16 +21,31 @@ export function ReportsPage() {
         description="Short management views at weekly, monthly, quarterly, and yearly cadence."
         badge={
           <span className={`status-badge ${data.authority}`}>
-            {data.authority}
+            {data.authority === 'audit_pending'
+              ? 'Audit pending'
+              : data.authority}
           </span>
         }
       />
+      {data.authority === 'audit_pending' && (
+        <Notice tone="warning" title="Report generation waiting for audit">
+          Verified revenue and variance are withheld until all{' '}
+          {data.billingCycle.totalCalls.toLocaleString('en-IN')} calls in the
+          billing cycle are resolved. Vendor-claimed values may be visible, but
+          they are not Kairali&apos;s verified bill.
+        </Notice>
+      )}
       {data.authority === 'provisional' && (
         <Notice tone="warning" title="Projection—not an approved management snapshot">
           D-03 and D-12-A remain open. Periods and values are live aggregates, not
           signed financial statements.
         </Notice>
       )}
+      <Notice tone="info" title="Current delivery: protected dashboard">
+        PDF/Excel export and automatic finance/management notifications are not
+        active yet. When implemented, they will run only after this cycle gate
+        releases the verified figures.
+      </Notice>
       <div className="snapshot-grid">
         {data.snapshots.map((snapshot) => {
           const TrendIcon =

@@ -190,31 +190,9 @@ function sendJson(
   response.end(JSON.stringify(value))
 }
 
-function rateCardApproved(
-  billing: Awaited<ReturnType<typeof collectBilling>>,
-): boolean {
-  return (
-    billing.rateCardStatus === 'published' &&
-    Boolean(billing.rateCardApprovedBy) &&
-    Boolean(billing.rateCardApprovedAt)
-  )
-}
-
-function billingCalculationsAuthoritative(
-  billing: Awaited<ReturnType<typeof collectBilling>>,
-): boolean {
-  return (
-    rateCardApproved(billing) &&
-    billing.calculations != null &&
-    billing.calculations > 0 &&
-    billing.authoritativeCalculations === billing.calculations &&
-    billing.unresolvedAutomatedDecisions === 0
-  )
-}
-
 function releaseGates(
   dependencies: Dependencies,
-  approvedRateCard: boolean,
+  billing: ReturnType<typeof buildBillingView>,
 ): ReleaseGateView[] {
   return [
     {
@@ -232,10 +210,10 @@ function releaseGates(
     {
       code: 'rate-card',
       label: 'Rate card approval',
-      detail: approvedRateCard
+      detail: billing.rateCardApproved
         ? 'Published with named approval'
         : 'Approved interpretation is not yet published in the database',
-      status: approvedRateCard ? 'ready' : 'blocked',
+      status: billing.rateCardApproved ? 'ready' : 'blocked',
     },
     {
       code: 'calibration',
@@ -248,14 +226,12 @@ function releaseGates(
         : 'blocked',
     },
     {
-      code: 'k2-k3',
-      label: 'K2/K3 automation',
-      detail: dependencies.config.releaseGates.k23AutomationEnabled
-        ? 'Enabled with named safety owner'
-        : 'Inactive pending clinical/safety sign-off',
-      status: dependencies.config.releaseGates.k23AutomationEnabled
-        ? 'ready'
-        : 'blocked',
+      code: 'audit-cycle',
+      label: 'Billing-cycle audit',
+      detail: billing.cycle.billGenerated
+        ? 'Every call is resolved and the verified bill may be released'
+        : `${billing.cycleStatusLabel}: ${billing.cycle.auditPendingCalls.toLocaleString('en-IN')} calls remain`,
+      status: billing.cycle.billGenerated ? 'ready' : 'blocked',
     },
     {
       code: 'reporting',
@@ -307,7 +283,6 @@ async function apiResponse(
       email: context.user.email,
       roles: context.user.roles,
       permissions: permissionsFor(context.user.roles),
-      maxSensitivityTier: context.user.maxSensitivityTier,
       authMode: dependencies.config.auth.mode,
       accessControlEnforced:
         dependencies.config.auth.mode !== 'preview',
@@ -320,12 +295,16 @@ async function apiResponse(
       collectMetrics(dependencies.pool),
       collectBilling(dependencies.pool),
     ])
+    const billingView = buildBillingView(billing, {
+      calibrationComplete:
+        dependencies.config.releaseGates.calibrationComplete,
+    })
     return {
       generatedAt: metrics.generatedAt,
       tiles: buildDashboard(metrics).tiles,
       gates: releaseGates(
         dependencies,
-        rateCardApproved(billing),
+        billingView,
       ),
     }
   }
@@ -354,12 +333,16 @@ async function apiResponse(
   }
   if (pathname === '/api/v1/billing') {
     const billing = await collectBilling(dependencies.pool)
+    const billingView = buildBillingView(billing, {
+      calibrationComplete:
+        dependencies.config.releaseGates.calibrationComplete,
+    })
     return {
       generatedAt: new Date().toISOString(),
-      authority: billingCalculationsAuthoritative(billing)
+      authority: billingView.cycle.billGenerated
         ? 'authoritative'
-        : 'provisional',
-      billing: buildBillingView(billing),
+        : 'audit_pending',
+      billing: billingView,
     }
   }
   if (pathname === '/api/v1/reports') {
@@ -367,14 +350,24 @@ async function apiResponse(
       collectBilling(dependencies.pool),
       collectRevenueSnapshots(dependencies.pool),
     ])
+    const billingView = buildBillingView(billing, {
+      calibrationComplete:
+        dependencies.config.releaseGates.calibrationComplete,
+    })
+    const billGenerated = billingView.cycle.billGenerated
     return {
       generatedAt: new Date().toISOString(),
       authority:
-        billingCalculationsAuthoritative(billing) &&
+        billGenerated &&
         dependencies.config.releaseGates.reportingApproved
           ? 'authoritative'
-          : 'provisional',
-      snapshots: buildRevenueSnapshots(snapshots),
+          : billGenerated
+            ? 'provisional'
+            : 'audit_pending',
+      billingCycle: billingView.cycle,
+      snapshots: buildRevenueSnapshots(snapshots, {
+        releaseVerifiedValues: billGenerated,
+      }),
     }
   }
   if (pathname === '/api/v1/operations') {

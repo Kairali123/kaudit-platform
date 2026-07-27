@@ -1,6 +1,11 @@
 import { buildDashboard, type RawMetrics, type Tile } from './metrics.ts'
 import { formatMoney, subtract, trendWithDeadband, type Trend } from './decimal.ts'
 import type { SnapshotCadence } from './periods.ts'
+import {
+  assessBillingCycleReadiness,
+  type BillingCycleCounts,
+  type BillingCycleStatus,
+} from '../billing/cycleReadiness.ts'
 
 export interface CountRow {
   label: string
@@ -42,6 +47,13 @@ export interface RawBillingMetrics {
   claimedSubtotal: string | null
   verifiedSubtotal: string | null
   netVariance: string | null
+  cycle: RawBillingCycle
+}
+
+export interface RawBillingCycle extends BillingCycleCounts {
+  calculatedTotal: string | null
+  billableMinutes: string | null
+  currency: string
 }
 
 export interface RawRevenueSnapshot {
@@ -81,6 +93,8 @@ export interface BillingView {
   calculationsAuthoritative: boolean
   calculationAuthorityLabel: string
   reconciliationStatus: string
+  cycle: ReturnType<typeof assessBillingCycleReadiness>
+  cycleStatusLabel: string
 }
 
 export interface RevenueSnapshotView {
@@ -107,7 +121,12 @@ export interface FullDashboardView {
 }
 
 export interface ReleaseGateView {
-  code: 'access' | 'rate-card' | 'calibration' | 'k2-k3' | 'reporting'
+  code:
+    | 'access'
+    | 'rate-card'
+    | 'calibration'
+    | 'audit-cycle'
+    | 'reporting'
   label: string
   detail: string
   status: 'ready' | 'blocked' | 'pending'
@@ -194,24 +213,40 @@ export function buildQualityView(q: RawQualityMetrics, totalCalls: number | null
   }
 }
 
-export function buildBillingView(b: RawBillingMetrics): BillingView {
+export function buildBillingView(
+  b: RawBillingMetrics,
+  options: { calibrationComplete?: boolean } = {},
+): BillingView {
   const rateCardApproved =
     b.rateCardStatus === 'published' && Boolean(b.rateCardApprovedBy) && Boolean(b.rateCardApprovedAt)
-  const calculationsAuthoritative =
-    rateCardApproved &&
-    b.calculations != null &&
-    b.calculations > 0 &&
-    b.authoritativeCalculations === b.calculations &&
-    b.unresolvedAutomatedDecisions === 0
+  const cycle = assessBillingCycleReadiness({
+    ...b.cycle,
+    rateCardApproved,
+    calibrationComplete: options.calibrationComplete === true,
+  })
+  const calculationsAuthoritative = cycle.billGenerated
   const authorityCoverageLabel =
-    b.authoritativeCalculations == null
-      ? `authority telemetry unavailable for ${fmtCount(b.calculations)} current calculations`
-      : `${fmtCount(b.authoritativeCalculations)} of ` +
-        `${fmtCount(b.calculations)} current calculations are authoritative`
-  const billingTiles: Tile[] = [
+    cycle.finalCalculationCalls == null
+      ? `authority telemetry unavailable for ${fmtCount(cycle.totalCalls)} cycle calls`
+      : `${fmtCount(cycle.finalCalculationCalls)} of ` +
+        `${fmtCount(cycle.totalCalls)} cycle calculations are authoritative`
+  const pendingStatusLabel: Record<BillingCycleStatus, string> = {
+    no_data: 'No billing cycle data',
+    audit_pending: 'Audit pending',
+    calibration_pending: 'Calibration pending',
+    rate_card_pending: 'Rate card pending',
+    calculation_pending: 'Final calculation pending',
+    ready: 'Ready',
+  }
+  const cyclePeriod =
+    cycle.periodStart && cycle.periodEnd
+      ? `${cycle.periodStart} — ${cycle.periodEnd}`
+      : 'No cycle loaded'
+  const billingTiles: Tile[] = cycle.billGenerated
+    ? [
     {
-      label: 'Current calculated amount',
-      value: formatMoney(b.calculatedTotal, b.currency),
+      label: 'Verified bill',
+      value: formatMoney(b.cycle.calculatedTotal, b.cycle.currency),
       sub: authorityCoverageLabel,
       status:
         b.calculatedTotal == null
@@ -237,13 +272,46 @@ export function buildBillingView(b: RawBillingMetrics): BillingView {
     },
     {
       label: 'Billable minutes',
-      value: b.billableMinutes == null ? '—' : Number(b.billableMinutes).toLocaleString('en-IN', { maximumFractionDigits: 1 }),
+      value:
+        b.cycle.billableMinutes == null
+          ? '—'
+          : Number(b.cycle.billableMinutes).toLocaleString('en-IN', {
+              maximumFractionDigits: 1,
+            }),
       sub: calculationsAuthoritative
         ? 'approved, independently traced calculations'
         : 'contains legacy/provisional calculation basis',
-      status: b.billableMinutes == null ? 'pending' : calculationsAuthoritative ? 'good' : 'warn',
+      status: b.cycle.billableMinutes == null ? 'pending' : 'good',
     },
-  ]
+      ]
+    : [
+        {
+          label: 'Verified bill',
+          value: pendingStatusLabel[cycle.status],
+          sub: 'No Kairali bill is released before cycle completion',
+          status: 'pending',
+        },
+        {
+          label: 'Billing cycle',
+          value: cyclePeriod,
+          sub: `${fmtCount(cycle.totalCalls)} calls loaded`,
+          status: cycle.totalCalls > 0 ? 'neutral' : 'pending',
+        },
+        {
+          label: 'Audit resolved',
+          value: `${fmtCount(cycle.resolvedAuditCalls)} / ${fmtCount(cycle.totalCalls)}`,
+          sub: `${cycle.auditCoveragePercent}% complete`,
+          status: cycle.auditPendingCalls === 0 ? 'good' : 'warn',
+        },
+        {
+          label: 'Audit pending',
+          value: fmtCount(cycle.auditPendingCalls),
+          sub:
+            `${fmtCount(cycle.recordingAvailableCalls)} recording URLs · ` +
+            `${fmtCount(cycle.processingFailureCalls)} processing failures`,
+          status: cycle.auditPendingCalls > 0 ? 'warn' : 'good',
+        },
+      ]
   return {
     tiles: billingTiles,
     rateCardLabel: b.rateCardVersion
@@ -255,17 +323,23 @@ export function buildBillingView(b: RawBillingMetrics): BillingView {
       : 'D-03 interpretation approved; database publication pending',
     calculationsAuthoritative,
     calculationAuthorityLabel: calculationsAuthoritative
-      ? 'All current calculations are final, traced, and use an approved basis'
-      : b.independentFinalCalculations == null ||
-          b.unresolvedAutomatedDecisions == null
+      ? 'All cycle calculations are final, traced, and use an approved basis'
+      : cycle.finalCalculationCalls == null ||
+          cycle.unresolvedDecisionCalls == null
         ? 'Migration 0006 authority telemetry is not available in this database'
-        : `${fmtCount(b.independentFinalCalculations)} independently verified; ` +
-          `${fmtCount(b.unresolvedAutomatedDecisions)} unresolved automated decisions`,
+        : `${fmtCount(cycle.completedAuditCalls)} V2 audited; ` +
+          `${fmtCount(cycle.acceptedAsBilledCalls)} accepted as billed; ` +
+          `${fmtCount(cycle.unresolvedDecisionCalls)} unresolved decisions`,
     reconciliationStatus: b.reconciliationStatus ?? 'not started',
+    cycle,
+    cycleStatusLabel: pendingStatusLabel[cycle.status],
   }
 }
 
-export function buildRevenueSnapshots(raw: RawRevenueSnapshot[]): RevenueSnapshotView[] {
+export function buildRevenueSnapshots(
+  raw: RawRevenueSnapshot[],
+  options: { releaseVerifiedValues?: boolean } = {},
+): RevenueSnapshotView[] {
   return raw.map((s): RevenueSnapshotView => {
     const variance = subtract(s.vendorClaimed, s.verified)
     const priorVariance = subtract(s.priorVendorClaimed, s.priorVerified)
@@ -279,18 +353,31 @@ export function buildRevenueSnapshots(raw: RawRevenueSnapshot[]): RevenueSnapsho
       cadence: s.cadence,
       label: s.label,
       period: `${s.start} — ${s.end}`,
-      verified: formatMoney(s.verified, s.currency),
+      verified:
+        options.releaseVerifiedValues === false
+          ? 'Audit pending'
+          : formatMoney(s.verified, s.currency),
       vendorClaimed: formatMoney(s.vendorClaimed, s.currency),
-      variance: formatMoney(variance, s.currency),
-      varianceRaw: variance,
+      variance:
+        options.releaseVerifiedValues === false
+          ? 'Audit pending'
+          : formatMoney(variance, s.currency),
+      varianceRaw:
+        options.releaseVerifiedValues === false ? null : variance,
       basisLabel:
         s.vendorClaimedBasis === 'invoiced'
           ? 'invoice total'
           : s.vendorClaimedBasis === 'provider_claimed_no_invoice'
             ? 'provider-asserted usage; no invoice'
             : 'claim unavailable',
-      trend: snapshotTrend,
-      trendLabel,
+      trend:
+        options.releaseVerifiedValues === false
+          ? 'unknown'
+          : snapshotTrend,
+      trendLabel:
+        options.releaseVerifiedValues === false
+          ? 'available after audit'
+          : trendLabel,
       ...(priorVariance == null && s.priorVerified == null ? {} : {}),
     }
   })
@@ -298,12 +385,18 @@ export function buildRevenueSnapshots(raw: RawRevenueSnapshot[]): RevenueSnapsho
 
 export function buildFullDashboard(
   raw: RawFullDashboard,
-  options: { accessControlEnforced?: boolean } = {},
+  options: {
+    accessControlEnforced?: boolean
+    calibrationComplete?: boolean
+  } = {},
 ): FullDashboardView {
   const monitor = buildDashboard(raw.monitor)
   const q = raw.quality
   const totalCalls = raw.monitor.calls
   const b = raw.billing
+  const billing = buildBillingView(b, {
+    calibrationComplete: options.calibrationComplete,
+  })
 
   return {
     generatedAt: raw.generatedAt,
@@ -311,7 +404,9 @@ export function buildFullDashboard(
     overviewTiles: monitor.tiles,
     integrityFindings: monitor.findings,
     quality: buildQualityView(q, totalCalls),
-    billing: buildBillingView(b),
-    snapshots: buildRevenueSnapshots(raw.snapshots),
+    billing,
+    snapshots: buildRevenueSnapshots(raw.snapshots, {
+      releaseVerifiedValues: billing.cycle.billGenerated,
+    }),
   }
 }

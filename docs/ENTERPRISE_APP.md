@@ -109,9 +109,8 @@ access is written to the hash-chained audit log in authenticated modes.
   automated billing decision is unresolved.
 - Findings remain `uncalibrated` unless `KAUDIT_CALIBRATION_COMPLETE=true` is set
   after the approved calibration protocol is complete.
-- K2/K3 automation cannot start unless calibration is complete and
-  `KAUDIT_K23_CLINICAL_SAFETY_OWNER` is named. Configuration fails closed if
-  enablement is attempted without both.
+- Legacy K2/K3 metadata does not control automation authority. Calibration and
+  evidence/rate-card gates apply uniformly to every call.
 - Reports remain `provisional` until billing calculations are authoritative and
   `KAUDIT_REPORTING_APPROVED=true`.
 
@@ -121,6 +120,6 @@ recalculate, or finalize existing data.
 ## Production boundary
 
 This app is production-shaped, not production-approved. D-03 publication/recalculation,
-calibration, K2/K3 ownership, privacy/retention, OIDC, infrastructure, and shadow-run
+calibration, privacy/retention, OIDC, infrastructure, and shadow-run
 acceptance remain release blockers. Do not expose the Vite server or use local
 authentication outside loopback development.

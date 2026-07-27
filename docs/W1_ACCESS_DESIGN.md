@@ -1,5 +1,11 @@
 # W1 — Identity & Access (single-company, simplified)
 
+> Superseded operational note (2026-07-27): the application remains
+> role-protected and aggregate-only, but sensitivity tiers no longer control
+> audit, billing, or report activation. The existing database column and the
+> design below are retained as migration history, not as an active pipeline
+> barrier.
+
 **Confirmed scope:** this platform is for **Kairali only** — not a multi-tenant product.
 The tenant concept is dropped entirely. No `kaudit_tenant`, no `kaudit_membership`, and
 **no `tenant_id` on any table** (the ~60-table `tenant_id` backfill phase, old 0004/0005,

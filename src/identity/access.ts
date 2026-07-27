@@ -6,10 +6,9 @@
 //   • 'user'  → day-to-day operational access (read/review/reconcile/report), NOT admin actions.
 //   • 'unassigned' (the seed default) and anything unknown → nothing.
 //
-//   • max_sensitivity_tier (on kaudit_user) → who may view K2/K3 CALL CONTENT. Orthogonal to
-//     roles: a 'user' with operational permissions still cannot open health audio unless an
-//     admin has raised their ceiling. Only an admin may change it ('sensitivity:grant'), and
-//     that change must be written to the audit log (application enforcement).
+// Legacy compatibility: max_sensitivity_tier and its helpers remain because migration 0003
+// has already been applied. The current internal aggregate application exposes no raw call
+// content and does not use sensitivity tiers to authorize audit, billing, or reporting.
 
 // Day-to-day operational permissions granted to the 'user' role.
 export const USER_PERMISSIONS: readonly string[] = [

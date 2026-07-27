@@ -33,8 +33,8 @@ aggregate database values.
 
 ## Mandatory gates shown in the UI
 
-- **Access control not enforced:** W1 defines `admin` / `user` and sensitivity
-  ceilings, but the local server has no login or request-level permission guard.
+- **Access control not enforced:** W1 defines `admin` / `user`, but the static
+  local preview has no login or request-level permission guard.
   It binds to loopback only and must not be deployed or distributed.
 - **Billing provisional:** D-03's interpretation is approved, but the new hashed card
   is not published and the legacy vendor-duration rows are not independently traced.

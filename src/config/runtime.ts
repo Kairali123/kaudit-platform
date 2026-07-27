@@ -33,8 +33,6 @@ export interface RuntimeConfig {
       }
   releaseGates: {
     calibrationComplete: boolean
-    k23AutomationEnabled: boolean
-    clinicalSafetyOwner: string | null
     reportingApproved: boolean
   }
 }
@@ -188,18 +186,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
 
   const releaseGates = {
     calibrationComplete: bool(env, 'KAUDIT_CALIBRATION_COMPLETE'),
-    k23AutomationEnabled: bool(env, 'KAUDIT_K23_AUTOMATION_ENABLED'),
-    clinicalSafetyOwner: optional(env, 'KAUDIT_K23_CLINICAL_SAFETY_OWNER'),
     reportingApproved: bool(env, 'KAUDIT_REPORTING_APPROVED'),
-  }
-  if (
-    releaseGates.k23AutomationEnabled &&
-    (!releaseGates.calibrationComplete ||
-      !releaseGates.clinicalSafetyOwner)
-  ) {
-    throw new ConfigurationError(
-      'K2/K3 automation requires completed calibration and KAUDIT_K23_CLINICAL_SAFETY_OWNER',
-    )
   }
 
   return {

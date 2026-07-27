@@ -35,9 +35,8 @@ export interface AutomationAuthority {
   threshold: string | null
   language: string
   findingType: string
+  /** Legacy classification metadata only; it never changes automation authority. */
   sensitivityTier: SensitivityTier
-  k23AutomationEnabled: boolean
-  clinicalSafetyOwner: string | null
   recheckAttempt: number
   maximumRechecks: number
 }
@@ -64,7 +63,6 @@ export type BillingUnresolvedReason =
   | 'THRESHOLD_NOT_CONFIGURED'
   | 'LOW_CONFIDENCE_RECHECK_REQUIRED'
   | 'LOW_CONFIDENCE_RECHECK_EXHAUSTED'
-  | 'K23_AUTOMATION_NOT_APPROVED'
   | 'CONVERSATION_ASSESSMENT_UNRESOLVED'
 
 export type BillingNextAction =
@@ -72,7 +70,6 @@ export type BillingNextAction =
   | 'configure_threshold'
   | 'retry_with_secondary_model'
   | 'hold_unresolved_until_cycle_close'
-  | 'await_clinical_safety_approval'
   | 'retry_conversation_assessment'
 
 export interface BillingDecisionTrace {
