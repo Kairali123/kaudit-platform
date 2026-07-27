@@ -42,6 +42,10 @@ This worker belongs entirely to `kaudit-platform`. It reads only shared MySQL
 `kaudit_*` rows and `kaudit_call_artifact.source_url`; it never reads the KCRM
 folder.
 
+Store the real `OPENAI_API_KEY` outside the repository in
+`$HOME/.kcrm-audit/.env.local`. Both re-audit commands load that ignored
+external file after the project-local non-secret configuration.
+
 Run a bounded first batch:
 
 ```bash

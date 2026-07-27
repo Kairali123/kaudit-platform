@@ -36,8 +36,8 @@
     "w3:backfill": "node --env-file-if-exists=.env src/cli/run-backfill.ts",
     "w1:identity": "node --env-file-if-exists=.env src/cli/run-identity-backfill.ts",
     "w1:grant-admin": "node --env-file-if-exists=.env src/cli/run-admin-grant.ts",
-    "reaudit:sample": "node --env-file-if-exists=.env --env-file-if-exists=.env.local src/cli/run-reaudit-sample.ts",
-    "audit:worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.local src/cli/run-reaudit-worker.ts"
+    "reaudit:sample": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --env-file-if-exists=$HOME/.kcrm-audit/.env.local src/cli/run-reaudit-sample.ts",
+    "audit:worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --env-file-if-exists=$HOME/.kcrm-audit/.env.local src/cli/run-reaudit-worker.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1093.0",
