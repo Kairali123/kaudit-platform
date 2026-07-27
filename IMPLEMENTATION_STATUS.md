@@ -1,5 +1,24 @@
 # Implementation status
 
+## Full-call re-audit preflight — 2026-07-27
+
+- ✅ Read-only production preflight confirms only 224/43,245 calls have a
+  completed classification and only 96 have a conversation-end timestamp.
+- ✅ Read-only shadow pipeline now performs fresh proxy fetch, evidence hashing,
+  Whisper timestamp transcription, natural-block merging, structured
+  GPT-4o-mini classification, 60-second wrap-up grace, and deterministic billing
+  projection.
+- ✅ Five authorized real calls completed 5/5 without processing failures; no
+  database writes or transcript/customer content were emitted.
+- ⚠️ Only 16,371 calls have recording URLs. The other 26,874 are unauditable and
+  must remain explicitly accepted-as-billed/unverified at cycle close.
+- ⚠️ All 43,245 calls currently default to K2. K2/K3 final automation remains
+  inactive because the clinical/safety owner is still unnamed.
+- ⚠️ Calibration is incomplete, the only rate card is draft, and migration 0006
+  has not been applied. A regenerated bill can therefore only be provisional.
+- ❌ The resumable production writer/full-batch executor has not been activated.
+  See `docs/REAUDIT_RUNBOOK.md`.
+
 Updated: 2026-07-27
 
 ## Current slice

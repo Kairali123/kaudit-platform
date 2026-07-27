@@ -4,6 +4,7 @@ export interface FetchOk {
   ok: true
   status: number
   bytes: Buffer
+  contentType?: string
 }
 export interface FetchFail {
   ok: false

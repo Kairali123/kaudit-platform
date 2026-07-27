@@ -1,5 +1,17 @@
 # Changelog
 
+## 2026-07-27 — read-only full-call re-audit preflight
+
+- Added a read-only real-call shadow runner using fresh KServe proxy bytes,
+  SHA-256 evidence checks, Whisper timestamps, pinned GPT-4o-mini structured
+  classification, and deterministic KServe charge projection.
+- Added synthetic tests for transcript-block merging, impossible model outputs,
+  60-second wrap-up grace, K2 provisional gating, and evidence alteration.
+- Confirmed by metadata-only queries that 224/43,245 calls were classified,
+  16,371 have recording URLs, 26,874 do not, and all calls currently default to
+  K2.
+- Ran five real shadow calls successfully with zero database writes.
+
 ## Unreleased
 
 - Added the finance-approved KServe verified-billing V2 core: final-customer-exchange

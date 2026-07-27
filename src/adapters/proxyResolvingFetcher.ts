@@ -56,7 +56,7 @@ export function createProxyResolvingFetcher(
         if (bytes.byteLength === 0) {
           return { ok: false, status: res.status, error: 'empty_body' }
         }
-        return { ok: true, status: res.status, bytes }
+        return { ok: true, status: res.status, bytes, contentType }
       } catch (err) {
         return { ok: false, status: null, error: String((err as Error)?.message || err) }
       }
