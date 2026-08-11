@@ -9,3 +9,4 @@ dist/
 *.tsbuildinfo
 monitor-sample.html
 dashboard-sample.html
+.vercel
