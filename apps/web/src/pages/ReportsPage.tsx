@@ -3,11 +3,14 @@ import { ArrowDownRight, ArrowRight, ArrowUpRight, Minus } from 'lucide-react'
 import { ErrorState, LoadingState, Notice } from '../components/States'
 import { PageHeader, UpdatedAt } from '../components/Metrics'
 import { getJson, type ReportsData } from '../lib/api'
+import { useBillingPeriod } from '../lib/billingPeriod'
 
 export function ReportsPage() {
+  const period = useBillingPeriod()
   const query = useQuery({
-    queryKey: ['reports'],
-    queryFn: () => getJson<ReportsData>('/api/v1/reports'),
+    queryKey: ['reports', period.month],
+    queryFn: () =>
+      getJson<ReportsData>(period.apiPath('/api/v1/reports')),
   })
   if (query.isLoading) return <LoadingState />
   if (query.error)
@@ -18,7 +21,11 @@ export function ReportsPage() {
       <PageHeader
         eyebrow="D-12"
         title="Revenue snapshots"
-        description="Short management views at weekly, monthly, quarterly, and yearly cadence."
+        description={
+          period.month === 'all'
+            ? 'Short management views at weekly, monthly, quarterly, and yearly cadence.'
+            : `Monthly revenue snapshot for ${period.label}; choose All periods for cross-cadence reporting.`
+        }
         badge={
           <span className={`status-badge ${data.authority}`}>
             {data.authority === 'audit_pending'
@@ -41,10 +48,27 @@ export function ReportsPage() {
           signed financial statements.
         </Notice>
       )}
-      <Notice tone="info" title="Current delivery: protected dashboard">
-        PDF/Excel export and automatic finance/management notifications are not
-        active yet. When implemented, they will run only after this cycle gate
-        releases the verified figures.
+      <Notice
+        tone={
+          data.emailDelivery?.status === 'published'
+            ? 'success'
+            : data.emailDelivery?.status === 'dead_letter'
+              ? 'warning'
+              : 'info'
+        }
+        title="Automated PDF + Excel email delivery"
+      >
+        {period.month === 'all'
+          ? 'Choose one bill month to see its delivery status.'
+          : data.emailDelivery?.status === 'published'
+            ? `Sent ${data.emailDelivery.sentAt ? new Date(data.emailDelivery.sentAt).toLocaleString('en-IN') : ''}.`
+            : data.emailDelivery?.status === 'pending' ||
+                data.emailDelivery?.status === 'retry' ||
+                data.emailDelivery?.status === 'publishing'
+              ? `Delivery is ${data.emailDelivery.status}; ${data.emailDelivery.attempts} failed attempt(s).`
+              : data.emailDelivery?.status === 'dead_letter'
+                ? `Delivery stopped after ${data.emailDelivery.attempts} attempt(s): ${data.emailDelivery.lastErrorCode || 'unknown failure'}.`
+                : 'Not queued. Email is created automatically only after the full audit, final traced billing, published rate card, uploaded invoice, and reporting approval are all present.'}
       </Notice>
       <div className="snapshot-grid">
         {data.snapshots.map((snapshot) => {

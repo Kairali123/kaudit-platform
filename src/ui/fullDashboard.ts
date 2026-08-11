@@ -366,7 +366,7 @@ export function buildRevenueSnapshots(
         options.releaseVerifiedValues === false ? null : variance,
       basisLabel:
         s.vendorClaimedBasis === 'invoiced'
-          ? 'invoice total'
+          ? 'invoice subtotal (pre-tax)'
           : s.vendorClaimedBasis === 'provider_claimed_no_invoice'
             ? 'provider-asserted usage; no invoice'
             : 'claim unavailable',

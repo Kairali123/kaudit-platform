@@ -1,19 +1,31 @@
 import { useQuery } from '@tanstack/react-query'
 import {
+  AlertTriangle,
   ChevronLeft,
   ChevronRight,
+  Clock3,
+  FileQuestion,
   LockKeyhole,
   ShieldCheck,
 } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import {
+  useEffect,
+  useMemo,
+  useState,
+  type Dispatch,
+  type SetStateAction,
+} from 'react'
+import { Link } from 'react-router-dom'
 import { MetricGrid, PageHeader, UpdatedAt } from '../components/Metrics'
 import { ErrorState, LoadingState, Notice } from '../components/States'
 import {
   getJson,
   type AuditMonitorData,
   type AuditMonitorRow,
+  type AuditPagination,
   type Tile,
 } from '../lib/api'
+import { useBillingPeriod } from '../lib/billingPeriod'
 
 function seconds(value: number | null): string {
   if (value == null) return '—'
@@ -43,25 +55,97 @@ function rowStatus(row: AuditMonitorRow): string {
     : row.confirmationStatus
 }
 
+function money(value: string | null): string {
+  if (value == null) return '—'
+  return `₹${Number(value).toLocaleString('en-IN', {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })}`
+}
+
+function usd(value: string): string {
+  return Number(value).toLocaleString('en-US', {
+    style: 'currency',
+    currency: 'USD',
+    minimumFractionDigits: 4,
+    maximumFractionDigits: 8,
+  })
+}
+
+function PaginationFooter({
+  pagination,
+  setPage,
+}: {
+  pagination: AuditPagination
+  setPage: Dispatch<SetStateAction<number>>
+}) {
+  return (
+    <footer className="table-pagination">
+      <span>
+        Page {pagination.page} of {pagination.totalPages}
+      </span>
+      <div>
+        <button
+          type="button"
+          disabled={pagination.page <= 1}
+          onClick={() =>
+            setPage((value) => Math.max(1, value - 1))
+          }
+        >
+          <ChevronLeft size={15} aria-hidden /> Previous
+        </button>
+        <button
+          type="button"
+          disabled={pagination.page >= pagination.totalPages}
+          onClick={() => setPage((value) => value + 1)}
+        >
+          Next <ChevronRight size={15} aria-hidden />
+        </button>
+      </div>
+    </footer>
+  )
+}
+
 export function AuditMonitorPage() {
+  const period = useBillingPeriod()
   const [page, setPage] = useState(1)
+  const [pendingPage, setPendingPage] = useState(1)
+  const [noRecordingPage, setNoRecordingPage] = useState(1)
   const [category, setCategory] = useState('')
   const [language, setLanguage] = useState('')
   const queryString = new URLSearchParams({
     page: String(page),
+    pendingPage: String(pendingPage),
+    noRecordingPage: String(noRecordingPage),
     pageSize: '25',
     ...(category ? { category } : {}),
     ...(language ? { language } : {}),
   }).toString()
   const query = useQuery({
-    queryKey: ['audit-monitor', page, category, language],
+    queryKey: [
+      'audit-monitor',
+      period.month,
+      page,
+      pendingPage,
+      noRecordingPage,
+      category,
+      language,
+    ],
     queryFn: () =>
-      getJson<AuditMonitorData>(`/api/v1/audits?${queryString}`),
+      getJson<AuditMonitorData>(
+        period.apiPath(`/api/v1/audits?${queryString}`),
+      ),
     refetchInterval: 15_000,
   })
+  useEffect(() => {
+    setPage(1)
+    setPendingPage(1)
+    setNoRecordingPage(1)
+  }, [period.month])
   const tiles = useMemo<Tile[]>(() => {
     const summary = query.data?.summary
     if (!summary) return []
+    const financials = summary.auditedFinancials
     return [
       {
         label: 'AI-audited calls',
@@ -82,10 +166,77 @@ export function AuditMonitorPage() {
         status: summary.noRecordingCalls > 0 ? 'warn' : 'good',
       },
       {
-        label: 'New V2 re-audit',
-        value: summary.reauditV2Calls.toLocaleString('en-IN'),
-        sub: 'Persisted production V2 results',
-        status: summary.reauditV2Calls > 0 ? 'good' : 'pending',
+        label: 'GPT tokens recorded',
+        value: summary.aiUsage.historicalUsageRecorded
+          ? summary.aiUsage.gptTotalTokens.toLocaleString('en-IN')
+          : 'Not recorded',
+        sub: summary.aiUsage.historicalUsageRecorded
+          ? `${summary.aiUsage.gptInputTokens.toLocaleString('en-IN')} input · ${summary.aiUsage.gptOutputTokens.toLocaleString('en-IN')} output · ${summary.aiUsage.trackedAuditRuns.toLocaleString('en-IN')} audits`
+          : 'Tracking begins after migration 0007; legacy usage cannot be reconstructed exactly',
+        status:
+          summary.aiUsage.historicalUsageRecorded
+            ? 'good'
+            : 'pending',
+      },
+      {
+        label: 'Whisper audio processed',
+        value: summary.aiUsage.historicalUsageRecorded
+          ? `${(
+              Number(summary.aiUsage.whisperAudioSeconds) / 60
+            ).toLocaleString('en-IN', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })} min`
+          : 'Not recorded',
+        sub:
+          'Whisper-1 reports billed audio duration, not text tokens',
+        status:
+          summary.aiUsage.historicalUsageRecorded
+            ? 'good'
+            : 'pending',
+      },
+      {
+        label: 'Estimated AI spend',
+        value: usd(financials.estimatedAiSpendUsd),
+        sub:
+          `${financials.aiSpendTrackedCalls.toLocaleString('en-IN')} of ` +
+          `${financials.scopedAuditedCalls.toLocaleString('en-IN')} audited calls tracked` +
+          (financials.aiSpendUntrackedCalls > 0
+            ? ` · ${financials.aiSpendUntrackedCalls.toLocaleString('en-IN')} legacy costs unavailable`
+            : '') +
+          (financials.unpricedAiUsageRows > 0
+            ? ` · ${financials.unpricedAiUsageRows.toLocaleString('en-IN')} unpriced model rows`
+            : '') +
+          ` · ${financials.aiSpendPricingBasis}`,
+        status:
+          financials.aiSpendUntrackedCalls === 0 &&
+          financials.unpricedAiUsageRows === 0
+            ? 'good'
+            : 'warn',
+      },
+      {
+        label: 'KServe charge · audited calls',
+        value: money(financials.kserveChargeInr),
+        sub:
+          `${financials.kservePricedCalls.toLocaleString('en-IN')} of ` +
+          `${financials.scopedAuditedCalls.toLocaleString('en-IN')} audited calls · provider minutes × ₹9.50`,
+        status:
+          financials.kservePricedCalls ===
+          financials.scopedAuditedCalls
+            ? 'neutral'
+            : 'warn',
+      },
+      {
+        label: 'Auditor calculated · audited calls',
+        value: money(financials.auditorChargeInr),
+        sub:
+          `${financials.auditorCalculatedCalls.toLocaleString('en-IN')} of ` +
+          `${financials.scopedAuditedCalls.toLocaleString('en-IN')} audited calls priced from final billing or audited duration facts`,
+        status:
+          financials.auditorCalculatedCalls ===
+          financials.scopedAuditedCalls
+            ? 'good'
+            : 'warn',
       },
     ]
   }, [query.data])
@@ -99,17 +250,17 @@ export function AuditMonitorPage() {
       <PageHeader
         eyebrow="Developer control"
         title="Audit monitor"
-        description="Admin-only inspection of AI processing coverage and privacy-safe call-level audit metadata."
+        description={`Admin-only AI processing coverage and privacy-safe audit metadata for ${period.label}.`}
         badge={
-          <span className="status-badge uncalibrated">
+          <span className="status-badge automated">
             <LockKeyhole size={13} aria-hidden /> Admin only
           </span>
         }
       />
-      <Notice tone="warning" title="Model output is not calibrated ground truth">
-        Use this view to detect implausible categories, confidence, durations, or
-        stuck processing. These legacy outputs are not authoritative billing or
-        dispute decisions.
+      <Notice tone="warning" title="Automated consensus—not human ground truth">
+        Use this view to inspect categories, confidence, durations, calculations,
+        and stuck processing. Open Call is restricted to administrators and
+        every content access is logged.
       </Notice>
       <MetricGrid tiles={tiles} />
 
@@ -177,7 +328,9 @@ export function AuditMonitorPage() {
                 <th>Difference</th>
                 <th>Evidence</th>
                 <th>Model / engine</th>
+                <th>AI usage</th>
                 <th>State</th>
+                <th>Admin review</th>
               </tr>
             </thead>
             <tbody>
@@ -211,33 +364,173 @@ export function AuditMonitorPage() {
                       {row.auditEngineVersion || row.outcomeTaxonomyVersion || 'Version unavailable'}
                     </small>
                   </td>
+                  <td>
+                    {row.aiUsage.totalTokens == null
+                      ? 'Legacy · not recorded'
+                      : `${row.aiUsage.totalTokens.toLocaleString('en-IN')} GPT tokens`}
+                    <small className="cell-sub">
+                      {row.aiUsage.totalTokens == null
+                        ? 'Tracking begins with migration 0007'
+                        : `${row.aiUsage.inputTokens?.toLocaleString('en-IN') ?? 0} input · ${row.aiUsage.outputTokens?.toLocaleString('en-IN') ?? 0} output · ${row.aiUsage.audioSeconds ?? '0.000'}s Whisper`}
+                    </small>
+                  </td>
                   <td>{rowStatus(row)}</td>
+                  <td>
+                    <Link
+                      className="table-action"
+                      to={period.routePath(
+                        `/audits/call?task=${encodeURIComponent(
+                          row.callReference,
+                        )}`,
+                      )}
+                    >
+                      Open call
+                    </Link>
+                  </td>
                 </tr>
               ))}
             </tbody>
           </table>
         </div>
-        <footer className="table-pagination">
-          <span>
-            Page {data.pagination.page} of {data.pagination.totalPages}
-          </span>
+        <PaginationFooter
+          pagination={data.pagination}
+          setPage={setPage}
+        />
+      </section>
+
+      <section className="data-table content-section audit-table queue-table pending-table">
+        <div className="table-heading">
           <div>
-            <button
-              type="button"
-              disabled={page <= 1}
-              onClick={() => setPage((value) => Math.max(1, value - 1))}
-            >
-              <ChevronLeft size={15} aria-hidden /> Previous
-            </button>
-            <button
-              type="button"
-              disabled={page >= data.pagination.totalPages}
-              onClick={() => setPage((value) => value + 1)}
-            >
-              Next <ChevronRight size={15} aria-hidden />
-            </button>
+            <span className="eyebrow">Pending for audit</span>
+            <h2><Clock3 size={19} aria-hidden /> Recording-backed queue</h2>
           </div>
-        </footer>
+          <span className="soft-chip">
+            {data.pendingPagination.totalRows.toLocaleString('en-IN')} pending
+          </span>
+        </div>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Task / call reference</th>
+                <th>Bill month</th>
+                <th>Processing state</th>
+                <th>Attempts</th>
+                <th>Evidence baseline</th>
+                <th>KServe billed minutes</th>
+                <th>KServe connected</th>
+                <th>Last activity</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.pendingRows.map((row) => (
+                <tr key={row.callReference}>
+                  <td><code>{row.callReference}</code></td>
+                  <td>{date(row.billingPeriodDate)}</td>
+                  <td>
+                    <span className="status-badge audit_pending">
+                      {row.processingStatus}
+                    </span>
+                  </td>
+                  <td>{row.attemptCount}</td>
+                  <td>
+                    <span className={`integrity-dot ${row.evidenceHashRecorded ? 'good' : 'missing'}`} />
+                    {row.evidenceHashRecorded ? 'Hashed' : 'Not hashed'}
+                  </td>
+                  <td>{row.vendorBilledMinutes || '—'}</td>
+                  <td>{seconds(row.vendorConnectedDurationMs)}</td>
+                  <td>{date(row.lastActivityAt)}</td>
+                </tr>
+              ))}
+              {data.pendingRows.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="table-empty">
+                    No recording-backed calls are waiting for audit.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <PaginationFooter
+          pagination={data.pendingPagination}
+          setPage={setPendingPage}
+        />
+      </section>
+
+      <section className="data-table content-section audit-table queue-table no-recording-table">
+        <div className="table-heading">
+          <div>
+            <span className="eyebrow">No recording URL</span>
+            <h2><FileQuestion size={19} aria-hidden /> Cannot be independently audited</h2>
+          </div>
+          <span className="soft-chip">
+            {data.noRecordingPagination.totalRows.toLocaleString('en-IN')} calls
+          </span>
+        </div>
+        <Notice tone="warning" title="KServe supplied no recording evidence">
+          <AlertTriangle size={17} aria-hidden /> These calls cannot be
+          listened to or transcribed. Admin review shows the available
+          KServe usage and billing resolution without inventing evidence.
+        </Notice>
+        <div className="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>Task / call reference</th>
+                <th>Bill month</th>
+                <th>Evidence state</th>
+                <th>KServe billed minutes</th>
+                <th>KServe connected</th>
+                <th>Billing resolution</th>
+                <th>Auditor amount</th>
+                <th>Admin review</th>
+              </tr>
+            </thead>
+            <tbody>
+              {data.noRecordingRows.map((row) => (
+                <tr key={row.callReference}>
+                  <td><code>{row.callReference}</code></td>
+                  <td>{date(row.billingPeriodDate)}</td>
+                  <td>
+                    <span className="status-badge provisional">
+                      No recording URL
+                    </span>
+                  </td>
+                  <td>{row.vendorBilledMinutes || '—'}</td>
+                  <td>{seconds(row.vendorConnectedDurationMs)}</td>
+                  <td>
+                    {row.billingBasis || row.billingStatus || 'Audit pending'}
+                  </td>
+                  <td>{money(row.auditorAmount)}</td>
+                  <td>
+                    <Link
+                      className="table-action"
+                      to={period.routePath(
+                        `/audits/call?task=${encodeURIComponent(
+                          row.callReference,
+                        )}`,
+                      )}
+                    >
+                      Admin review
+                    </Link>
+                  </td>
+                </tr>
+              ))}
+              {data.noRecordingRows.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="table-empty">
+                    Every call in this period has a recording URL.
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <PaginationFooter
+          pagination={data.noRecordingPagination}
+          setPage={setNoRecordingPage}
+        />
       </section>
       <UpdatedAt value={data.generatedAt} />
     </>

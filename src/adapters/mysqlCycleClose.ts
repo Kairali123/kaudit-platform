@@ -1,0 +1,163 @@
+import type { Pool, RowDataPacket } from 'mysql2/promise'
+import type { BillingMonthScope } from '../reporting/billingMonth.ts'
+import type { PublishedRateCard } from '../billing/types.ts'
+
+interface CandidateRow extends RowDataPacket {
+  call_id: string
+  audit_run_id: string | null
+  fallback_reason: 'no_recording' | 'automated_validation_unresolved'
+  vendor_billed_minutes: string
+  claimed_duration_ms: number | string | null
+  connected_duration_ms: number | string | null
+  evidence_object_id: string
+  evidence_sha256: string
+}
+
+interface RateCardRow extends RowDataPacket {
+  id: string
+  version: string
+  status: string
+  currency: string
+  ruleset_sha256: string | null
+  approved_by: string | null
+  approved_at: Date | string | null
+}
+
+export interface AcceptedAsBilledCandidate {
+  callId: string
+  auditRunId: string | null
+  fallbackReason:
+    | 'no_recording'
+    | 'automated_validation_unresolved'
+  vendorBilledMinutes: string
+  claimedDurationMs: number | null
+  connectedDurationMs: number | null
+  evidenceObjectId: string
+  evidenceSha256: string
+}
+
+function integerOrNull(value: unknown): number | null {
+  return value == null ? null : Number(value)
+}
+
+export async function loadPublishedRateCard(
+  pool: Pool,
+  id: string,
+): Promise<PublishedRateCard> {
+  const [rows] = await pool.execute<RateCardRow[]>(
+    `SELECT id, version, status, currency, ruleset_sha256,
+            approved_by, approved_at
+     FROM kaudit_rate_card_version
+     WHERE id = ?`,
+    [id],
+  )
+  const row = rows[0]
+  if (!row) throw new Error(`Rate card ${id} was not found`)
+  if (row.currency !== 'INR') {
+    throw new Error('The KServe billing engine supports INR only')
+  }
+  return {
+    id: row.id,
+    version: row.version,
+    status: row.status,
+    currency: 'INR',
+    rulesetSha256: row.ruleset_sha256,
+    approvedBy: row.approved_by,
+    approvedAt:
+      row.approved_at == null
+        ? null
+        : new Date(row.approved_at).toISOString(),
+  }
+}
+
+export async function listAcceptedAsBilledCandidates(
+  pool: Pool,
+  period: BillingMonthScope,
+  limit: number,
+): Promise<AcceptedAsBilledCandidate[]> {
+  const [rows] = await pool.execute<CandidateRow[]>(
+    `SELECT
+       c.id AS call_id,
+       c.latest_audit_run_id AS audit_run_id,
+       CASE
+         WHEN EXISTS (
+           SELECT 1 FROM kaudit_call_artifact recording_reason
+           WHERE recording_reason.call_id = c.id
+             AND recording_reason.artifact_type = 'recording'
+             AND recording_reason.is_final = 1
+             AND recording_reason.source_url IS NOT NULL
+         )
+         THEN 'automated_validation_unresolved'
+         ELSE 'no_recording'
+       END AS fallback_reason,
+       CAST(minutes.minutes_decimal AS CHAR) AS vendor_billed_minutes,
+       ROUND(with_ringing.quantity_decimal * 1000) AS claimed_duration_ms,
+       ROUND(connected.quantity_decimal * 1000) AS connected_duration_ms,
+       evidence.id AS evidence_object_id,
+       evidence.sha256 AS evidence_sha256
+     FROM kaudit_call c
+     JOIN kaudit_provider_cost minutes
+       ON minutes.call_id = c.id
+      AND minutes.provider_sku = 'vendor_asserted_billed_minutes'
+      AND minutes.is_final = 1
+     JOIN kaudit_evidence_object evidence
+       ON evidence.id = minutes.source_evidence_object_id
+     LEFT JOIN kaudit_provider_cost with_ringing
+       ON with_ringing.call_id = c.id
+      AND with_ringing.provider_sku = 'duration_with_ringing_sec'
+      AND with_ringing.is_final = 1
+     LEFT JOIN kaudit_provider_cost connected
+       ON connected.call_id = c.id
+      AND connected.provider_sku = 'duration_without_ringing_sec'
+      AND connected.is_final = 1
+     WHERE c.billing_period_date BETWEEN ? AND ?
+       AND (
+         NOT EXISTS (
+           SELECT 1
+           FROM kaudit_call_artifact recording
+           WHERE recording.call_id = c.id
+             AND recording.artifact_type = 'recording'
+             AND recording.is_final = 1
+             AND recording.source_url IS NOT NULL
+         )
+         OR EXISTS (
+           SELECT 1
+           FROM kaudit_automated_decision validation
+           WHERE validation.call_id = c.id
+             AND validation.decision_type =
+                   'automated_consensus_validation'
+             AND validation.decision_status = 'unresolved'
+             AND NOT EXISTS (
+               SELECT 1
+               FROM kaudit_automated_decision newer_validation
+               WHERE newer_validation.supersedes_decision_id =
+                     validation.id
+             )
+         )
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM kaudit_billing_calculation calculation
+         WHERE calculation.call_id = c.id
+           AND calculation.status = 'final'
+           AND NOT EXISTS (
+             SELECT 1
+             FROM kaudit_billing_calculation newer
+             WHERE newer.supersedes_calculation_id = calculation.id
+           )
+       )
+     ORDER BY c.id
+     LIMIT ?`,
+    [period.start, period.end, limit],
+  )
+  return rows.map((row) => ({
+    callId: row.call_id,
+    auditRunId: row.audit_run_id,
+    fallbackReason: row.fallback_reason,
+    vendorBilledMinutes: row.vendor_billed_minutes,
+    claimedDurationMs: integerOrNull(row.claimed_duration_ms),
+    connectedDurationMs: integerOrNull(row.connected_duration_ms),
+    evidenceObjectId: row.evidence_object_id,
+    evidenceSha256: row.evidence_sha256,
+  }))
+}

@@ -1,48 +1,136 @@
 import {
   Activity,
   AudioLines,
+  CalendarDays,
   CircleDollarSign,
   FileChartColumn,
   Gauge,
   Home,
   LogOut,
   Menu,
+  PhoneCall,
   Shield,
   ShieldCheck,
+  SlidersHorizontal,
   Sparkles,
   ScanSearch,
   UploadCloud,
   X,
+  type LucideIcon,
 } from 'lucide-react'
 import { useQuery } from '@tanstack/react-query'
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import {
   Navigate,
   NavLink,
   Outlet,
   useLocation,
+  useSearchParams,
 } from 'react-router-dom'
 import { ErrorState, LoadingState } from './States'
 import {
   ApiError,
   getJson,
   type AuthConfig,
+  type BillingPeriodsData,
   type Profile,
 } from '../lib/api'
+import {
+  BillingPeriodProvider,
+  type BillingPeriodContextValue,
+} from '../lib/billingPeriod'
 
-const navigation = [
-  { to: '/', label: 'Home', icon: Home, end: true },
-  { to: '/overview', label: 'Overview', icon: Gauge },
-  { to: '/evidence', label: 'Calls & evidence', icon: AudioLines },
-  { to: '/findings', label: 'Findings', icon: Sparkles },
-  { to: '/billing', label: 'Billing', icon: CircleDollarSign },
-  { to: '/reports', label: 'Reports', icon: FileChartColumn },
-  { to: '/operations', label: 'Operations', icon: Activity },
+interface NavItem {
+  to: string
+  label: string
+  icon: LucideIcon
+  /** Exact-path matching, so a parent link is not active on a child route. */
+  end?: boolean
+  /** Rendered only for the 'admin' role; omitted entirely for everyone else. */
+  admin?: boolean
+}
+
+interface NavGroup {
+  id: string
+  label: string
+  items: NavItem[]
+}
+
+/**
+ * Navigation is grouped by SYSTEM, not by role. Billing Audit and Call Audit
+ * are separate modules with separate data, separate periods and separate
+ * access rules, and the sidebar has to say so: a flat list reads as one
+ * product with an oddly named page in the middle of it.
+ *
+ * Admin-only destinations sit inside the group they administer rather than in
+ * a trailing admin block, so the boundary a reader has to hold is the module
+ * boundary and not a second, crossing one. Call Audit RULES carry prompts and
+ * model settings and are admin-gated; Call Audit REPORTING is anonymous and
+ * aggregate, so it is never gated on a role.
+ */
+const NAVIGATION_GROUPS: NavGroup[] = [
+  {
+    id: 'platform',
+    label: 'Platform',
+    items: [
+      { to: '/', label: 'Home', icon: Home, end: true },
+      { to: '/overview', label: 'Overview', icon: Gauge },
+    ],
+  },
+  {
+    id: 'billing-audit',
+    label: 'Billing Audit',
+    items: [
+      { to: '/evidence', label: 'Calls & evidence', icon: AudioLines },
+      { to: '/findings', label: 'Findings', icon: Sparkles },
+      { to: '/billing', label: 'Billing', icon: CircleDollarSign },
+      { to: '/reports', label: 'Reports', icon: FileChartColumn },
+      { to: '/operations', label: 'Operations', icon: Activity },
+      {
+        to: '/imports/new',
+        label: 'Import billing cycle',
+        icon: UploadCloud,
+        admin: true,
+      },
+      { to: '/audits', label: 'Audit monitor', icon: ScanSearch, admin: true },
+    ],
+  },
+  {
+    id: 'call-audit',
+    label: 'Call Audit',
+    items: [
+      // `end` keeps the report link from lighting up on the rules child route.
+      { to: '/call-audit', label: 'Call audit report', icon: PhoneCall, end: true },
+      {
+        to: '/call-audit/settings',
+        label: 'Call audit rules',
+        icon: SlidersHorizontal,
+        admin: true,
+      },
+    ],
+  },
 ]
+
+/**
+ * Whether the global bill month means anything on a path. Billing Audit reads
+ * are scoped by bill month; Call Audit is a separate module that scopes itself
+ * by cadence and UTC period, so carrying `?month=` onto its routes would claim
+ * a filter those pages never apply. One predicate drives both the topbar
+ * control and the links, so the URL can never disagree with the chrome.
+ *
+ * The name is deliberately unlike the component's `billMonthInScope` state:
+ * a helper and a const that differ by one syllable invite a later edit that
+ * makes them differ by none, and a const initialized from a same-named
+ * function is a TDZ crash the type checker cannot see.
+ */
+function billMonthAppliesToPath(pathname: string): boolean {
+  return !pathname.startsWith('/call-audit')
+}
 
 export function AppShell() {
   const [open, setOpen] = useState(false)
   const location = useLocation()
+  const [searchParams, setSearchParams] = useSearchParams()
   const profileQuery = useQuery({
     queryKey: ['me'],
     queryFn: () => getJson<Profile>('/api/v1/me'),
@@ -54,6 +142,65 @@ export function AppShell() {
       getJson<AuthConfig>('/api/v1/auth/config'),
     staleTime: 60_000,
   })
+  const periodsQuery = useQuery({
+    queryKey: ['billing-periods'],
+    queryFn: () =>
+      getJson<BillingPeriodsData>('/api/v1/periods'),
+    enabled: profileQuery.isSuccess,
+    staleTime: 30_000,
+  })
+  const billMonthInScope = billMonthAppliesToPath(location.pathname)
+  const availableMonths = periodsQuery.data?.months ?? []
+  const requestedMonth = searchParams.get('month')
+  const monthIsAvailable =
+    requestedMonth === 'all' ||
+    availableMonths.some(
+      (candidate) => candidate.month === requestedMonth,
+    )
+  const selectedMonth =
+    monthIsAvailable && requestedMonth
+      ? requestedMonth
+      : periodsQuery.data?.defaultMonth ?? 'all'
+  const selectedLabel =
+    selectedMonth === 'all'
+      ? 'All periods'
+      : availableMonths.find(
+          (candidate) => candidate.month === selectedMonth,
+        )?.label ?? selectedMonth
+  useEffect(() => {
+    // Defaulting the month on a Call Audit route would stamp a billing filter
+    // into a URL that module never reads, and it would fight the page's own
+    // query params on every render.
+    if (!periodsQuery.data || monthIsAvailable || !billMonthInScope) return
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current)
+      next.set(
+        'month',
+        periodsQuery.data.defaultMonth ?? 'all',
+      )
+      return next
+    }, { replace: true })
+  }, [
+    billMonthInScope,
+    monthIsAvailable,
+    periodsQuery.data,
+    setSearchParams,
+  ])
+  const periodContext = useMemo<BillingPeriodContextValue>(() => {
+    const withMonth = (target: string): string => {
+      const [pathname, existing = ''] = target.split('?')
+      if (!billMonthAppliesToPath(pathname)) return target
+      const params = new URLSearchParams(existing)
+      params.set('month', selectedMonth)
+      return `${pathname}?${params.toString()}`
+    }
+    return {
+      month: selectedMonth,
+      label: selectedLabel,
+      apiPath: withMonth,
+      routePath: withMonth,
+    }
+  }, [selectedLabel, selectedMonth])
   if (
     profileQuery.error instanceof ApiError &&
     profileQuery.error.status === 401
@@ -62,7 +209,7 @@ export function AppShell() {
       <Navigate
         to="/login"
         replace
-        state={{ from: location.pathname }}
+        state={{ from: `${location.pathname}${location.search}` }}
       />
     )
   }
@@ -78,8 +225,10 @@ export function AppShell() {
   const profile = profileQuery.data
   const auth = authQuery.data
   const secured = profile?.accessControlEnforced === true
+  const isAdmin = profile?.roles.includes('admin') === true
   return (
-    <div className="app-shell">
+    <BillingPeriodProvider value={periodContext}>
+      <div className="app-shell">
       <aside className={open ? 'sidebar open' : 'sidebar'}>
         <div className="brand">
           <span className="brand-mark">K</span>
@@ -97,32 +246,42 @@ export function AppShell() {
           </button>
         </div>
         <nav aria-label="Primary">
-          {[
-            ...navigation,
-            ...(profile?.roles.includes('admin')
-              ? [
-                  { to: '/imports/new', label: 'Import billing cycle', icon: UploadCloud },
-                  { to: '/audits', label: 'Audit monitor', icon: ScanSearch },
-                ]
-              : []),
-          ].map(({ to, label, icon: Icon, end }) => (
-            <NavLink
-              key={to}
-              to={to}
-              end={end}
-              onClick={() => setOpen(false)}
-              title={label}
-            >
-              <Icon size={18} aria-hidden />
-              <span>{label}</span>
-            </NavLink>
-          ))}
+          {NAVIGATION_GROUPS.map((group) => {
+            const items = group.items.filter(
+              (item) => !item.admin || isAdmin,
+            )
+            // A heading over nothing is worse than a missing section.
+            if (items.length === 0) return null
+            return (
+              <section
+                key={group.id}
+                className="nav-group"
+                aria-labelledby={`nav-group-${group.id}`}
+              >
+                <h2 className="nav-group-label" id={`nav-group-${group.id}`}>
+                  {group.label}
+                </h2>
+                {items.map(({ to, label, icon: Icon, end }) => (
+                  <NavLink
+                    key={to}
+                    to={periodContext.routePath(to)}
+                    end={end}
+                    onClick={() => setOpen(false)}
+                    title={label}
+                  >
+                    <Icon size={18} aria-hidden />
+                    <span>{label}</span>
+                  </NavLink>
+                ))}
+              </section>
+            )
+          })}
         </nav>
         <div className="sidebar-footer">
           <ShieldCheck size={17} aria-hidden />
           <div>
-            <strong>Aggregate-only</strong>
-            <span>No audio, transcript, or health content</span>
+            <strong>Aggregate by default</strong>
+            <span>Call content is admin-only and access-logged</span>
           </div>
         </div>
       </aside>
@@ -148,6 +307,32 @@ export function AppShell() {
             <span />
             {secured ? 'Private workspace' : 'Local preview'}
           </div>
+          {!billMonthInScope ? null : (
+            <label className="billing-period-filter">
+              <CalendarDays size={16} aria-hidden />
+              <span>Bill month</span>
+              <select
+                aria-label="Global bill month"
+                value={selectedMonth}
+                disabled={periodsQuery.isLoading}
+                onChange={(event) => {
+                  setSearchParams((current) => {
+                    const next = new URLSearchParams(current)
+                    next.set('month', event.target.value)
+                    next.delete('page')
+                    return next
+                  })
+                }}
+              >
+                {availableMonths.map((period) => (
+                  <option value={period.month} key={period.month}>
+                    {period.label} · {period.callCount.toLocaleString('en-IN')} calls
+                  </option>
+                ))}
+                <option value="all">All periods</option>
+              </select>
+            </label>
+          )}
           <div className="topbar-right">
             <span>
               {secured
@@ -171,6 +356,7 @@ export function AppShell() {
           <Outlet />
         </main>
       </div>
-    </div>
+      </div>
+    </BillingPeriodProvider>
   )
 }

@@ -1,0 +1,332 @@
+import { ConfigurationError, loadRuntimeConfig } from '../config/runtime.ts'
+import { looksLikePemCertificate } from '../runtime/databaseTls.ts'
+
+/**
+ * Validation-only preflight for the Vercel web/API production candidate.
+ *
+ * This module answers exactly one question: *does the environment handed to it
+ * satisfy the contract the accepted runtime already enforces?* It therefore
+ * does nothing else. No pool, no socket, no listener, no model client, no file
+ * read, no write of any kind, and no mutation of the environment it is given.
+ * `loadRuntimeConfig` is the only existing code it calls, because that function
+ * is the repository's single definition of runtime configuration and re-stating
+ * its rules here is how a preflight ends up passing a deployment the runtime
+ * then rejects.
+ *
+ * What it can prove is bounded, and the runbook says so: an environment is
+ * shaped correctly. It proves nothing about a Vercel account, a project link, a
+ * Git remote, migration state, database reachability, or preview routing — all
+ * of which need network or mutable CLI state and stay operator checks.
+ *
+ * ## Output discipline
+ *
+ * Every value below stays inside this function. A finding carries a fixed error
+ * code and environment variable *names* drawn from {@link REPORTABLE_VARIABLES}
+ * — never a value, never a thrown error's message or stack, never CA text, a
+ * URL, an issuer, a client id, or a secret. A name that is not on that list
+ * cannot be reported at all, so no future edit can turn a value into output by
+ * accident.
+ */
+
+export type PreflightErrorCode =
+  | 'NODE_ENGINE_CONTRACT_UNREADABLE'
+  | 'NODE_RUNTIME_UNSUPPORTED'
+  | 'NODE_ENV_NOT_PRODUCTION'
+  | 'TRUST_PROXY_NOT_ENABLED'
+  | 'REQUIRED_VARIABLE_MISSING'
+  | 'DB_CA_SOURCE_MISSING'
+  | 'DB_CA_SOURCE_AMBIGUOUS'
+  | 'DB_CA_PEM_MALFORMED'
+  | 'AUTH_MODE_NOT_OIDC'
+  | 'UNSUPPORTED_VARIABLE_SET'
+  | 'FEATURE_FLAG_INVALID'
+  | 'FEATURE_CONFIG_INCOMPLETE'
+  | 'RUNTIME_CONFIG_INVALID'
+  | 'RUNTIME_CONFIG_UNAVAILABLE'
+
+/** Optional capabilities that were deliberately switched on. Fixed identifiers. */
+export type OptionalFeatureId = 'callAuditRuleTest' | 'recordingProxy'
+
+export interface PreflightFinding {
+  code: PreflightErrorCode
+  /** Environment variable names only; always a subset of REPORTABLE_VARIABLES. */
+  variables: readonly string[]
+}
+
+export interface PreflightReport {
+  ok: boolean
+  checks: number
+  findings: readonly PreflightFinding[]
+  optionalFeatures: readonly OptionalFeatureId[]
+}
+
+export interface VercelPreflightInput {
+  /** Read only; never mutated, never copied into the report. */
+  env: NodeJS.ProcessEnv
+  /** Typically `process.versions.node`. */
+  nodeVersion: string
+  /** `engines.node` from the repository manifest — the single Node contract. */
+  engineNodeRange: string
+}
+
+/**
+ * The checks, in the order they are evaluated and reported.
+ *
+ * Order is fixed so two runs of the same environment produce byte-identical
+ * output, which is what makes the command usable as a CI gate.
+ */
+export const PREFLIGHT_CHECKS = [
+  'node-runtime',
+  'node-env-production',
+  'trust-proxy',
+  'database-settings',
+  'database-ca-source',
+  'auth-mode-oidc',
+  'oidc-settings',
+  'local-auth-variables-absent',
+  'call-audit-rule-test',
+  'recording-proxy',
+  'runtime-config',
+] as const
+
+const DATABASE_VARIABLES = ['DB_HOST', 'DB_NAME', 'DB_USER', 'DB_PASSWORD'] as const
+
+const OIDC_VARIABLES = [
+  'KAUDIT_OIDC_ISSUER',
+  'KAUDIT_OIDC_AUDIENCE',
+  'KAUDIT_OIDC_JWKS_URI',
+] as const
+
+/**
+ * Variables that must NOT be present on a Vercel web deployment.
+ *
+ * The local password credentials belong to a loopback development mode that
+ * production rejects outright, so their presence is a leaked secret rather than
+ * a setting. `KAUDIT_IMPORT_ROOT` would suggest the cycle import service is
+ * wired up; on a function it is deliberately not constructed at all.
+ */
+const UNSUPPORTED_VARIABLES = [
+  'KAUDIT_DEV_USER_EMAIL',
+  'KAUDIT_LOCAL_PASSWORD_HASH',
+  'KAUDIT_LOCAL_SESSION_SECRET',
+  'KAUDIT_IMPORT_ROOT',
+] as const
+
+/**
+ * The only variable names this command may ever print.
+ *
+ * `loadRuntimeConfig` reports a problem by naming the variable in an error
+ * message. Rather than forwarding that message — which a future edit could
+ * widen — the message is intersected with this list, so output stays names.
+ */
+export const REPORTABLE_VARIABLES: readonly string[] = Object.freeze([
+  'NODE_ENV',
+  'DB_HOST',
+  'DB_PORT',
+  'DB_NAME',
+  'DB_USER',
+  'DB_PASSWORD',
+  'DB_SSL_CA_FILE',
+  'DB_SSL_CA_PEM',
+  'KAUDIT_AUTH_MODE',
+  'KAUDIT_SECURE_HOST',
+  'KAUDIT_SECURE_PORT',
+  'KAUDIT_TRUST_PROXY',
+  'KAUDIT_OIDC_ISSUER',
+  'KAUDIT_OIDC_AUDIENCE',
+  'KAUDIT_OIDC_JWKS_URI',
+  'KAUDIT_OIDC_LOGIN_URL',
+  'KAUDIT_OIDC_LOGOUT_URL',
+  'KAUDIT_OIDC_TOKEN_COOKIE',
+  'KAUDIT_OIDC_ALGORITHMS',
+  'KAUDIT_DEV_USER_EMAIL',
+  'KAUDIT_LOCAL_PASSWORD_HASH',
+  'KAUDIT_LOCAL_SESSION_SECRET',
+  'KAUDIT_LOCAL_SESSION_COOKIE',
+  'KAUDIT_LOCAL_SESSION_TTL_SEC',
+  'KAUDIT_CALIBRATION_COMPLETE',
+  'KAUDIT_AUTOMATED_VALIDATION_APPROVED',
+  'KAUDIT_REPORTING_APPROVED',
+  'KAUDIT_IMPORT_ROOT',
+  'KAUDIT_CALL_AUDIT_RULE_TEST_ENABLED',
+  'KAUDIT_UNPOD_PROXY_BASE',
+  'KAUDIT_ALLOWED_RECORDING_HOSTS',
+  'OPENAI_API_KEY',
+])
+
+/** Present and non-blank. Whitespace-only is treated as unset, as elsewhere. */
+function set(env: NodeJS.ProcessEnv, name: string): boolean {
+  return Boolean(env[name]?.trim())
+}
+
+function majorOf(version: string): number | null {
+  const match = /^v?(\d+)(?:\.|$)/.exec(version.trim())
+  return match ? Number(match[1]) : null
+}
+
+function requiredMajorOf(range: string): number | null {
+  const match = /(\d+)/.exec(range.trim())
+  return match ? Number(match[1]) : null
+}
+
+/** Names this error mentions, and nothing else it says. */
+function reportableVariablesIn(message: string): readonly string[] {
+  return REPORTABLE_VARIABLES.filter((name) => message.includes(name))
+}
+
+export function evaluateVercelReleasePreflight(
+  input: VercelPreflightInput,
+): PreflightReport {
+  const { env } = input
+  const findings: PreflightFinding[] = []
+  const optionalFeatures: OptionalFeatureId[] = []
+  const fail = (code: PreflightErrorCode, ...variables: string[]): void => {
+    findings.push({ code, variables: Object.freeze([...variables]) })
+  }
+
+  // node-runtime — the platform must run the major this repository targets, and
+  // the target comes from `engines.node` so there is one Node contract, not two.
+  const requiredMajor = requiredMajorOf(input.engineNodeRange)
+  const runningMajor = majorOf(input.nodeVersion)
+  if (requiredMajor === null) {
+    fail('NODE_ENGINE_CONTRACT_UNREADABLE')
+  } else if (
+    runningMajor === null ||
+    (input.engineNodeRange.trim().startsWith('>=')
+      ? runningMajor < requiredMajor
+      : runningMajor !== requiredMajor)
+  ) {
+    fail('NODE_RUNTIME_UNSUPPORTED')
+  }
+
+  // node-env-production — a production candidate is validated as production, so
+  // the runtime applies its production rules (CA required, no loopback auth).
+  if (env.NODE_ENV?.trim() !== 'production') {
+    fail('NODE_ENV_NOT_PRODUCTION', 'NODE_ENV')
+  }
+
+  // trust-proxy — every request arrives through the platform's edge. Left off,
+  // the access audit records the proxy hop instead of the caller.
+  if (env.KAUDIT_TRUST_PROXY?.trim().toLowerCase() !== 'true') {
+    fail('TRUST_PROXY_NOT_ENABLED', 'KAUDIT_TRUST_PROXY')
+  }
+
+  // database-settings
+  const missingDatabase = DATABASE_VARIABLES.filter((name) => !set(env, name))
+  if (missingDatabase.length > 0) {
+    fail('REQUIRED_VARIABLE_MISSING', ...missingDatabase)
+  }
+
+  // database-ca-source — exactly one trusted authority. Checked here on the raw
+  // variables so the operator gets the specific reason; `loadRuntimeConfig`
+  // enforces the same rule for the runtime itself.
+  //
+  // The CA is never read. A path is only observed to be set: opening it would
+  // be a filesystem read this command has no business doing, and on Vercel the
+  // path would not exist anyway because nothing mounts a secret file there.
+  const caFile = set(env, 'DB_SSL_CA_FILE')
+  const caInline = set(env, 'DB_SSL_CA_PEM')
+  if (caFile && caInline) {
+    fail('DB_CA_SOURCE_AMBIGUOUS', 'DB_SSL_CA_FILE', 'DB_SSL_CA_PEM')
+  } else if (!caFile && !caInline) {
+    fail('DB_CA_SOURCE_MISSING', 'DB_SSL_CA_FILE', 'DB_SSL_CA_PEM')
+  } else if (caInline && !looksLikePemCertificate(env.DB_SSL_CA_PEM ?? '')) {
+    // Shape only. The value is inspected, never retained and never printed —
+    // this catches the truncated paste before a TLS handshake fails opaquely.
+    fail('DB_CA_PEM_MALFORMED', 'DB_SSL_CA_PEM')
+  }
+
+  // auth-mode-oidc — required explicitly rather than by default, because the
+  // deployed identity mode should be visible in the project's settings.
+  if (env.KAUDIT_AUTH_MODE?.trim() !== 'oidc') {
+    fail('AUTH_MODE_NOT_OIDC', 'KAUDIT_AUTH_MODE')
+  }
+
+  // oidc-settings
+  const missingOidc = OIDC_VARIABLES.filter((name) => !set(env, name))
+  if (missingOidc.length > 0) {
+    fail('REQUIRED_VARIABLE_MISSING', ...missingOidc)
+  }
+
+  // local-auth-variables-absent
+  const unsupported = UNSUPPORTED_VARIABLES.filter((name) => set(env, name))
+  if (unsupported.length > 0) {
+    fail('UNSUPPORTED_VARIABLE_SET', ...unsupported)
+  }
+
+  // call-audit-rule-test — an optional feature, deny by default. Its key is
+  // consulted only once the flag has opted in, and then only for presence.
+  const ruleTestFlag = env.KAUDIT_CALL_AUDIT_RULE_TEST_ENABLED?.trim().toLowerCase()
+  if (ruleTestFlag && ruleTestFlag !== 'true' && ruleTestFlag !== 'false') {
+    // The runtime treats anything but `true` as off. An operator who wrote
+    // `yes` or `1` believes the opposite, so the ambiguity is a failure here.
+    fail('FEATURE_FLAG_INVALID', 'KAUDIT_CALL_AUDIT_RULE_TEST_ENABLED')
+  } else if (ruleTestFlag === 'true') {
+    if (set(env, 'OPENAI_API_KEY')) {
+      optionalFeatures.push('callAuditRuleTest')
+    } else {
+      // Without the key the runtime leaves the endpoint reporting itself
+      // unavailable, silently. Enabled-but-unusable is reported, not tolerated.
+      fail('FEATURE_CONFIG_INCOMPLETE', 'OPENAI_API_KEY')
+    }
+  }
+
+  // recording-proxy — the fetcher without an allow-list resolves nothing.
+  if (set(env, 'KAUDIT_UNPOD_PROXY_BASE')) {
+    if (set(env, 'KAUDIT_ALLOWED_RECORDING_HOSTS')) {
+      optionalFeatures.push('recordingProxy')
+    } else {
+      fail('FEATURE_CONFIG_INCOMPLETE', 'KAUDIT_ALLOWED_RECORDING_HOSTS')
+    }
+  }
+
+  // runtime-config — the accepted parser, run last, as the authority on
+  // everything the targeted checks above do not spell out: URL shape and scheme,
+  // integer ranges, approved signing algorithms, cookie-name safety, and the
+  // production rules it already owns.
+  try {
+    loadRuntimeConfig(env)
+  } catch (error) {
+    if (error instanceof ConfigurationError) {
+      fail('RUNTIME_CONFIG_INVALID', ...reportableVariablesIn(error.message))
+    } else {
+      // Deliberately opaque. An unexpected throw can carry anything in its
+      // message or stack, so nothing about it is serialized — the exit code and
+      // the code below are the whole report.
+      fail('RUNTIME_CONFIG_UNAVAILABLE')
+    }
+  }
+
+  return {
+    ok: findings.length === 0,
+    checks: PREFLIGHT_CHECKS.length,
+    findings: Object.freeze(findings),
+    optionalFeatures: Object.freeze(optionalFeatures),
+  }
+}
+
+/**
+ * The command's entire output: one JSON line with a fixed set of keys.
+ *
+ * A pass states what was checked and which optional features were on. A failure
+ * states codes and variable names. Neither carries a value.
+ */
+export function formatPreflightReport(report: PreflightReport): string {
+  if (report.ok) {
+    return JSON.stringify({
+      preflight: 'vercel-release',
+      result: 'pass',
+      checks: report.checks,
+      optionalFeatures: report.optionalFeatures,
+    })
+  }
+  return JSON.stringify({
+    preflight: 'vercel-release',
+    result: 'fail',
+    checks: report.checks,
+    errors: report.findings.map((finding) => ({
+      code: finding.code,
+      variables: finding.variables,
+    })),
+  })
+}

@@ -29,6 +29,7 @@ const config: RuntimeConfig = {
     user: 'synthetic',
     password: 'synthetic',
     sslCaFile: null,
+    sslCaInline: false,
   },
   auth: {
     mode: 'local',
@@ -43,6 +44,7 @@ const config: RuntimeConfig = {
     sessionTtlSeconds: 3600,
   },
   releaseGates: {
+    automatedValidationApproved: false,
     calibrationComplete: false,
     reportingApproved: false,
   },
@@ -240,6 +242,10 @@ test('authenticated app routes serve the built shell with a script-safe CSP', as
       assert.match(
         page.headers.get('content-security-policy') ?? '',
         /script-src 'self'/,
+      )
+      assert.match(
+        page.headers.get('content-security-policy') ?? '',
+        /media-src 'self'/,
       )
       const asset = await fetch(`${baseUrl}/assets/app.js`)
       assert.equal(asset.status, 200)
@@ -457,6 +463,16 @@ test('audit monitor is admin-only and excludes raw content fields', async () => 
       assert.equal(denied.status, 403)
       const problem = (await denied.json()) as Record<string, unknown>
       assert.equal(problem.code, 'PERMISSION_DENIED')
+      const deniedCall = await fetch(
+        `${baseUrl}/api/v1/audit-call?task=synthetic-task`,
+        { headers: { cookie: localCookie() } },
+      )
+      assert.equal(deniedCall.status, 403)
+      const deniedAudio = await fetch(
+        `${baseUrl}/api/v1/audit-audio?task=synthetic-task`,
+        { headers: { cookie: localCookie() } },
+      )
+      assert.equal(deniedAudio.status, 403)
       assert.equal(deniedEvents.at(-1)?.outcome, 'denied')
     },
   )

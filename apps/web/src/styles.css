@@ -107,6 +107,9 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .82rem; }
   position: fixed; inset: 0 auto 0 0; width: 250px; z-index: 30;
   display: flex; flex-direction: column; padding: 22px 14px;
   color: #eaf1f2; background: var(--navy); border-right: 1px solid #1c3944;
+  /* Grouped navigation is taller than the flat list was: on a short viewport
+     the sidebar scrolls itself instead of clipping its own footer. */
+  overflow-y: auto;
 }
 .brand { display: flex; align-items: center; gap: 11px; padding: 0 9px 25px; }
 .brand-mark {
@@ -117,6 +120,14 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .82rem; }
 .brand strong { font-size: .95rem; letter-spacing: .01em; }
 .brand small { color: #8fa7ae; font-size: .72rem; margin-top: 1px; }
 .sidebar nav { display: grid; gap: 4px; }
+/* Each module is its own labelled block; the rule between them is what makes
+   Billing Audit and Call Audit read as separate systems rather than one list. */
+.nav-group { display: grid; gap: 3px; }
+.nav-group + .nav-group { margin-top: 13px; padding-top: 12px; border-top: 1px solid #1e3b46; }
+.nav-group-label {
+  margin: 0 0 3px; padding: 0 12px; color: #7f99a1;
+  font-size: .63rem; font-weight: 800; letter-spacing: .09em; text-transform: uppercase;
+}
 .sidebar nav a {
   display: flex; align-items: center; gap: 11px; min-height: 43px;
   padding: 0 12px; border-radius: 7px; color: #adc0c5; text-decoration: none;
@@ -140,6 +151,20 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .82rem; }
 }
 .environment { display: flex; align-items: center; gap: 8px; color: #40545d; font-size: .78rem; font-weight: 650; }
 .environment > span { width: 7px; height: 7px; border-radius: 50%; background: #2fa477; box-shadow: 0 0 0 3px #ddf3ea; }
+.billing-period-filter {
+  display: flex; align-items: center; gap: 8px; min-width: 280px;
+  padding: 6px 8px 6px 10px; color: #40545d; background: #f7f9f8;
+  border: 1px solid var(--line); font-size: .7rem; font-weight: 750;
+}
+.billing-period-filter svg { flex: 0 0 auto; color: var(--teal); }
+.billing-period-filter > span { white-space: nowrap; }
+.billing-period-filter select {
+  min-width: 0; flex: 1; padding: 4px 26px 4px 7px; color: var(--ink);
+  background: var(--paper); border: 1px solid #d3ddda; font-size: .72rem;
+}
+.billing-period-filter select:focus {
+  outline: 3px solid rgba(19,124,114,.14); border-color: var(--teal);
+}
 .topbar-right { display: flex; align-items: center; gap: 13px; color: var(--muted); font-size: .75rem; }
 .logout-button {
   display: inline-flex; align-items: center; gap: 6px; padding: 7px 9px;
@@ -158,7 +183,7 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .82rem; }
   padding: 6px 10px; border-radius: 999px; font-size: .69rem; font-weight: 800;
   text-transform: uppercase; letter-spacing: .055em;
 }
-.status-badge.ready, .status-badge.live, .status-badge.authoritative, .status-badge.calibrated { color: var(--green); background: var(--green-soft); }
+.status-badge.ready, .status-badge.live, .status-badge.authoritative, .status-badge.calibrated, .status-badge.automated { color: var(--green); background: var(--green-soft); }
 .status-badge.provisional, .status-badge.uncalibrated, .status-badge.audit_pending { color: var(--amber); background: var(--amber-soft); }
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; }
 .metric-card {
@@ -294,6 +319,37 @@ dl small { color: var(--muted); font-size: .6rem; }
 }
 .audit-table .table-scroll { overflow: auto; }
 .audit-table table { min-width: 1650px; }
+.queue-table table { min-width: 1050px; }
+.queue-table h2 { display: flex; align-items: center; gap: 8px; }
+.table-empty { padding: 28px !important; color: var(--muted); text-align: center !important; }
+.table-action, .back-link {
+  display: inline-flex; align-items: center; gap: 6px; color: var(--teal);
+  font-size: .7rem; font-weight: 750; text-decoration: none;
+}
+.table-action { padding: 6px 9px; border: 1px solid #add2cc; background: #f4fbf9; }
+.back-link { margin-bottom: 18px; }
+.call-review-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 13px; }
+.review-card { padding: 20px; background: var(--paper); border: 1px solid var(--line); }
+.review-card > span { color: var(--muted); font-size: .68rem; font-weight: 750; text-transform: uppercase; letter-spacing: .05em; }
+.review-card > strong { display: block; margin: 12px 0 6px; font-size: 1.75rem; }
+.review-card p, .review-card small { margin: 0; color: var(--muted); font-size: .7rem; line-height: 1.5; }
+.calculation-footnote { margin: -4px 0 20px; color: var(--muted); font-size: .72rem; line-height: 1.55; }
+.player-help { margin: 10px 0 0; color: var(--muted); font-size: .72rem; line-height: 1.55; }
+.audio-state-ready { color: var(--success); }
+.audio-state-failed { color: var(--danger); }
+.variance-card { border-color: #d7b066; background: #fffaf0; }
+.call-detail-facts { display: grid; grid-template-columns: repeat(4, 1fr); background: var(--paper); border: 1px solid var(--line); }
+.call-detail-facts div { padding: 15px 17px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }
+.call-detail-facts span, .call-detail-facts strong { display: block; }
+.call-detail-facts span { color: var(--muted); font-size: .64rem; }
+.call-detail-facts strong { margin-top: 5px; font-size: .78rem; }
+.evidence-player, .transcript-panel { padding: 18px; background: var(--paper); border: 1px solid var(--line); }
+.evidence-player h2, .transcript-panel h2 { display: flex; align-items: center; gap: 8px; }
+.evidence-player audio { width: 100%; margin-top: 14px; }
+.transcript-panel ol { display: grid; gap: 0; margin: 12px 0 0; padding: 0; list-style: none; }
+.transcript-panel li { display: grid; grid-template-columns: 90px 1fr; gap: 15px; padding: 12px 3px; border-top: 1px solid var(--line); }
+.transcript-panel time { color: var(--teal); font: 700 .68rem ui-monospace, SFMono-Regular, Menlo, monospace; }
+.transcript-panel p { margin: 0; font-size: .78rem; line-height: 1.55; white-space: pre-wrap; }
 .audit-table th:first-child, .audit-table td:first-child { position: sticky; left: 0; z-index: 1; background: var(--paper); }
 .audit-table th:first-child { z-index: 2; background: #f9faf9; }
 .audit-table th, .audit-table td { white-space: nowrap; text-align: left; }
@@ -338,7 +394,134 @@ dl small { color: var(--muted); font-size: .6rem; }
 }
 .primary-action:disabled { opacity: .5; cursor: not-allowed; }
 
+/* Call Audit report. Scoped to .callaudit so the module reads as its own
+   surface — a warm bronze accent instead of Billing's teal — while reusing the
+   same paper, rules, tables, and tiles as the rest of the operational app. */
+.callaudit {
+  --ca-accent: #8a5a2f;
+  --ca-accent-soft: #fbf3ea;
+  --ca-accent-line: #e7d8c6;
+  --ca-track: #eef1ef;
+}
+.callaudit .eyebrow { color: var(--ca-accent); }
+.callaudit .metric-card:not(.good):not(.warn):not(.pending) { border-top-color: #c9a97f; }
+.callaudit .section-title .muted { display: inline-flex; align-items: center; gap: 6px; }
+.ca-controls {
+  display: grid; grid-template-columns: 165px minmax(0, 1fr) minmax(0, 1fr) 140px auto;
+  gap: 12px; align-items: end; padding: 15px 17px;
+  background: var(--paper); border: 1px solid var(--line); border-left: 3px solid var(--ca-accent);
+}
+.ca-controls label { display: grid; gap: 5px; color: var(--muted); font-size: .67rem; font-weight: 700; }
+.ca-controls select, .ca-controls input {
+  width: 100%; min-height: 38px; padding: 7px 9px; color: var(--ink);
+  background: #f9faf9; border: 1px solid var(--line);
+}
+.ca-controls select:focus, .ca-controls input:focus {
+  outline: 3px solid rgba(138,90,47,.16); border-color: var(--ca-accent);
+}
+.ca-reset {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 38px; padding: 0 13px;
+  color: var(--ca-accent); background: var(--ca-accent-soft); border: 1px solid var(--ca-accent-line);
+  font-size: .71rem; font-weight: 750; cursor: pointer;
+}
+.ca-reset:hover { background: #f6e9da; }
+.ca-basis {
+  display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 1px;
+  margin-top: 13px; background: var(--line); border: 1px solid var(--line);
+}
+.ca-basis div { display: grid; gap: 4px; padding: 13px 15px; background: var(--paper); }
+.ca-basis span { color: var(--muted); font-size: .62rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+.ca-basis strong { font-size: .8rem; overflow-wrap: anywhere; }
+.ca-boundary, .ca-invalid {
+  display: flex; align-items: flex-start; gap: 9px; margin: 13px 0 24px;
+  padding: 11px 14px; font-size: .72rem; line-height: 1.5;
+}
+.ca-boundary { color: #6b5440; background: var(--ca-accent-soft); border: 1px solid var(--ca-accent-line); }
+.ca-boundary svg { flex: 0 0 auto; margin-top: 1px; color: var(--ca-accent); }
+.ca-invalid { color: #765019; background: var(--amber-soft); border: 1px solid #eacb97; }
+.ca-invalid svg { flex: 0 0 auto; margin-top: 1px; }
+.ca-retry {
+  padding: 2px 8px; color: inherit; background: #fffaf1; border: 1px solid #eacb97;
+  font-size: .7rem; font-weight: 750; cursor: pointer;
+}
+.ca-retry:hover { background: #fdf1dc; }
+.ca-sections { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px; align-items: start; }
+.ca-panel {
+  padding: 16px 17px; background: var(--paper); border: 1px solid var(--line);
+  box-shadow: 0 8px 24px rgba(21,45,52,.035);
+}
+.ca-panel header { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+.ca-panel h3 { display: flex; align-items: center; gap: 7px; margin: 0; font-size: .87rem; }
+.ca-panel h3 svg { color: var(--ca-accent); }
+.ca-panel header > span { color: var(--muted); font-size: .72rem; font-variant-numeric: tabular-nums; }
+.ca-panel > p { margin: 6px 0 12px; color: var(--muted); font-size: .69rem; line-height: 1.5; }
+.ca-panel > small { display: block; margin-top: 10px; color: var(--muted); font-size: .64rem; }
+.ca-breakdown { display: grid; margin: 0; padding: 0; list-style: none; }
+.ca-breakdown li {
+  display: grid; grid-template-columns: minmax(0, 1fr) 54px 40px 46px;
+  align-items: center; gap: 9px; padding: 7px 0; border-top: 1px solid var(--line); font-size: .73rem;
+}
+.ca-breakdown li:first-child { border-top: 0; }
+.ca-breakdown li.muted-row { color: var(--muted); }
+.ca-breakdown-label { overflow-wrap: anywhere; }
+.ca-breakdown-label small { color: var(--muted); font-size: .62rem; }
+.ca-bar { height: 6px; background: var(--ca-track); }
+.ca-bar i { display: block; height: 100%; min-width: 2px; background: var(--ca-accent); }
+.ca-breakdown li.muted-row .ca-bar i { background: #b6ada3; }
+.ca-breakdown b { text-align: right; font-weight: 760; font-variant-numeric: tabular-nums; }
+.ca-breakdown-share { color: var(--muted); text-align: right; font-size: .65rem; font-variant-numeric: tabular-nums; }
+.ca-none { color: var(--muted); font-size: .7rem; }
+.callaudit .ca-metric-table .table-scroll { overflow: auto; }
+.callaudit .ca-metric-table table { min-width: 780px; }
+.callaudit .ca-metric-table td:last-child, .callaudit .ca-metric-table th:last-child { text-align: left; }
+.ca-dist { display: grid; gap: 5px; min-width: 190px; }
+.ca-dist-bar { display: flex; height: 8px; background: var(--ca-track); }
+.ca-dist-bar i { display: block; }
+.ca-dist-bar .score-1 { background: #b4544f; }
+.ca-dist-bar .score-2 { background: #c48046; }
+.ca-dist-bar .score-3 { background: #b09a3d; }
+.ca-dist-bar .score-4 { background: #6f9d55; }
+.ca-dist-bar .score-5 { background: #39876a; }
+.ca-dist small { color: var(--muted); font-size: .6rem; }
+.callaudit .ca-results table { min-width: 1780px; }
+.callaudit .ca-results .ca-feedback { min-width: 250px; max-width: 320px; white-space: normal; line-height: 1.45; }
+.callaudit .ca-results .soft-chip { padding: 3px 7px; font-size: .6rem; }
+.callaudit .ca-results .table-pagination { justify-content: space-between; }
+/* min-width keeps the column from collapsing to one pill per line; the pills
+   themselves never break, so a label can't wrap inside its own rounded edge. */
+.ca-facts { display: flex; flex-wrap: wrap; gap: 4px; min-width: 182px; max-width: 240px; white-space: normal; }
+.ca-fact { padding: 3px 7px; border: 1px solid; border-radius: 999px; font-size: .6rem; font-weight: 750; white-space: nowrap; }
+.ca-fact.yes { color: var(--green); background: var(--green-soft); border-color: #bbdfca; }
+.ca-fact.no { color: var(--red); background: var(--red-soft); border-color: #eac1bd; }
+.ca-fact.unknown { color: var(--muted); background: #f1f3f2; border-color: var(--line); }
+.ca-flags { display: flex; flex-wrap: wrap; gap: 4px; max-width: 230px; white-space: normal; }
+.ca-split { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 13px; align-items: start; }
+.ca-facts-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 11px; margin: 0 0 14px; }
+.ca-facts-grid > div { padding-top: 10px; border-top: 1px solid var(--line); }
+.ca-facts-grid dd { font-size: .88rem; }
+.ca-runs { display: grid; margin: 0; padding: 0; list-style: none; }
+.ca-runs li {
+  display: grid; grid-template-columns: minmax(0, 1.1fr) minmax(0, 1fr) minmax(0, 1.25fr);
+  gap: 12px; padding: 11px 0; border-top: 1px solid var(--line); font-size: .73rem;
+}
+.ca-runs li:first-child { border-top: 0; }
+.ca-runs li > div { display: grid; gap: 3px; align-content: start; }
+.ca-runs strong { font-size: .78rem; }
+.ca-runs .soft-chip { width: fit-content; }
+.ca-empty {
+  display: grid; justify-items: center; gap: 7px; padding: 46px 30px; text-align: center;
+  background: var(--paper); border: 1px solid var(--line); box-shadow: 0 8px 24px rgba(21,45,52,.035);
+}
+.ca-empty svg { color: var(--ca-accent); }
+.ca-empty h2 { margin: 7px 0 0; font-size: 1.05rem; letter-spacing: -.02em; }
+.ca-empty p { max-width: 570px; margin: 0; color: var(--muted); font-size: .78rem; line-height: 1.6; }
+.ca-empty .ca-empty-hint { font-size: .71rem; }
+.ca-footnote { display: flex; align-items: flex-start; gap: 8px; margin: 26px 0 0; color: var(--muted); font-size: .7rem; line-height: 1.55; }
+.ca-footnote svg { flex: 0 0 auto; margin-top: 1px; color: var(--ca-accent); }
+
 @media (max-width: 1050px) {
+  .topbar-right > span, .topbar-right > svg { display: none; }
+  .billing-period-filter { min-width: 245px; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
   .profile-layout { grid-template-columns: 1fr; }
   .snapshot-card dl { grid-template-columns: 1fr; }
@@ -357,6 +540,9 @@ dl small { color: var(--muted); font-size: .6rem; }
   .workspace { margin-left: 0; }
   .menu-button { display: grid; }
   .topbar { padding: 0 18px; }
+  .environment { display: none; }
+  .billing-period-filter { min-width: 0; flex: 1; margin: 0 12px; }
+  .billing-period-filter > span { display: none; }
   .topbar-right span { display: none; }
   .page { padding: 30px 18px 55px; }
   .page-header { align-items: flex-start; flex-direction: column; gap: 15px; }
@@ -366,10 +552,215 @@ dl small { color: var(--muted); font-size: .6rem; }
   .permission-panel { grid-template-columns: 1fr; }
   .audit-control-bar { grid-template-columns: 1fr; }
   .import-grid, .form-grid { grid-template-columns: 1fr; }
+  .call-review-grid, .call-detail-facts { grid-template-columns: 1fr; }
 }
 @media (max-width: 500px) {
   .metric-grid, .skeleton-grid { grid-template-columns: 1fr; }
   .gate-list article { grid-template-columns: 22px 1fr; }
   .gate-list article > span { grid-column: 2; }
   .snapshot-card header { flex-direction: column; }
+}
+
+/* Call Audit rule administration. Shares the .callaudit bronze accent so the
+   module reads as one surface, with a denser, form-first layout: this screen
+   configures the audit, it does not report on it. */
+.casettings { --cas-lock: #6b5440; }
+.casettings section { margin-top: 26px; }
+.casettings .section-title { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 4px 14px; margin-bottom: 11px; }
+.casettings .section-title h2 { display: flex; align-items: center; gap: 8px; min-width: 0; margin: 0; font-size: .96rem; letter-spacing: -.01em; overflow-wrap: anywhere; }
+/* The accent marks the two surfaces that are genuinely Call Audit — the stored
+   prompt and the activate control. Tinting every heading icon as well made the
+   screen read as one warm block instead of an admin tool. */
+.casettings .section-title h2 svg { flex: 0 0 auto; color: var(--muted); }
+.casettings .section-title .muted { color: var(--muted); font-size: .7rem; }
+.cas-card {
+  display: grid; gap: 13px; padding: 16px 18px; background: var(--paper);
+  border: 1px solid var(--line); border-top: 3px solid var(--line);
+}
+.cas-card.active { border-top-color: var(--green); }
+.cas-card header { display: flex; align-items: flex-start; justify-content: space-between; gap: 14px; }
+.cas-card header > div { min-width: 0; }
+.cas-card header strong { display: block; font-size: .95rem; overflow-wrap: anywhere; }
+.cas-card header span { color: var(--muted); font-size: .68rem; }
+.cas-status {
+  display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px;
+  border: 1px solid var(--line); border-radius: 999px; background: #f1f3f2;
+  color: var(--muted); font-size: .62rem; font-weight: 780; text-transform: uppercase;
+  letter-spacing: .05em; white-space: nowrap;
+}
+.cas-status.active, .cas-status.completed { color: var(--green); background: var(--green-soft); border-color: #bbdfca; }
+.cas-status.draft, .cas-status.pending, .cas-status.running { color: #765019; background: var(--amber-soft); border-color: #eacb97; }
+.cas-status.retired, .cas-status.failed, .cas-status.cancelled { color: var(--red); background: var(--red-soft); border-color: #eac1bd; }
+.cas-facts { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.cas-facts > div { display: grid; gap: 3px; padding-top: 9px; border-top: 1px solid var(--line); }
+.cas-facts dt { color: var(--muted); font-size: .61rem; font-weight: 800; text-transform: uppercase; letter-spacing: .06em; }
+.cas-facts dd { margin: 0; font-size: .8rem; overflow-wrap: anywhere; }
+.cas-facts dd small { display: block; color: var(--muted); font-size: .65rem; }
+.cas-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .73rem; }
+.cas-sub { display: block; color: var(--muted); font-size: .63rem; }
+.cas-sub.warn { color: #8a5f14; }
+.cas-drift, .cas-note {
+  display: flex; align-items: flex-start; gap: 8px; margin: 0;
+  padding: 9px 12px; font-size: .7rem; line-height: 1.55;
+}
+.cas-drift { color: #765019; background: var(--amber-soft); border: 1px solid #eacb97; }
+.cas-note { color: var(--muted); background: #f7f8f8; border: 1px solid var(--line); }
+.cas-drift svg, .cas-note svg { flex: 0 0 auto; margin-top: 2px; }
+/* One line of state, always rendered, so arming or disabling the activate
+   control never changes the height of the form. */
+.cas-hint { min-height: 2.1em; margin: 9px 0 0; color: var(--muted); font-size: .68rem; line-height: 1.5; }
+.cas-link {
+  justify-self: start; display: inline-flex; align-items: center; gap: 6px;
+  padding: 0; color: var(--ca-accent); background: none; border: 0;
+  font-size: .7rem; font-weight: 740; text-decoration: underline; cursor: pointer;
+}
+.cas-prompt { display: grid; }
+.cas-prompt-note { margin: 0 0 10px; color: var(--muted); font-size: .71rem; line-height: 1.55; }
+.cas-empty-line { padding: 11px 13px; background: var(--paper); border: 1px solid var(--line); line-height: 1.55; }
+/* Truncates in place rather than wrapping a table column down to one word per
+   line; the untruncated value stays in the element's title. */
+.cas-trunc { display: block; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.cas-inline { display: inline; max-width: none; white-space: normal; overflow-wrap: anywhere; }
+.cas-prompt-body {
+  max-height: 340px; margin: 0 0 11px; padding: 14px 16px; overflow: auto;
+  background: var(--paper); border: 1px solid var(--line); border-left: 3px solid var(--ca-accent);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .72rem;
+  line-height: 1.6; white-space: pre-wrap; overflow-wrap: anywhere;
+}
+.cas-form {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 13px;
+  padding: 17px 19px; background: var(--paper); border: 1px solid var(--line);
+}
+.cas-form label { display: grid; gap: 5px; align-content: start; color: var(--muted); font-size: .67rem; font-weight: 700; }
+.cas-form input, .cas-form textarea {
+  padding: 9px 10px; color: var(--ink); background: #fff; border: 1px solid var(--line);
+  font: inherit; font-size: .78rem; font-weight: 500;
+}
+.cas-form textarea { line-height: 1.6; resize: vertical; }
+.cas-form input:focus, .cas-form textarea:focus { outline: 2px solid var(--ca-accent); outline-offset: -1px; }
+.cas-form input[aria-invalid="true"] { border-color: var(--red); }
+.cas-form small { color: var(--muted); font-size: .64rem; font-weight: 500; line-height: 1.5; }
+.cas-wide { grid-column: 1 / -1; }
+.cas-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 11px; }
+.cas-activate {
+  display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+  /* Fixed width so the label can grow from 'Create and activate…' to the
+     confirmation without moving the button out from under the pointer. */
+  min-width: 17.2rem; min-height: 40px; padding: 9px 14px;
+  color: var(--ca-accent); background: var(--ca-accent-soft);
+  border: 1px solid var(--ca-accent); font-weight: 760; cursor: pointer;
+}
+.cas-activate.confirm { color: #fff; background: var(--ca-accent); }
+.cas-activate:disabled { opacity: .45; cursor: not-allowed; }
+/* Keeps its slot when hidden, so confirming does not reflow the action row. */
+.cas-cancel { visibility: hidden; }
+.cas-cancel.shown { visibility: visible; }
+
+/* Rule test lab. Same dense form language as the create form — one flat panel
+   for the input and one for the readout, never a card inside a card. */
+.cas-lab-form { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr) minmax(0, 1fr); margin-top: 11px; }
+.cas-lab-form select {
+  padding: 9px 10px; color: var(--ink); background: #fff; border: 1px solid var(--line);
+  font: inherit; font-size: .78rem; font-weight: 500;
+}
+.cas-lab-form select:focus { outline: 2px solid var(--ca-accent); outline-offset: -1px; }
+.cas-lab-form textarea { min-height: 150px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .73rem; }
+.cas-lab-form .cas-link:disabled { opacity: .45; cursor: not-allowed; }
+.cas-lab-result {
+  display: grid; gap: 15px; margin-top: 11px; padding: 16px 18px;
+  background: var(--paper); border: 1px solid var(--line); border-left: 3px solid var(--ca-accent);
+}
+.cas-lab-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
+.cas-lab-head .muted { color: var(--muted); font-size: .68rem; }
+.cas-lab-block { display: grid; gap: 8px; }
+.cas-lab-block h3 {
+  margin: 0; color: var(--muted); font-size: .61rem; font-weight: 800;
+  text-transform: uppercase; letter-spacing: .06em;
+}
+.cas-lab-none { margin: 0; color: var(--muted); font-size: .68rem; line-height: 1.55; }
+.cas-chips { display: flex; flex-wrap: wrap; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.cas-chips li {
+  display: inline-flex; align-items: baseline; gap: 6px; padding: 5px 10px;
+  background: #f7f8f8; border: 1px solid var(--line);
+  font-size: .67rem; font-weight: 640; color: var(--muted);
+}
+.cas-chips li strong { color: var(--ink); font-variant-numeric: tabular-nums; }
+
+/* Twelve audited columns cannot fit any laptop, so the table scrolls inside its
+   own box. Without this the widest row pushed the whole document sideways and
+   every section on the page scrolled with it. */
+.casettings .cas-history .table-scroll { overflow-x: auto; overflow-y: hidden; }
+.casettings .cas-history table { min-width: 1900px; table-layout: fixed; }
+.casettings .cas-history td { vertical-align: top; }
+/* Identifiers and timestamps, not quantities: the shared right-alignment for
+   non-first columns is for numeric tables and reads as ragged here. Only the
+   temperature stays right-aligned and tabular. */
+.casettings .cas-history th, .casettings .cas-history td { text-align: left; }
+.casettings .cas-history .cas-col-temp { text-align: right; font-variant-numeric: tabular-nums; }
+/* The version label anchors a table far wider than any screen, so it stays put
+   while the remaining columns scroll under it — as in the audit monitor. */
+.casettings .cas-history th:first-child, .casettings .cas-history td:first-child {
+  position: sticky; left: 0; z-index: 1; background: var(--paper);
+}
+.casettings .cas-history th:first-child { z-index: 2; background: #f9faf9; }
+/* Column widths are declared rather than left to the auto layout, which was
+   starving the identifier columns down to one word per line. */
+.casettings .cas-history .cas-col-label { width: 215px; }
+.casettings .cas-history .cas-col-status { width: 105px; }
+.casettings .cas-history .cas-col-model { width: 215px; }
+.casettings .cas-history .cas-col-temp { width: 76px; }
+.casettings .cas-history .cas-col-contract { width: 175px; }
+.casettings .cas-history .cas-col-digest { width: 132px; }
+.casettings .cas-history .cas-col-actor { width: 205px; }
+.casettings .cas-history .cas-col-open { width: 80px; }
+.casettings .cas-history .cas-col-contract .cas-sub { white-space: nowrap; }
+/* A change reason is prose: show three lines and keep the rest in the title,
+   so one long entry cannot set the height of every row in the table. */
+.cas-reason {
+  display: -webkit-box; width: 250px; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+  overflow: hidden; white-space: normal; line-height: 1.45;
+}
+.casettings .cas-history th.cas-reason { display: table-cell; }
+/* The runs list lays each column out as a grid, which stretched the pill to the
+   full column width and made a status chip look like a progress bar. */
+.casettings .ca-runs .cas-status { justify-self: start; }
+.casettings .ca-runs strong { overflow-wrap: anywhere; }
+.cas-locked-list { display: flex; flex-wrap: wrap; gap: 7px; margin: 0; padding: 0; list-style: none; }
+.cas-locked-list li {
+  padding: 5px 10px; background: var(--paper); border: 1px solid var(--line);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .68rem; color: var(--cas-lock);
+}
+
+@media (max-width: 1050px) {
+  .cas-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cas-lab-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cas-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ca-controls { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ca-reset { grid-column: 1 / -1; justify-content: center; }
+  .ca-basis, .ca-sections { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ca-split { grid-template-columns: 1fr; }
+}
+@media (max-width: 760px) {
+  .cas-form { grid-template-columns: 1fr; }
+  .cas-lab-form { grid-template-columns: 1fr; }
+  .cas-lab-result { padding: 14px 15px; }
+  /* Eight contract facts stacked one per row pushed the form off the first
+     screen; paired, they still read cleanly at this width. */
+  .cas-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .cas-actions { flex-direction: column; align-items: stretch; }
+  .cas-activate { min-width: 0; }
+  .cas-cancel { display: none; }
+  .cas-cancel.shown { display: block; }
+  .cas-card header { flex-direction: column; gap: 9px; }
+  .ca-sections { grid-template-columns: 1fr; }
+  .ca-facts-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .ca-runs li { grid-template-columns: 1fr; gap: 7px; }
+  .ca-empty { padding: 34px 20px; }
+}
+@media (max-width: 500px) {
+  .cas-facts { grid-template-columns: 1fr; }
+  .cas-lab-head { align-items: flex-start; flex-direction: column; }
+  .ca-controls, .ca-basis, .ca-facts-grid { grid-template-columns: 1fr; }
+  .ca-breakdown li { grid-template-columns: minmax(0, 1fr) 40px 44px; }
+  .ca-breakdown li .ca-bar { display: none; }
 }

@@ -3,11 +3,14 @@ import { CheckCircle2 } from 'lucide-react'
 import { ErrorState, LoadingState, Notice } from '../components/States'
 import { MetricGrid, PageHeader, UpdatedAt } from '../components/Metrics'
 import { getJson, type EvidenceData } from '../lib/api'
+import { useBillingPeriod } from '../lib/billingPeriod'
 
 export function EvidencePage() {
+  const period = useBillingPeriod()
   const query = useQuery({
-    queryKey: ['evidence'],
-    queryFn: () => getJson<EvidenceData>('/api/v1/evidence'),
+    queryKey: ['evidence', period.month],
+    queryFn: () =>
+      getJson<EvidenceData>(period.apiPath('/api/v1/evidence')),
   })
   if (query.isLoading) return <LoadingState />
   if (query.error)
@@ -18,14 +21,14 @@ export function EvidencePage() {
       <PageHeader
         eyebrow="Evidence"
         title="Calls & evidence"
-        description="Coverage of ingested calls, recording references, and independent hash checks."
+        description={`Coverage of calls, recording references, and hash checks for ${period.label}.`}
         badge={<span className="status-badge live">Read-only</span>}
       />
       <Notice tone="warning" title="Vendor-hosted evidence trade-off">
         Recording bytes remain on KServe. Stored SHA-256 baselines detect change only
         while a source URL remains reachable.
       </Notice>
-      <MetricGrid tiles={data.tiles} />
+      <MetricGrid tiles={data.tiles.slice(0, 4)} />
       <section className="content-section">
         <div className="section-title">
           <div>

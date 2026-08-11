@@ -105,12 +105,14 @@ health checks, and centralized secret management.
 
 The latest cycle follows:
 
-`import_pending → audit_pending → calibration_pending → rate_card_pending → calculation_pending → ready`
+`import_pending → audit_pending → validation_pending → rate_card_pending → calculation_pending → ready`
 
 The bill is released only at `ready`, when:
 
 - every call has an explicit audit resolution;
 - no current automated decision is unresolved;
+- the leadership-approved automated-consensus policy (or a separately approved
+  human calibration) is active;
 - the immutable rate card is published with approval;
 - every call has one current final traced calculation; and
 - the calculation uses independent duration or the explicit cycle-close
@@ -120,11 +122,40 @@ While the cycle is incomplete, `/billing` displays `Audit pending`. The reports
 API withholds verified revenue, variance, and trend values; vendor-claimed
 figures may remain visible as vendor claims.
 
-Once ready, the report worker will persist the weekly/monthly/quarterly/yearly
-management snapshot, generate PDF and Excel exports, and notify configured
-finance/management recipients. In the current build, only the live dashboard
-projection exists—automatic PDF/Excel generation and email/in-app delivery are
-still pending implementation.
+Once ready, the automated email worker generates a concise monthly PDF plus a
+call-level Excel workbook and sends them to configured Kairali
+finance/management recipients. Delivery uses the existing hashed outbox,
+content/recipient-bound idempotency, bounded retry, and a visible dead-letter
+state. SMTP configuration and the reporting approval gate remain
+deny-by-default. See `docs/runbooks/AUTOMATED_REPORT_EMAIL.md`.
+
+Weekly/monthly/quarterly/yearly snapshot views remain available in the
+dashboard. Persisting immutable D-12 snapshots at all four cadences remains a
+separate reporting-infrastructure item.
+
+The current build also supports an explicitly non-authoritative cycle preview.
+It can generate a JSON calculation package and a watermarked PDF before
+calibration, but it must remain labeled
+`PROVISIONAL_UNCALIBRATED_TEST_ONLY`. The preview does not release a bill or
+create a vendor dispute. It is not eligible for the authoritative email worker.
+
+For recording-backed calls, `npm run automation:validate` performs the
+leadership-approved zero-human-review policy. Two independent passes must agree
+on category, customer-speech state, and rounded billable duration. A third
+automated pass adjudicates disagreements. This is called automated validation,
+not ground-truth calibration.
+
+## Global bill-month filter
+
+The application shell exposes one global `Bill month` selector. It is backed
+by billing periods that actually exist in `kaudit_call`, displays each month
+with its call count, and stores the selected value in the URL as
+`?month=YYYY-MM`. Overview, evidence, findings, billing, reports, and audit
+monitoring all use the same selected period. Navigation preserves the month,
+so users do not accidentally compare April calls with May billing.
+
+`All periods` remains available for historical comparison. Operations is a
+system-wide page and clearly states that the month selector does not scope it.
 
 ## Current implementation truth
 
@@ -137,6 +168,10 @@ still pending implementation.
 | Monthly CSV upload and normalization writer | Implemented |
 | Resumable continuous full audit worker | Implemented; production execution not launched |
 | KServe recording manifest/API feed | Missing when the monthly CSV lacks Recording URL |
-| Cycle-close accepted-as-billed fallback writer | Not implemented |
+| Global bill-month filter | Implemented across aggregate business pages |
+| Cycle-close accepted-as-billed fallback writer | Implemented with dry-run/execute safety switch and deterministic trace |
+| Automated consensus + adjudication | Implemented with traced pass/fail outcomes and automated finding finalization |
+| Provisional JSON/PDF cycle preview | Implemented; watermarked and withheld from authority |
 | Persisted D-12 snapshot generator | Not implemented |
-| PDF/Excel export and recipient notification | Not implemented |
+| Authoritative monthly PDF/Excel email notification | Implemented; disabled until SMTP + reporting approval are configured |
+| Exact AI usage capture | Implemented for future calls after migration 0007; legacy usage unavailable |

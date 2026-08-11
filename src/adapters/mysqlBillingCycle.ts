@@ -1,5 +1,6 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
 import type { BillingCycleCounts } from '../billing/cycleReadiness.ts'
+import type { BillingMonthScope } from '../reporting/billingMonth.ts'
 
 interface PeriodRow extends RowDataPacket {
   period_start: string | null
@@ -37,15 +38,22 @@ export interface LatestBillingCycleData extends BillingCycleCounts {
 
 export async function collectLatestBillingCycle(
   pool: Pool,
+  selectedPeriod: BillingMonthScope | null = null,
 ): Promise<LatestBillingCycleData> {
-  const [periodResult] = await pool.query<PeriodRow[]>(
-    `SELECT
-       DATE_FORMAT(MAX(billing_period_date), '%Y-%m-01') AS period_start,
-       CAST(LAST_DAY(MAX(billing_period_date)) AS CHAR) AS period_end
-     FROM kaudit_call
-     WHERE billing_period_date IS NOT NULL`,
-  )
-  const period = periodResult[0]
+  const period = selectedPeriod
+    ? {
+        period_start: selectedPeriod.start,
+        period_end: selectedPeriod.end,
+      }
+    : (
+        await pool.query<PeriodRow[]>(
+          `SELECT
+             DATE_FORMAT(MAX(billing_period_date), '%Y-%m-01') AS period_start,
+             CAST(LAST_DAY(MAX(billing_period_date)) AS CHAR) AS period_end
+           FROM kaudit_call
+           WHERE billing_period_date IS NOT NULL`,
+        )
+      )[0][0]
   if (!period?.period_start || !period.period_end) {
     return {
       periodStart: null,
@@ -126,7 +134,13 @@ export async function collectLatestBillingCycle(
            'independent_conversation_end',
            'accepted_as_billed_unverified'
          )
-         AND calculation.audit_run_id IS NOT NULL
+         AND (
+           (calculation.calculation_basis =
+              'independent_conversation_end'
+            AND calculation.audit_run_id IS NOT NULL)
+           OR calculation.calculation_basis =
+              'accepted_as_billed_unverified'
+         )
          AND calculation.input_manifest_sha256 IS NOT NULL
          AND calculation.ruleset_sha256 IS NOT NULL
          AND calculation.decision_trace_sha256 IS NOT NULL

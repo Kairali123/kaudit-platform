@@ -1,8 +1,9 @@
 # Enterprise app
 
-The current UI is a routed React application backed by authenticated, page-scoped,
-aggregate-only APIs. It is intentionally private and renders no call-level rows, phone
-numbers, evidence URLs, audio, transcripts, customer identifiers, or health content.
+The current UI is a routed React application backed by authenticated, page-scoped
+APIs. Operational pages are aggregate-only. An explicit admin audit-monitor flow
+can expose one selected call's verified recording, timestamped transcript, and
+per-call charge calculation when both role and sensitivity checks pass.
 
 ## Pages
 
@@ -14,11 +15,31 @@ numbers, evidence URLs, audio, transcripts, customer identifiers, or health cont
 | `/evidence` | Ingestion, references, hash baselines, integrity events | call/evidence/audit aggregates |
 | `/findings` | Finding totals, confidence, catalog, origins, decisions | audit-run/finding aggregates |
 | `/billing` | Calculation, claim, variance, rate card, reconciliation | billing/rate-card/reconciliation aggregates |
-| `/reports` | D-12 weekly/monthly/quarterly/yearly summaries | live period aggregates |
+| `/reports` | D-12 summaries plus monthly email-delivery status | live period aggregates and report outbox |
 | `/operations` | Outbox, inbox, jobs, idempotency, access-audit health | reliability/security aggregates |
+| `/audits` | Three admin queues: audited, pending audit, and no recording; restricted review links where applicable | audit/finding/billing metadata |
+| `/audits/call?task=…` | Admin-only recording, transcript, and KServe-vs-auditor calculation | one sensitivity-authorized call |
 
 Each endpoint returns only the data used by its page. `/overview` does not return
 findings, billing, or snapshot payloads.
+
+## Restricted call review
+
+- `/api/v1/audit-call` and `/api/v1/audit-audio` require `audit:inspect`,
+  which is granted to the `admin` role only.
+- The selected call's `sensitivity_tier` must not exceed the signed-in
+  administrator's `max_sensitivity_tier`.
+- The browser never receives the vendor `source_url`. Audio is streamed through
+  the application after the KServe URL is allowlisted, fetched afresh through
+  the configured proxy, and matched against the stored SHA-256 baseline.
+- Missing or altered evidence fails closed; it is never played as trusted audio.
+- Detail and audio reads are written to `kaudit_audit_log` with the call ID and
+  purpose `admin_call_review`.
+- Responses are private and non-cacheable. Aggregate APIs continue to exclude
+  transcript text, recording URLs, phone numbers, and customer identifiers.
+- Per-call KServe charges are derived from sheet minutes because KServe supplies
+  aggregate invoice lines, not per-task invoice amounts. Per-call values exclude
+  cycle-level IGST, TDS, and round-off.
 
 ## Login behavior
 
@@ -90,6 +111,11 @@ Local dashboard plus the continuous skip-completed audit worker:
 npm run app:operate
 ```
 
+`app:operate` also starts the monthly report-email worker. It remains idle until
+`KAUDIT_REPORT_EMAIL_ENABLED=true`; readiness and reporting gates still prevent
+premature delivery. SMTP setup and the supervised first-month procedure are in
+`docs/runbooks/AUTOMATED_REPORT_EMAIL.md`.
+
 For OIDC browser login, configure:
 
 ```text
@@ -104,8 +130,10 @@ that provider, client, MFA policy, callback/proxy behavior, and logout path are 
 Open `http://127.0.0.1:4175`. Static assets are served from the authenticated
 server with a same-origin CSP.
 
-Business data queries are read-only and aggregate-only. Successful and denied app/API
-access is written to the hash-chained audit log in authenticated modes.
+Business data queries are read-only. Aggregate pages remain content-free; the
+restricted admin call-review endpoints are the only raw-content exception.
+Successful and denied app/API access is written to the hash-chained audit log
+in authenticated modes.
 
 ## Authority labels
 
@@ -119,6 +147,9 @@ access is written to the hash-chained audit log in authenticated modes.
   evidence/rate-card gates apply uniformly to every call.
 - Reports remain `provisional` until billing calculations are authoritative and
   `KAUDIT_REPORTING_APPROVED=true`.
+- Audit Monitor reports exact GPT input/output/total tokens and Whisper billed
+  audio minutes from migration 0007 onward. Historical audits remain labeled
+  `Not recorded`.
 
 These flags change labels and release posture. They do not retroactively validate,
 recalculate, or finalize existing data.

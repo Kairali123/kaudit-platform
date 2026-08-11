@@ -2,6 +2,7 @@ import { useQuery } from '@tanstack/react-query'
 import { ErrorState, LoadingState, Notice } from '../components/States'
 import { MetricGrid, PageHeader, UpdatedAt } from '../components/Metrics'
 import { getJson, type QualityData } from '../lib/api'
+import { useBillingPeriod } from '../lib/billingPeriod'
 
 function CountList({
   title,
@@ -28,9 +29,11 @@ function CountList({
 }
 
 export function FindingsPage() {
+  const period = useBillingPeriod()
   const query = useQuery({
-    queryKey: ['findings'],
-    queryFn: () => getJson<QualityData>('/api/v1/findings'),
+    queryKey: ['findings', period.month],
+    queryFn: () =>
+      getJson<QualityData>(period.apiPath('/api/v1/findings')),
   })
   if (query.isLoading) return <LoadingState />
   if (query.error)
@@ -41,7 +44,7 @@ export function FindingsPage() {
       <PageHeader
         eyebrow="Quality"
         title="Findings"
-        description="Aggregate automated quality signals, confidence, and current decision state."
+        description={`Automated quality signals and decision state for ${period.label}.`}
         badge={
           <span className={`status-badge ${data.authority}`}>
             {data.authority}
@@ -52,6 +55,16 @@ export function FindingsPage() {
         <Notice tone="warning" title="Accuracy has not been measured">
           Confidence is model output, not ground-truth accuracy. These results are
           monitoring signals and are not authoritative for safety or billing.
+        </Notice>
+      )}
+      {data.authority === 'automated' && (
+        <Notice
+          tone="warning"
+          title="Leadership-approved automated consensus"
+        >
+          A second model pass and automated adjudication replace manual
+          labeling. Confidence remains model-reported and is not measured
+          ground-truth accuracy.
         </Notice>
       )}
       <MetricGrid tiles={data.quality.tiles} />

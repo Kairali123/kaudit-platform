@@ -6,6 +6,7 @@ import type {
 } from 'mysql2/promise'
 import { createMysqlOutboxWriter } from './mysqlOutbox.ts'
 import { buildVerifiedBillingRecords } from '../billing/records.ts'
+import type { VerifiedBillingRecords } from '../billing/records.ts'
 import type {
   PublishedRateCard,
   VerifiedBillingInput,
@@ -148,6 +149,22 @@ export async function persistVerifiedBillingDecision(
     options.rateCard,
     options.result,
   )
+  return persistVerifiedBillingRecords(pool, {
+    records,
+    rateCard: options.rateCard,
+    correlationId: options.correlationId,
+  })
+}
+
+export async function persistVerifiedBillingRecords(
+  pool: Pool,
+  options: {
+    records: VerifiedBillingRecords
+    rateCard: PublishedRateCard
+    correlationId: string | null
+  },
+): Promise<PersistVerifiedBillingResult> {
+  const records = options.records
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()

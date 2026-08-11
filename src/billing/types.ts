@@ -31,6 +31,12 @@ export interface ModelIdentity {
 export interface AutomationAuthority {
   calibrationVersion: string | null
   calibrationComplete: boolean
+  /**
+   * Present when authority comes from automated model consensus rather than
+   * human-labeled ground-truth calibration.
+   */
+  validationMethod?: 'human_ground_truth' | 'automated_consensus'
+  validationTraceSha256?: string
   confidence: string
   threshold: string | null
   language: string

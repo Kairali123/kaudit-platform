@@ -22,6 +22,7 @@ import {
   type JsonValue,
 } from '../messaging/canonicalJson.ts'
 import { createMysqlOutboxWriter } from './mysqlOutbox.ts'
+import { insertAiUsageEvent } from './mysqlAiUsage.ts'
 
 interface CountRow extends RowDataPacket {
   n: number | string
@@ -251,6 +252,32 @@ export function createMysqlReauditWriteRepo(
             at,
           ],
         )
+        if (transcript.usage) {
+          await insertAiUsageEvent(connection, {
+            auditRunId,
+            callId: candidate.callId,
+            operation: 'transcription',
+            passName: 'primary_asr',
+            providerName: transcript.model.provider,
+            modelName: transcript.model.name,
+            modelVersion: transcript.model.version,
+            usage: transcript.usage,
+            recordedAt: at,
+          })
+        }
+        if (classification.usage) {
+          await insertAiUsageEvent(connection, {
+            auditRunId,
+            callId: candidate.callId,
+            operation: 'classification',
+            passName: 'primary_classifier',
+            providerName: classification.model.provider,
+            modelName: classification.model.name,
+            modelVersion: classification.model.version,
+            usage: classification.usage,
+            recordedAt: at,
+          })
+        }
         await connection.execute(
           `INSERT INTO kaudit_media_analysis
              (id, call_artifact_id, input_sha256, analyzer_name,

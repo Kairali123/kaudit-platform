@@ -17,21 +17,23 @@ import type {
 export interface BillingCalculationRecord {
   callId: string
   rateCardVersionId: string
-  auditRunId: string
+  auditRunId: string | null
   engineVersion: string
   inputManifestSha256: string
   status: 'final'
-  calculationBasis: 'independent_conversation_end'
+  calculationBasis:
+    | 'independent_conversation_end'
+    | 'accepted_as_billed_unverified'
   claimedDurationMs: number | null
   connectedDurationMs: number | null
-  recordedDurationMs: number
+  recordedDurationMs: number | null
   speechDurationMs: number | null
-  conversationEndMs: number
-  wrapUpGraceMs: number
-  adjustedChargeableDurationMs: number
+  conversationEndMs: number | null
+  wrapUpGraceMs: number | null
+  adjustedChargeableDurationMs: number | null
   billableDurationMs: number
-  oneWayTailMs: number
-  oneWayTailAlert: boolean
+  oneWayTailMs: number | null
+  oneWayTailAlert: boolean | null
   subtotalAmount: string
   taxAmount: '0.00000000'
   totalAmount: string
@@ -47,7 +49,7 @@ export interface BillingComponentRecord {
   componentType: 'platform'
   ruleCode: string
   rawQuantity: string
-  rawUnit: 'millisecond'
+  rawUnit: 'millisecond' | 'minute'
   billableQuantity: string
   billingIncrement: string
   unitRate: '9.50000000'
@@ -61,7 +63,7 @@ export interface BillingComponentRecord {
 
 export interface AutomatedDecisionRecord {
   callId: string
-  auditRunId: string
+  auditRunId: string | null
   decisionType: 'verified_call_billing'
   decisionStatus: 'final' | 'unresolved'
   reasonCode: string

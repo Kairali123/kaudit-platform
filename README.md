@@ -119,6 +119,16 @@ built preview on `127.0.0.1:4176`; it must not be exposed.
 After identity migrations and user/OIDC provisioning, use `npm run app:dev:secure`
 or `npm run app:start`. See `docs/ENTERPRISE_APP.md`.
 
+## Vercel web/API deployment candidate
+
+`vercel.json` and `api/index.ts` make the authenticated web/API application
+deployable as a Git-backed Vercel candidate on a Node.js 24 Function, sharing the
+persistent server's dependency bootstrap so the two cannot drift on security posture.
+A web deployment hosts pages and API reads only — the billing worker, Call Audit batch,
+report-email worker, migrations, and durable imports are not started by it, and there
+are no Cron entries. No Vercel project is linked and no deployment has been made. See
+`docs/runbooks/VERCEL_DEPLOYMENT.md`.
+
 ## Monthly import and continuous audit
 
 An administrator uploads the KServe usage CSV and invoice PDF at
@@ -150,3 +160,13 @@ npm run app:operate
 
 This is a convenience wrapper around two separate processes. Production still
 requires independently supervised API and worker services.
+
+## Call Audit batch
+
+`npm run callaudit:batch` runs one bounded Call Audit batch over one
+operator-supplied period and exits. It is not a scheduler, and it refuses to
+write or spend unless `KAUDIT_CALL_AUDIT_BATCH_MODE` is exactly `EXECUTE`.
+
+Migration `0008_call_audit_foundation.sql` is not production-applied. Use
+staging under approved supervision and follow
+`docs/runbooks/CALL_AUDIT_BATCH.md`.

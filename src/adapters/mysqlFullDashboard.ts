@@ -11,6 +11,10 @@ import type {
 import { fromScaled, toScaled } from '../ui/decimal.ts'
 import { completedPeriods } from '../ui/periods.ts'
 import { collectLatestBillingCycle } from './mysqlBillingCycle.ts'
+import {
+  previousBillingMonth,
+  type BillingMonthScope,
+} from '../reporting/billingMonth.ts'
 
 // Aggregate-only, read-only adapter for the full local dashboard. No query selects
 // call IDs, phone data, transcript text, evidence URLs, or health content. Every
@@ -42,17 +46,40 @@ function s(value: unknown): string | null {
   return value == null ? null : String(value)
 }
 
-export async function collectQuality(pool: Pool): Promise<RawQualityMetrics> {
+export async function collectQuality(
+  pool: Pool,
+  period: BillingMonthScope | null = null,
+): Promise<RawQualityMetrics> {
+  const callWhere = period
+    ? ' WHERE c.billing_period_date BETWEEN ? AND ?'
+    : ''
+  const findingWhere = period
+    ? ' WHERE finding_call.billing_period_date BETWEEN ? AND ?'
+    : ''
+  const periodParams = period ? [period.start, period.end] : []
   const [summary, catalog, confirmationRows, originRows, findingRows] = await Promise.all([
     one(
       pool,
       `SELECT
-         (SELECT COUNT(*) FROM kaudit_audit_run) AS audit_runs,
-         (SELECT COUNT(DISTINCT call_id) FROM kaudit_audit_run WHERE status='completed') AS analyzed_calls,
+         (
+           SELECT COUNT(*)
+           FROM kaudit_audit_run run
+           JOIN kaudit_call c ON c.id = run.call_id
+           ${callWhere}
+         ) AS audit_runs,
+         (
+           SELECT COUNT(DISTINCT run.call_id)
+           FROM kaudit_audit_run run
+           JOIN kaudit_call c ON c.id = run.call_id
+           ${callWhere}${period ? ' AND' : ' WHERE'} run.status='completed'
+         ) AS analyzed_calls,
          COUNT(*) AS total_findings,
-         COUNT(DISTINCT call_id) AS calls_with_findings,
-         CAST(AVG(confidence) AS CHAR) AS avg_confidence
-       FROM kaudit_audit_finding`,
+         COUNT(DISTINCT finding.call_id) AS calls_with_findings,
+         CAST(AVG(finding.confidence) AS CHAR) AS avg_confidence
+       FROM kaudit_audit_finding finding
+       JOIN kaudit_call finding_call ON finding_call.id = finding.call_id
+       ${findingWhere}`,
+      period ? [...periodParams, ...periodParams, ...periodParams] : [],
     ),
     one(
       pool,
@@ -63,20 +90,29 @@ export async function collectQuality(pool: Pool): Promise<RawQualityMetrics> {
     many(
       pool,
       `SELECT confirmation_status AS label, COUNT(*) AS n
-       FROM kaudit_audit_finding
+       FROM kaudit_audit_finding finding
+       JOIN kaudit_call c ON c.id = finding.call_id
+       ${callWhere}
        GROUP BY confirmation_status ORDER BY n DESC`,
+      periodParams,
     ),
     many(
       pool,
       `SELECT origin AS label, COUNT(*) AS n
-       FROM kaudit_audit_finding
+       FROM kaudit_audit_finding finding
+       JOIN kaudit_call c ON c.id = finding.call_id
+       ${callWhere}
        GROUP BY origin ORDER BY n DESC`,
+      periodParams,
     ),
     many(
       pool,
       `SELECT finding_code AS code, COUNT(*) AS n, CAST(AVG(confidence) AS CHAR) AS avg_confidence
-       FROM kaudit_audit_finding
+       FROM kaudit_audit_finding finding
+       JOIN kaudit_call c ON c.id = finding.call_id
+       ${callWhere}
        GROUP BY finding_code ORDER BY n DESC, finding_code LIMIT 10`,
+      periodParams,
     ),
   ])
 
@@ -100,7 +136,14 @@ export async function collectQuality(pool: Pool): Promise<RawQualityMetrics> {
   }
 }
 
-export async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
+export async function collectBilling(
+  pool: Pool,
+  period: BillingMonthScope | null = null,
+): Promise<RawBillingMetrics> {
+  const calculationWindow = period
+    ? ' AND calculation_call.billing_period_date BETWEEN ? AND ?'
+    : ''
+  const periodParams = period ? [period.start, period.end] : []
   const [summary, authority, rateCard, reconciliation, cycle] = await Promise.all([
     one(
       pool,
@@ -110,10 +153,12 @@ export async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
          CAST(SUM(bc.billable_duration_ms) / 60000 AS CHAR) AS billable_minutes,
          MAX(bc.currency) AS currency
        FROM kaudit_billing_calculation bc
+       JOIN kaudit_call calculation_call ON calculation_call.id = bc.call_id
        WHERE NOT EXISTS (
          SELECT 1 FROM kaudit_billing_calculation newer
          WHERE newer.supersedes_calculation_id = bc.id
-       )`,
+       )${calculationWindow}`,
+      periodParams,
     ),
     one(
       pool,
@@ -126,7 +171,13 @@ export async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
                 'independent_conversation_end',
                 'accepted_as_billed_unverified'
               )
-              AND current.audit_run_id IS NOT NULL
+              AND (
+                (current.calculation_basis =
+                   'independent_conversation_end'
+                 AND current.audit_run_id IS NOT NULL)
+                OR current.calculation_basis =
+                   'accepted_as_billed_unverified'
+              )
               AND current.input_manifest_sha256 IS NOT NULL
               AND current.ruleset_sha256 IS NOT NULL
               AND current.decision_trace_sha256 IS NOT NULL
@@ -145,6 +196,8 @@ export async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
          (
            SELECT COUNT(*)
            FROM kaudit_automated_decision decision_row
+           JOIN kaudit_call decision_call
+             ON decision_call.id = decision_row.call_id
            WHERE decision_row.decision_type =
                    'verified_call_billing'
              AND decision_row.decision_status = 'unresolved'
@@ -153,29 +206,46 @@ export async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
                FROM kaudit_automated_decision newer_decision
                WHERE newer_decision.supersedes_decision_id =
                      decision_row.id
-             )
+             )${period ? ' AND decision_call.billing_period_date BETWEEN ? AND ?' : ''}
          ) AS unresolved_automated_decisions
        FROM kaudit_billing_calculation current
+       JOIN kaudit_call calculation_call
+         ON calculation_call.id = current.call_id
        WHERE NOT EXISTS (
          SELECT 1 FROM kaudit_billing_calculation newer
          WHERE newer.supersedes_calculation_id = current.id
-       )`,
+       )${calculationWindow}`,
+      period ? [...periodParams, ...periodParams] : [],
     ),
     one(
       pool,
       `SELECT version, status, approved_by, CAST(approved_at AS CHAR) AS approved_at, currency
        FROM kaudit_rate_card_version
+       ${period
+         ? `WHERE effective_from <= ?
+              AND (effective_to IS NULL OR effective_to >= ?)`
+         : ''}
        ORDER BY created_at DESC LIMIT 1`,
+      period ? [period.end, period.start] : [],
     ),
     one(
       pool,
-      `SELECT status, CAST(claimed_subtotal AS CHAR) AS claimed_subtotal,
+      `SELECT reconciliation.status,
+              CAST(reconciliation.claimed_subtotal AS CHAR) AS claimed_subtotal,
               CAST(verified_subtotal AS CHAR) AS verified_subtotal,
-              CAST(net_variance AS CHAR) AS net_variance, currency
-       FROM kaudit_reconciliation
-       ORDER BY created_at DESC, version DESC LIMIT 1`,
+              CAST(net_variance AS CHAR) AS net_variance,
+              reconciliation.currency
+       FROM kaudit_reconciliation reconciliation
+       JOIN kaudit_invoice reconciliation_invoice
+         ON reconciliation_invoice.id = reconciliation.invoice_id
+       ${period
+         ? 'WHERE reconciliation_invoice.period_start = ? AND reconciliation_invoice.period_end = ?'
+         : ''}
+       ORDER BY reconciliation.created_at DESC,
+                reconciliation.version DESC LIMIT 1`,
+      periodParams,
     ),
-    collectLatestBillingCycle(pool),
+    collectLatestBillingCycle(pool, period),
   ])
 
   return {
@@ -201,7 +271,7 @@ export async function collectBilling(pool: Pool): Promise<RawBillingMetrics> {
 interface PeriodAmounts {
   verified: string | null
   providerClaimed: string | null
-  invoiceTotal: string | null
+  invoiceSubtotal: string | null
   currency: string
 }
 
@@ -290,7 +360,7 @@ async function collectPeriodAmounts(
       pool,
       `SELECT CAST(period_start AS CHAR) AS period_start,
               CAST(period_end AS CHAR) AS period_end,
-              CAST(total_amount AS CHAR) AS invoice_total,
+              CAST(subtotal_amount AS CHAR) AS invoice_subtotal,
               currency
        FROM kaudit_invoice
        ORDER BY revision_no DESC, created_at DESC, id DESC`,
@@ -350,7 +420,10 @@ async function collectPeriodAmounts(
             providerClaimed == null
               ? null
               : fromScaled(providerClaimed),
-          invoiceTotal: s(invoice?.invoice_total),
+          // Verified billing is pre-tax, so compare it with the invoice
+          // subtotal. Using the tax-inclusive invoice total would overstate
+          // the operational variance by IGST and round-off.
+          invoiceSubtotal: s(invoice?.invoice_subtotal),
           currency:
             s(invoice?.currency) ?? currency ?? 'INR',
         },
@@ -359,7 +432,56 @@ async function collectPeriodAmounts(
   )
 }
 
-export async function collectRevenueSnapshots(pool: Pool): Promise<RawRevenueSnapshot[]> {
+export async function collectRevenueSnapshots(
+  pool: Pool,
+  selectedPeriod: BillingMonthScope | null = null,
+): Promise<RawRevenueSnapshot[]> {
+  if (selectedPeriod) {
+    const prior = previousBillingMonth(selectedPeriod)
+    const amounts = await collectPeriodAmounts(pool, [
+      {
+        key: 'monthly:current',
+        start: selectedPeriod.start,
+        end: selectedPeriod.end,
+      },
+      {
+        key: 'monthly:prior',
+        start: prior.start,
+        end: prior.end,
+      },
+    ])
+    const current = amounts.get('monthly:current') ?? {
+      verified: null,
+      providerClaimed: null,
+      invoiceSubtotal: null,
+      currency: 'INR',
+    }
+    const priorAmounts = amounts.get('monthly:prior') ?? {
+      verified: null,
+      providerClaimed: null,
+      invoiceSubtotal: null,
+      currency: current.currency,
+    }
+    return [{
+      cadence: 'monthly',
+      label: selectedPeriod.label,
+      start: selectedPeriod.start,
+      end: selectedPeriod.end,
+      currency: current.currency,
+      verified: current.verified,
+      vendorClaimed:
+        current.invoiceSubtotal ?? current.providerClaimed,
+      vendorClaimedBasis:
+        current.invoiceSubtotal != null
+          ? 'invoiced'
+          : current.providerClaimed != null
+            ? 'provider_claimed_no_invoice'
+            : 'unavailable',
+      priorVerified: priorAmounts.verified,
+      priorVendorClaimed:
+        priorAmounts.invoiceSubtotal ?? priorAmounts.providerClaimed,
+    }]
+  }
   const periods = completedPeriods(todayInIndia())
   const requested = periods.flatMap((period) => [
     {
@@ -380,7 +502,7 @@ export async function collectRevenueSnapshots(pool: Pool): Promise<RawRevenueSna
       {
         verified: null,
         providerClaimed: null,
-        invoiceTotal: null,
+        invoiceSubtotal: null,
         currency: 'INR',
       }
     const prior =
@@ -388,11 +510,11 @@ export async function collectRevenueSnapshots(pool: Pool): Promise<RawRevenueSna
       {
         verified: null,
         providerClaimed: null,
-        invoiceTotal: null,
+        invoiceSubtotal: null,
         currency: current.currency,
       }
-    const hasInvoice = current.invoiceTotal != null
-    const priorHasInvoice = prior.invoiceTotal != null
+    const hasInvoice = current.invoiceSubtotal != null
+    const priorHasInvoice = prior.invoiceSubtotal != null
     return {
       cadence: period.cadence,
       label: period.label,
@@ -401,7 +523,7 @@ export async function collectRevenueSnapshots(pool: Pool): Promise<RawRevenueSna
       currency: current.currency,
       verified: current.verified,
       vendorClaimed: hasInvoice
-        ? current.invoiceTotal
+        ? current.invoiceSubtotal
         : current.providerClaimed,
       vendorClaimedBasis: hasInvoice
         ? 'invoiced'
@@ -410,7 +532,7 @@ export async function collectRevenueSnapshots(pool: Pool): Promise<RawRevenueSna
           : 'unavailable',
       priorVerified: prior.verified,
       priorVendorClaimed: priorHasInvoice
-        ? prior.invoiceTotal
+        ? prior.invoiceSubtotal
         : prior.providerClaimed,
     }
   })

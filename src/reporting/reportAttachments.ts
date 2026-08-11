@@ -1,0 +1,204 @@
+import PDFDocument from 'pdfkit'
+import { strToU8, zipSync } from 'fflate'
+import type { MonthlyEmailReport } from './monthlyEmailReport.ts'
+import { formatMoney } from '../ui/decimal.ts'
+
+function xml(value: unknown): string {
+  return String(value ?? '')
+    .replaceAll('&', '&amp;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+    .replaceAll('"', '&quot;')
+    .replaceAll("'", '&apos;')
+}
+
+function columnName(index: number): string {
+  let value = index + 1
+  let result = ''
+  while (value > 0) {
+    const remainder = (value - 1) % 26
+    result =
+      String.fromCharCode(65 + remainder) + result
+    value = Math.floor((value - 1) / 26)
+  }
+  return result
+}
+
+function worksheetXml(report: MonthlyEmailReport): string {
+  const values: Array<Array<string | number>> = [
+    ['Kairali AI Call Audit — monthly revenue report'],
+    ['Period', report.period.label],
+    ['Authority', report.authority],
+    ['Source manifest SHA-256', report.sourceManifestSha256],
+    [],
+    [
+      'Task / call reference',
+      'Category',
+      'Confidence',
+      'Resolution',
+      'KServe billed minutes',
+      'KServe derived amount',
+      'Verified billable minutes',
+      'Verified amount',
+      'Variance',
+      'Currency',
+    ],
+    ...report.rows.map((row) => [
+      row.callReference,
+      row.category,
+      row.confidence ?? '',
+      row.resolution,
+      row.vendorBilledMinutes,
+      row.vendorAmount,
+      row.verifiedBillableMinutes,
+      row.verifiedAmount,
+      row.variance,
+      row.currency,
+    ]),
+  ]
+  const rows = values
+    .map((row, rowIndex) => {
+      const cells = row
+        .map(
+          (value, columnIndex) =>
+            `<c r="${columnName(columnIndex)}${rowIndex + 1}" t="inlineStr"><is><t xml:space="preserve">${xml(value)}</t></is></c>`,
+        )
+        .join('')
+      return `<row r="${rowIndex + 1}">${cells}</row>`
+    })
+    .join('')
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+  <sheetViews><sheetView workbookViewId="0"/></sheetViews>
+  <cols>
+    <col min="1" max="1" width="34" customWidth="1"/>
+    <col min="2" max="4" width="28" customWidth="1"/>
+    <col min="5" max="10" width="22" customWidth="1"/>
+  </cols>
+  <sheetData>${rows}</sheetData>
+  <autoFilter ref="A6:J${Math.max(6, values.length)}"/>
+</worksheet>`
+}
+
+export function buildReportXlsx(
+  report: MonthlyEmailReport,
+): Buffer {
+  const files = {
+    '[Content_Types].xml': strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+  <Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+  <Default Extension="xml" ContentType="application/xml"/>
+  <Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+  <Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>`),
+    '_rels/.rels': strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`),
+    'xl/workbook.xml': strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+  <sheets><sheet name="Call variance" sheetId="1" r:id="rId1"/></sheets>
+</workbook>`),
+    'xl/_rels/workbook.xml.rels': strToU8(`<?xml version="1.0" encoding="UTF-8"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+  <Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>`),
+    'xl/worksheets/sheet1.xml': strToU8(
+      worksheetXml(report),
+    ),
+  }
+  return Buffer.from(zipSync(files, { level: 6 }))
+}
+
+export function buildReportPdf(
+  report: MonthlyEmailReport,
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const document = new PDFDocument({
+      size: 'A4',
+      margin: 48,
+      info: {
+        Title: `Kairali ${report.period.label} AI Call Audit`,
+        Author: 'Kairali AI Call Audit Platform',
+      },
+    })
+    const chunks: Buffer[] = []
+    document.on('data', (chunk) =>
+      chunks.push(Buffer.from(chunk)),
+    )
+    document.on('error', reject)
+    document.on('end', () => resolve(Buffer.concat(chunks)))
+
+    document
+      .fontSize(18)
+      .text('Kairali AI Call Audit')
+      .fontSize(12)
+      .fillColor('#475569')
+      .text(`${report.period.label} revenue variance report`)
+      .moveDown()
+      .fillColor('#0f172a')
+      .fontSize(10)
+      .text('Authority: authoritative automated cycle output')
+      .text(`Generated: ${report.generatedAt}`)
+      .text(
+        `Source manifest SHA-256: ${report.sourceManifestSha256}`,
+      )
+      .moveDown()
+      .fontSize(13)
+      .text('Management summary')
+      .fontSize(11)
+      .text(
+        `Verified billable revenue: ${formatMoney(
+          report.summary.verifiedBillableRevenue,
+          report.summary.currency,
+        )}`,
+      )
+      .text(
+        `Vendor invoice claim: ${formatMoney(
+          report.summary.invoiceClaimedAmount,
+          report.summary.currency,
+        )}`,
+      )
+      .text(
+        `Variance vs invoice: ${formatMoney(
+          report.summary.revenueVarianceVsInvoice,
+          report.summary.currency,
+        )}`,
+      )
+      .moveDown()
+      .fontSize(10)
+      .text(
+        `${report.summary.totalCalls.toLocaleString('en-IN')} calls: ` +
+          `${report.summary.independentlyAuditedCalls.toLocaleString('en-IN')} independently audited; ` +
+          `${report.summary.acceptedAsBilledCalls.toLocaleString('en-IN')} accepted as billed because independent evidence was unavailable.`,
+      )
+      .moveDown()
+      .fillColor('#475569')
+      .text(
+        'The attached Excel workbook contains call-level backup. Positive variance means the vendor claim exceeds Kairali’s independently verified amount. This report does not itself send a vendor dispute or make payment.',
+      )
+    document.end()
+  })
+}
+
+function html(value: unknown): string {
+  return xml(value)
+}
+
+export function buildReportEmailHtml(
+  report: MonthlyEmailReport,
+): string {
+  return `<!doctype html>
+<html><body style="font-family:Arial,sans-serif;color:#0f172a;line-height:1.5">
+  <h1 style="font-size:20px">Kairali AI Call Audit — ${html(report.period.label)}</h1>
+  <p>The automated billing cycle is complete and the authoritative internal report is attached.</p>
+  <table role="presentation" style="border-collapse:collapse">
+    <tr><td style="padding:8px;border:1px solid #cbd5e1">Verified billable revenue</td><td style="padding:8px;border:1px solid #cbd5e1"><strong>${html(formatMoney(report.summary.verifiedBillableRevenue, report.summary.currency))}</strong></td></tr>
+    <tr><td style="padding:8px;border:1px solid #cbd5e1">Vendor invoice claim</td><td style="padding:8px;border:1px solid #cbd5e1"><strong>${html(formatMoney(report.summary.invoiceClaimedAmount, report.summary.currency))}</strong></td></tr>
+    <tr><td style="padding:8px;border:1px solid #cbd5e1">Variance identified</td><td style="padding:8px;border:1px solid #cbd5e1"><strong>${html(formatMoney(report.summary.revenueVarianceVsInvoice, report.summary.currency))}</strong></td></tr>
+  </table>
+  <p>${report.summary.totalCalls.toLocaleString('en-IN')} calls are included. The PDF is the concise management summary; the Excel workbook is the call-level backup.</p>
+  <p style="color:#475569;font-size:12px">Manifest: ${html(report.sourceManifestSha256)}. This automated email does not submit a dispute or authorize payment.</p>
+</body></html>`
+}
+

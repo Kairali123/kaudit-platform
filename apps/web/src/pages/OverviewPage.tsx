@@ -3,11 +3,14 @@ import { CheckCircle2, CircleDashed, OctagonAlert } from 'lucide-react'
 import { ErrorState, LoadingState } from '../components/States'
 import { MetricGrid, PageHeader, UpdatedAt } from '../components/Metrics'
 import { getJson, type OverviewData } from '../lib/api'
+import { useBillingPeriod } from '../lib/billingPeriod'
 
 export function OverviewPage() {
+  const period = useBillingPeriod()
   const query = useQuery({
-    queryKey: ['overview'],
-    queryFn: () => getJson<OverviewData>('/api/v1/overview'),
+    queryKey: ['overview', period.month],
+    queryFn: () =>
+      getJson<OverviewData>(period.apiPath('/api/v1/overview')),
   })
   if (query.isLoading) return <LoadingState />
   if (query.error)
@@ -18,7 +21,7 @@ export function OverviewPage() {
       <PageHeader
         eyebrow="Overview"
         title="Platform overview"
-        description="Headline system coverage and release readiness—nothing more."
+        description={`Headline system coverage and release readiness for ${period.label}.`}
         badge={<span className="status-badge live">Live aggregates</span>}
       />
       <MetricGrid tiles={data.tiles.slice(0, 4)} />

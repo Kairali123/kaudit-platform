@@ -137,6 +137,10 @@ export function createOpenAiReaudit(apiKey: string): ReauditAi {
         language?: string
         text?: string
         segments?: Array<{ start?: number; end?: number; text?: string }>
+        usage?: {
+          type?: string
+          seconds?: number
+        }
       }
       const segments = (raw.segments || []).map((segment) => ({
         startMs: Math.max(0, Math.round(Number(segment.start || 0) * 1000)),
@@ -162,6 +166,22 @@ export function createOpenAiReaudit(apiKey: string): ReauditAi {
         ),
         text: String(raw.text || ''),
         segments,
+        usage: {
+          inputTokens: null,
+          outputTokens: null,
+          totalTokens: null,
+          audioSeconds:
+            raw.usage?.type === 'duration' &&
+            Number.isFinite(raw.usage.seconds)
+              ? Number(raw.usage.seconds)
+              : Number(raw.duration || 0),
+          requestId:
+            typeof (response as unknown as { _request_id?: unknown })
+              ._request_id === 'string'
+              ? (response as unknown as { _request_id: string })
+                  ._request_id
+              : null,
+        },
       }
     },
     async classify(options) {
@@ -234,6 +254,18 @@ ${transcript}`,
               ),
         remarks: raw.remarks,
         disputeRecommended: raw.dispute_recommended,
+        usage: {
+          inputTokens: completion.usage?.prompt_tokens ?? null,
+          outputTokens: completion.usage?.completion_tokens ?? null,
+          totalTokens: completion.usage?.total_tokens ?? null,
+          audioSeconds: null,
+          requestId:
+            typeof (completion as unknown as { _request_id?: unknown })
+              ._request_id === 'string'
+              ? (completion as unknown as { _request_id: string })
+                  ._request_id
+              : null,
+        },
       }
     },
   }

@@ -31,6 +31,14 @@ export interface TranscriptSegment {
   text: string
 }
 
+export interface AiUsage {
+  inputTokens: number | null
+  outputTokens: number | null
+  totalTokens: number | null
+  audioSeconds: number | null
+  requestId: string | null
+}
+
 export interface TranscriptionResult {
   model: {
     provider: 'openai'
@@ -42,6 +50,7 @@ export interface TranscriptionResult {
   speechMs: number
   text: string
   segments: TranscriptSegment[]
+  usage?: AiUsage
 }
 
 export interface NaturalSpeechBlock {
@@ -65,6 +74,7 @@ export interface ModelClassification {
   lastMeaningfulCustomerExchangeMs: number | null
   remarks: string
   disputeRecommended: boolean
+  usage?: AiUsage
 }
 
 export interface ReauditAnalysis {

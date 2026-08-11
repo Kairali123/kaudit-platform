@@ -53,8 +53,8 @@ test('rejects local authentication in production', () => {
   )
 })
 
-test('requires database TLS CA and OIDC in production', () => {
-  const env = {
+function productionOidc(): NodeJS.ProcessEnv {
+  return {
     ...base(),
     NODE_ENV: 'production',
     KAUDIT_AUTH_MODE: 'oidc',
@@ -64,12 +64,80 @@ test('requires database TLS CA and OIDC in production', () => {
     KAUDIT_OIDC_JWKS_URI:
       'https://identity.example.test/.well-known/jwks.json',
   }
+}
+
+/** Synthetic; not a certificate, and never sent to anything. */
+const SYNTHETIC_CA_PEM =
+  '-----BEGIN CERTIFICATE-----\nc3ludGhldGljLWNh\n-----END CERTIFICATE-----\n'
+
+test('requires database TLS CA and OIDC in production', () => {
+  const env = productionOidc()
   assert.throws(() => loadRuntimeConfig(env), /DB_SSL_CA_FILE/)
   const config = loadRuntimeConfig({
     ...env,
     DB_SSL_CA_FILE: '/run/secrets/db-ca.pem',
   })
   assert.equal(config.auth.mode, 'oidc')
+  assert.equal(config.database.sslCaFile, '/run/secrets/db-ca.pem')
+  assert.equal(config.database.sslCaInline, false)
+})
+
+test('accepts an inline CA PEM as the production TLS source', () => {
+  const config = loadRuntimeConfig({
+    ...productionOidc(),
+    DB_SSL_CA_PEM: SYNTHETIC_CA_PEM,
+  })
+  assert.equal(config.database.sslCaInline, true)
+  assert.equal(config.database.sslCaFile, null)
+})
+
+test('configuration carries the fact of an inline CA, never its content', () => {
+  const config = loadRuntimeConfig({
+    ...productionOidc(),
+    DB_SSL_CA_PEM: SYNTHETIC_CA_PEM,
+  })
+  // The whole config is serialized because the risk being guarded is exactly
+  // that: something stringifies it into a log line.
+  const serialized = JSON.stringify(config)
+  assert.equal(serialized.includes('BEGIN CERTIFICATE'), false)
+  assert.equal(serialized.includes('c3ludGhldGljLWNh'), false)
+})
+
+test('names both CA sources when production has neither', () => {
+  assert.throws(
+    () => loadRuntimeConfig(productionOidc()),
+    (error: Error) => {
+      assert.ok(error instanceof ConfigurationError)
+      assert.match(error.message, /DB_SSL_CA_FILE/)
+      assert.match(error.message, /DB_SSL_CA_PEM/)
+      return true
+    },
+  )
+})
+
+test('rejects a file CA and an inline CA configured at the same time', () => {
+  for (const environment of ['production', 'development']) {
+    assert.throws(
+      () =>
+        loadRuntimeConfig({
+          ...(environment === 'production' ? productionOidc() : base()),
+          NODE_ENV: environment,
+          DB_SSL_CA_FILE: '/run/secrets/db-ca.pem',
+          DB_SSL_CA_PEM: SYNTHETIC_CA_PEM,
+        }),
+      /exactly one MySQL CA source/,
+      `ambiguous CA sources must be rejected in ${environment}`,
+    )
+  }
+})
+
+test('a blank inline CA is not a CA source', () => {
+  // Otherwise an unset secret rendered as an empty string would satisfy the
+  // production requirement and the connection would end up with no authority.
+  assert.throws(
+    () => loadRuntimeConfig({ ...productionOidc(), DB_SSL_CA_PEM: '   ' }),
+    /required in production/,
+  )
 })
 
 test('rejects weak or unapproved OIDC algorithms', () => {
@@ -149,7 +217,12 @@ test('legacy K2/K3 environment switches no longer affect runtime authority', () 
     KAUDIT_K23_CLINICAL_SAFETY_OWNER: 'synthetic-owner',
   })
   assert.equal(config.releaseGates.calibrationComplete, false)
+  assert.equal(
+    config.releaseGates.automatedValidationApproved,
+    false,
+  )
   assert.deepEqual(Object.keys(config.releaseGates).sort(), [
+    'automatedValidationApproved',
     'calibrationComplete',
     'reportingApproved',
   ])

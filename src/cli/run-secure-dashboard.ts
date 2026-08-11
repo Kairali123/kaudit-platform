@@ -1,68 +1,16 @@
-import fs from 'node:fs'
-import path from 'node:path'
-import mysql from 'mysql2/promise'
-import { createMysqlAccessRepository } from '../adapters/mysqlAccessRepo.ts'
-import { createMysqlAuditSink } from '../adapters/mysqlAuditSink.ts'
-import { createOidcVerifier } from '../auth/oidcVerifier.ts'
-import { loadRuntimeConfig } from '../config/runtime.ts'
-import { createEnterpriseDashboardServer } from '../http/enterpriseDashboardServer.ts'
-import { createMysqlCycleImportService } from '../adapters/mysqlCycleImport.ts'
-import { createImportAnalysisService } from '../imports/analysis.ts'
+import { createDashboardRuntime } from '../runtime/dashboardRuntime.ts'
 
-const config = loadRuntimeConfig(process.env)
-const ssl = config.database.sslCaFile
-  ? {
-      ca: fs.readFileSync(config.database.sslCaFile, 'utf8'),
-      rejectUnauthorized: true,
-    }
-  : undefined
-const pool = mysql.createPool({
-  host: config.database.host,
-  port: config.database.port,
-  database: config.database.name,
-  user: config.database.user,
-  password: config.database.password,
-  ssl,
-  connectionLimit: 8,
-  connectTimeout: 10_000,
-  enableKeepAlive: true,
-  decimalNumbers: false,
-})
-const access = createMysqlAccessRepository(pool)
-const audit = createMysqlAuditSink(pool)
-const imports = createMysqlCycleImportService(pool, {
-  root: path.resolve(
-    process.env.KAUDIT_IMPORT_ROOT?.trim() || '.data/imports',
-  ),
-  sourceConnectionId:
-    process.env.KAUDIT_KSERVE_SOURCE_CONNECTION_ID?.trim() || null,
-  allowedRecordingHosts: (
-    process.env.KAUDIT_ALLOWED_RECORDING_HOSTS || ''
-  )
-    .split(',')
-    .map((value) => value.trim())
-    .filter(Boolean),
-})
-const importAnalysis = createImportAnalysisService(
-  process.env.OPENAI_API_KEY?.trim() || null,
-)
-const verifier =
-  config.auth.mode === 'oidc'
-    ? createOidcVerifier({
-        issuer: config.auth.issuer,
-        audience: config.auth.audience,
-        jwksUri: config.auth.jwksUri,
-        algorithms: config.auth.algorithms,
-      })
-    : null
-const server = createEnterpriseDashboardServer({
-  config,
-  pool,
-  access,
-  audit,
-  imports,
-  importAnalysis,
-  verifier,
+/**
+ * The persistent secure dashboard: a long-lived process that owns its port.
+ *
+ * Dependency construction lives in the shared runtime factory so this entry
+ * point and the Vercel Function cannot drift apart on security posture. What is
+ * left here is what only a persistent process has: a listening socket and an
+ * orderly shutdown.
+ */
+const { config, pool, server } = createDashboardRuntime({
+  poolProfile: 'persistent',
+  cycleImports: 'local-disk',
 })
 let shuttingDown = false
 

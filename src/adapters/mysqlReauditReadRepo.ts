@@ -1,5 +1,6 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
 import type { ReauditCandidate } from '../reaudit/types.ts'
+import { normalizeTaskIdScope } from '../reaudit/scope.ts'
 
 interface CandidateRow extends RowDataPacket {
   call_id: string
@@ -18,7 +19,23 @@ function nullableMs(value: string | number | null): number | null {
   return Math.round(number)
 }
 
-export function createMysqlReauditReadRepo(pool: Pool) {
+export function createMysqlReauditReadRepo(
+  pool: Pool,
+  options: { externalTaskIds?: readonly string[] } = {},
+) {
+  const taskIds = options.externalTaskIds
+    ? normalizeTaskIdScope(options.externalTaskIds)
+    : []
+  const scopeSql = taskIds.length
+    ? `AND EXISTS (
+              SELECT 1
+              FROM kaudit_call_external_reference scope_ref
+              WHERE scope_ref.call_id = c.id
+                AND scope_ref.provider_name = 'kserve'
+                AND scope_ref.reference_type = 'task_id'
+                AND scope_ref.external_id IN (${taskIds.map(() => '?').join(',')})
+            )`
+    : ''
   return {
     async listCandidates(options: {
       limit: number
@@ -75,10 +92,15 @@ export function createMysqlReauditReadRepo(pool: Pool) {
                )
              )
            ))
+           ${scopeSql}
          GROUP BY c.id, ca.id, ca.source_url, ca.sha256
          ORDER BY c.billing_period_date, c.id
          LIMIT ?`,
-        [options.includePreviouslyClassified ? 1 : 0, options.limit],
+        [
+          options.includePreviouslyClassified ? 1 : 0,
+          ...taskIds,
+          options.limit,
+        ],
       )
       return rows.map((row) => ({
         callId: row.call_id,

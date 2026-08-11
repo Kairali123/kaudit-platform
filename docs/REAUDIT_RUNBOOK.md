@@ -57,6 +57,30 @@ KAUDIT_AUDIT_MODE=EXECUTE KAUDIT_AUDIT_BATCH=10 \
   KAUDIT_AUDIT_WATCH=false npm run audit:worker
 ```
 
+`KAUDIT_AUDIT_WATCH=false` processes exactly one configured batch and exits.
+Use this mode for supervised cost checks. Only watch mode continues polling
+and drains newly eligible work.
+
+For a supervised fixture, recovery batch, or other deliberately bounded run,
+scope the worker to an external cleanup manifest. The manifest must contain
+`target.recordingBackedTaskIds`; calls listed only under `noRecordingTaskIds`
+are not eligible because they have no source audio.
+
+```bash
+KAUDIT_AUDIT_SCOPE_FILE=/absolute/path/to/cleanup-manifest.json \
+  KAUDIT_AUDIT_REQUIRE_SCOPE=true \
+  KAUDIT_AUDIT_MODE=EXECUTE \
+  KAUDIT_AUDIT_BATCH=5 \
+  KAUDIT_AUDIT_WATCH=false \
+  npm run audit:worker
+```
+
+`KAUDIT_AUDIT_REQUIRE_SCOPE=true` is the fail-closed safety switch: the worker
+refuses to start if the manifest is missing or invalid. Task IDs are bound as
+SQL parameters against `kaudit_call_external_reference`; they are never
+interpolated into SQL. The global advisory lock still prevents a scoped and
+unscoped worker from operating concurrently.
+
 After inspecting `/audits`, keep it running for new/due calls:
 
 ```bash

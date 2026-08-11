@@ -40,8 +40,9 @@ ALTER TABLE `kaudit_billing_calculation`
     COMMENT 'Hash of the immutable deterministic billing ruleset'
     AFTER `currency`,
   ADD COLUMN `decision_trace_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin
-    DEFAULT NULL CHECK (json_valid(`decision_trace_json`))
+    DEFAULT NULL
     COMMENT 'Canonical privacy-safe calculation trace; no transcript, URL, or phone data'
+    CHECK (json_valid(`decision_trace_json`))
     AFTER `trace_object_id`,
   ADD COLUMN `decision_trace_sha256` char(64) DEFAULT NULL
     COMMENT 'SHA-256 of canonical decision_trace_json'
@@ -80,8 +81,9 @@ CREATE TABLE `kaudit_automated_decision` (
   `confidence_threshold` decimal(9,8) DEFAULT NULL,
   `evidence_manifest_sha256` char(64) NOT NULL,
   `evidence_refs_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin
-    NOT NULL CHECK (json_valid(`evidence_refs_json`))
-    COMMENT 'Opaque reference IDs and hashes only; no URLs, transcript text, or PII',
+    NOT NULL
+    COMMENT 'Opaque reference IDs and hashes only; no URLs, transcript text, or PII'
+    CHECK (json_valid(`evidence_refs_json`)),
   `input_manifest_sha256` char(64) NOT NULL,
   `decision_output_json` longtext CHARACTER SET utf8mb4 COLLATE utf8mb4_bin
     NOT NULL CHECK (json_valid(`decision_output_json`)),

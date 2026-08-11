@@ -4,8 +4,10 @@ import { Link } from 'react-router-dom'
 import { ErrorState, LoadingState, Notice } from '../components/States'
 import { PageHeader } from '../components/Metrics'
 import { getJson, type Profile } from '../lib/api'
+import { useBillingPeriod } from '../lib/billingPeriod'
 
 export function HomePage() {
+  const period = useBillingPeriod()
   const query = useQuery({
     queryKey: ['me'],
     queryFn: () => getJson<Profile>('/api/v1/me'),
@@ -110,7 +112,7 @@ export function HomePage() {
             ['/findings', 'Findings', 'Automated quality signals and confidence'],
             ['/billing', 'Billing', 'Calculated amount and reconciliation posture'],
           ].map(([to, title, detail]) => (
-            <Link to={to} key={to}>
+            <Link to={period.routePath(to)} key={to}>
               <span>
                 <strong>{title}</strong>
                 <small>{detail}</small>

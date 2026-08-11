@@ -45,6 +45,10 @@ export function OperationsPage() {
         description="Aggregate queue, retry, idempotency, and security-audit posture."
         badge={<span className="status-badge live">Operational</span>}
       />
+      <Notice tone="info" title="System-wide view">
+        Operations data spans all billing months. The global bill-month filter
+        does not change queues, retries, idempotency, or access-audit totals.
+      </Notice>
       {data.auditChainConfigured ? (
         <Notice tone="success" title="Hash-chained audit control is configured">
           {data.auditEvents?.toLocaleString('en-IN') ?? '—'} access and system

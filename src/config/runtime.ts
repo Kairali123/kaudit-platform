@@ -12,6 +12,16 @@ export interface RuntimeConfig {
     user: string
     password: string
     sslCaFile: string | null
+    /**
+     * Whether an inline CA PEM (`DB_SSL_CA_PEM`) is configured — the fact only.
+     *
+     * The PEM itself is deliberately NOT carried in configuration. This object is
+     * handed to the HTTP server and to every CLI, so anything stored here is one
+     * careless `JSON.stringify` away from a log line. The bootstrap reads the PEM
+     * straight from the environment into the driver's TLS options and nowhere
+     * else. See `src/runtime/databaseTls.ts`.
+     */
+    sslCaInline: boolean
   }
   auth:
     | {
@@ -37,6 +47,7 @@ export interface RuntimeConfig {
       }
   releaseGates: {
     calibrationComplete: boolean
+    automatedValidationApproved: boolean
     reportingApproved: boolean
   }
 }
@@ -124,9 +135,28 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     )
   }
 
+  /**
+   * Exactly one MySQL CA source.
+   *
+   * `DB_SSL_CA_FILE` is a path mounted by the host, which a persistent server or
+   * worker has. A Vercel Function does not: nothing mounts a secret file there,
+   * so the CA arrives as an inline PEM in `DB_SSL_CA_PEM` instead.
+   *
+   * Both at once is rejected everywhere rather than silently preferring one. If
+   * an operator rotates the CA in one place and the runtime happens to read the
+   * other, the deployment keeps trusting a stale authority and nothing says so.
+   */
   const sslCaFile = optional(env, 'DB_SSL_CA_FILE')
-  if (environment === 'production' && !sslCaFile) {
-    throw new ConfigurationError('DB_SSL_CA_FILE is required in production')
+  const sslCaInline = Boolean(env.DB_SSL_CA_PEM?.trim())
+  if (sslCaFile && sslCaInline) {
+    throw new ConfigurationError(
+      'DB_SSL_CA_FILE and DB_SSL_CA_PEM are both set; configure exactly one MySQL CA source',
+    )
+  }
+  if (environment === 'production' && !sslCaFile && !sslCaInline) {
+    throw new ConfigurationError(
+      'DB_SSL_CA_FILE or DB_SSL_CA_PEM is required in production',
+    )
   }
 
   const database = {
@@ -136,6 +166,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     user: required(env, 'DB_USER'),
     password: required(env, 'DB_PASSWORD'),
     sslCaFile,
+    sslCaInline,
   }
 
   const auth: RuntimeConfig['auth'] =
@@ -217,6 +248,10 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
 
   const releaseGates = {
     calibrationComplete: bool(env, 'KAUDIT_CALIBRATION_COMPLETE'),
+    automatedValidationApproved: bool(
+      env,
+      'KAUDIT_AUTOMATED_VALIDATION_APPROVED',
+    ),
     reportingApproved: bool(env, 'KAUDIT_REPORTING_APPROVED'),
   }
 

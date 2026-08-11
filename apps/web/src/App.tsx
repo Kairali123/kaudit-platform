@@ -10,6 +10,9 @@ import { OverviewPage } from './pages/OverviewPage'
 import { ReportsPage } from './pages/ReportsPage'
 import { AuditMonitorPage } from './pages/AuditMonitorPage'
 import { ImportPage } from './pages/ImportPage'
+import { AuditCallDetailPage } from './pages/AuditCallDetailPage'
+import { CallAuditReportPage } from './pages/CallAuditReportPage'
+import { CallAuditSettingsPage } from './pages/CallAuditSettingsPage'
 
 export function App() {
   return (
@@ -22,8 +25,18 @@ export function App() {
         <Route path="findings" element={<FindingsPage />} />
         <Route path="billing" element={<BillingPage />} />
         <Route path="reports" element={<ReportsPage />} />
+        <Route path="call-audit" element={<CallAuditReportPage />} />
+        {/* Admin-only rule administration; the server gates it on config:manage. */}
+        <Route
+          path="call-audit/settings"
+          element={<CallAuditSettingsPage />}
+        />
         <Route path="operations" element={<OperationsPage />} />
         <Route path="audits" element={<AuditMonitorPage />} />
+        <Route
+          path="audits/call"
+          element={<AuditCallDetailPage />}
+        />
         <Route path="imports/new" element={<ImportPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>

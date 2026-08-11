@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import { readFile } from 'node:fs/promises'
 import mysql, { type RowDataPacket } from 'mysql2/promise'
 import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.ts'
 import { createMysqlReauditReadRepo } from '../adapters/mysqlReauditReadRepo.ts'
@@ -6,6 +7,7 @@ import { createMysqlReauditWriteRepo } from '../adapters/mysqlReauditWriteRepo.t
 import { createOpenAiReaudit } from '../adapters/openaiReaudit.ts'
 import { auditOneCall } from '../reaudit/core.ts'
 import { runReauditBatch } from '../reaudit/worker.ts'
+import { parseRecordingBackedTaskIds } from '../reaudit/scope.ts'
 
 function required(name: string): string {
   const value = process.env[name]?.trim()
@@ -43,6 +45,15 @@ async function main(): Promise<void> {
   const batchSize = integer('KAUDIT_AUDIT_BATCH', 10, 1, 100)
   const pollMs = integer('KAUDIT_AUDIT_POLL_MS', 15_000, 1_000, 60_000)
   const watch = enabled('KAUDIT_AUDIT_WATCH')
+  const scopeFile = process.env.KAUDIT_AUDIT_SCOPE_FILE?.trim() || null
+  const taskIds = scopeFile
+    ? parseRecordingBackedTaskIds(await readFile(scopeFile, 'utf8'))
+    : null
+  if (enabled('KAUDIT_AUDIT_REQUIRE_SCOPE') && !taskIds) {
+    throw new Error(
+      'KAUDIT_AUDIT_REQUIRE_SCOPE=true requires KAUDIT_AUDIT_SCOPE_FILE',
+    )
+  }
   const allowedHosts = required('KAUDIT_ALLOWED_RECORDING_HOSTS')
     .split(',')
     .map((value) => value.trim())
@@ -65,7 +76,9 @@ async function main(): Promise<void> {
     if (Number(lockRows[0]?.acquired || 0) !== 1) {
       throw new Error('Another full-call audit worker already owns the database lock')
     }
-    const candidates = createMysqlReauditReadRepo(pool)
+    const candidates = createMysqlReauditReadRepo(pool, {
+      externalTaskIds: taskIds ?? undefined,
+    })
     const results = createMysqlReauditWriteRepo(pool)
     const fetcher = createProxyResolvingFetcher(
       required('KAUDIT_UNPOD_PROXY_BASE'),
@@ -73,7 +86,7 @@ async function main(): Promise<void> {
     const ai = createOpenAiReaudit(required('OPENAI_API_KEY'))
     let completed = 0
     process.stdout.write(
-      `[audit-worker] started owner=${owner}; every already-audited call is skipped\n`,
+      `[audit-worker] started owner=${owner}; every already-audited call is skipped; scope=${taskIds ? `${taskIds.length} exact task IDs` : 'all eligible calls'}\n`,
     )
     for (;;) {
       const summary = await runReauditBatch({
@@ -96,17 +109,24 @@ async function main(): Promise<void> {
         },
       })
       completed += summary.completed
+      if (!watch) {
+        process.stdout.write(
+          `[audit-worker] single batch finished; selected=${summary.selected}; newly completed=${completed}\n`,
+        )
+        break
+      }
       if (summary.selected === 0) {
-        if (!watch) break
         process.stdout.write(
           `[audit-worker] no due unaudited recording calls; watching for imports/retries (${pollMs}ms)\n`,
         )
         await wait(pollMs)
       }
     }
-    process.stdout.write(
-      `[audit-worker] current queue exhausted; newly completed=${completed}\n`,
-    )
+    if (watch) {
+      process.stdout.write(
+        `[audit-worker] current queue exhausted; newly completed=${completed}\n`,
+      )
+    }
   } finally {
     try {
       await lockConnection.query(

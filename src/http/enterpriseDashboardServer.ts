@@ -36,7 +36,62 @@ import {
 import { collectMetrics } from '../adapters/mysqlMetrics.ts'
 import { collectOperations } from '../adapters/mysqlOperations.ts'
 import { collectAuditMonitor } from '../adapters/mysqlAuditMonitor.ts'
+import { collectBillingMonths } from '../adapters/mysqlBillingMonths.ts'
+import {
+  collectReportEmailDeliveryStatus,
+} from '../adapters/mysqlReportEmail.ts'
+import { parseBillingMonth } from '../reporting/billingMonth.ts'
 import { USER_PERMISSIONS } from '../identity/access.ts'
+import { canViewCallContent } from '../identity/access.ts'
+import {
+  collectAdminCallDetail,
+  resolveAdminCallAccess,
+  type AdminCallAccess,
+} from '../adapters/mysqlAdminCallDetail.ts'
+import { createMysqlCallAuditReportingRepository } from '../adapters/mysqlCallAuditReporting.ts'
+import type { CallAuditReportingRepository } from '../adapters/mysqlCallAuditReporting.ts'
+import {
+  buildCallAuditReport,
+  parseCallAuditReportQuery,
+  CALL_AUDIT_REPORT_ROUTE,
+} from '../reporting/callAuditReport.ts'
+import {
+  createMysqlCallAuditSettingsRepository,
+} from '../adapters/mysqlCallAuditSettings.ts'
+import {
+  createMysqlCallAuditControlRepository,
+  CallAuditControlConflictError,
+  CallAuditControlError,
+  type CallAuditControlRepository,
+} from '../adapters/mysqlCallAuditControl.ts'
+import {
+  buildCallAuditSettings,
+  naiveUtcTimestamp,
+  parseCallAuditSettingsCreate,
+  parseCallAuditSettingsQuery,
+  toCreateResultDto,
+  isSafeRuleVersionId,
+  CALL_AUDIT_RULE_TEST_ROUTE,
+  CALL_AUDIT_SETTINGS_PAGE_ROUTE,
+  CALL_AUDIT_SETTINGS_ROUTE,
+  type CallAuditRuleVersionDetailRecord,
+  type CallAuditSettingsCreateResultDto,
+  type CallAuditSettingsReadPort,
+} from '../callaudit/adminSettings.ts'
+import { buildRuleActivation } from '../callaudit/ruleActivation.ts'
+import { CallAuditRuleError } from '../callaudit/ruleContract.ts'
+import {
+  parseCallAuditRuleTestSubmission,
+  runCallAuditRuleTest,
+  CALL_AUDIT_RULE_TEST_BOUNDARY,
+  CallAuditRuleTestError,
+  type CallAuditRuleTestResult,
+} from '../callaudit/ruleTestLab.ts'
+import { CallAuditModelRequestError } from '../adapters/openaiCallAuditModel.ts'
+import type { ContentAuditModelAdapter } from '../adapters/openaiCallAuditModel.ts'
+import type { UrlFetcher } from '../storage/ports.ts'
+import { isSafeVendorUrl } from '../security/urlSafety.ts'
+import { sha256Hex } from '../lib/hash.ts'
 import {
   buildBillingView,
   buildQualityView,
@@ -60,6 +115,30 @@ interface Dependencies {
   verifier: TokenVerifier | null
   imports?: CycleImportService
   importAnalysis?: ImportAnalysisService
+  recordingFetcher?: UrlFetcher
+  allowedRecordingHosts?: string[]
+  /**
+   * Sanitized Call Audit reporting reads. Defaults to the MySQL repository over
+   * the same pool; injectable so a server test can run against a synthetic
+   * repository without a database.
+   */
+  callAuditReporting?: CallAuditReportingRepository
+  /**
+   * Admin-only Call Audit settings reads. Defaults to the read-only MySQL
+   * repository over the same pool; injectable for tests.
+   */
+  callAuditSettings?: CallAuditSettingsReadPort
+  /**
+   * Append-only Call Audit rule-version writes. Defaults to the existing
+   * control repository, which has no UPDATE against a rule-version row.
+   */
+  callAuditControl?: CallAuditControlRepository
+  /**
+   * Content model port for the admin rule TEST LAB. Injected only: this server
+   * configures no provider client, so the endpoint reports itself unavailable
+   * rather than reaching for a network or an environment variable.
+   */
+  callAuditRuleTestModel?: ContentAuditModelAdapter
   webDistRoot?: string
 }
 
@@ -73,11 +152,15 @@ const APP_ROUTES = new Set([
   '/reports',
   '/operations',
   '/audits',
+  '/audits/call',
+  '/call-audit',
+  CALL_AUDIT_SETTINGS_PAGE_ROUTE,
   '/imports/new',
 ])
 
 const API_ROUTES = new Set([
   '/api/v1/me',
+  '/api/v1/periods',
   '/api/v1/overview',
   '/api/v1/evidence',
   '/api/v1/findings',
@@ -85,8 +168,37 @@ const API_ROUTES = new Set([
   '/api/v1/reports',
   '/api/v1/operations',
   '/api/v1/audits',
+  '/api/v1/audit-call',
+  '/api/v1/audit-audio',
   '/api/v1/imports',
+  CALL_AUDIT_REPORT_ROUTE,
+  CALL_AUDIT_SETTINGS_ROUTE,
+  CALL_AUDIT_RULE_TEST_ROUTE,
 ])
+
+/**
+ * Administrator-authored Call Audit rule settings. POST only; the GET of the
+ * same path is the admin read above. Both are gated on `config:manage`.
+ */
+const CALL_AUDIT_SETTINGS_WRITE_ROUTES = new Set([CALL_AUDIT_SETTINGS_ROUTE])
+
+/**
+ * The rule test lab. POST only — there is nothing to GET, because a test is
+ * transient and no attempt is stored — and gated on the same `config:manage`
+ * boundary as the settings it exercises.
+ */
+const CALL_AUDIT_RULE_TEST_ROUTES = new Set([CALL_AUDIT_RULE_TEST_ROUTE])
+
+/** An administrator's settings submission is small; anything larger is a bug. */
+const MAX_SETTINGS_BODY_BYTES = 64 * 1024
+
+/**
+ * A test submission carries a whole transcript, so it is bounded separately and
+ * far more generously than a settings save — but still bounded. The adapter
+ * holds the authoritative character limit; this only keeps an unbounded stream
+ * from being buffered before that limit can be applied.
+ */
+const MAX_RULE_TEST_BODY_BYTES = 1024 * 1024
 
 const PUBLIC_API_ROUTES = new Set(['/api/v1/auth/config'])
 const PUBLIC_POST_ROUTES = new Set(['/api/v1/auth/login'])
@@ -197,16 +309,19 @@ async function auditAccess(
   correlation: string,
   outcome: 'success' | 'denied' | 'failure',
   action: string,
+  resourceType = 'aggregate_dashboard',
+  resourceId: string | null = null,
+  purpose = 'audit_operations',
 ): Promise<void> {
   if (dependencies.config.auth.mode === 'preview') return
   await dependencies.audit.record({
     actorUserId: context?.user.id ?? null,
     actorEmail: context?.user.email ?? null,
     action,
-    resourceType: 'aggregate_dashboard',
-    resourceId: null,
+    resourceType,
+    resourceId,
     outcome,
-    purpose: 'audit_operations',
+    purpose,
     correlationId: correlation,
     ipAddress: clientAddress(
       request,
@@ -215,6 +330,36 @@ async function auditAccess(
     client: userAgent(request),
     occurredAt: new Date(),
   })
+}
+
+async function resolveContentCall(
+  url: URL,
+  dependencies: Dependencies,
+  context: AuthContext,
+): Promise<AdminCallAccess> {
+  const task = url.searchParams.get('task')?.trim() || ''
+  const access = await resolveAdminCallAccess(
+    dependencies.pool,
+    task,
+  )
+  if (!access) {
+    const error = new Error('Call was not found')
+    Object.assign(error, { code: 'CALL_NOT_FOUND', status: 404 })
+    throw error
+  }
+  if (
+    !canViewCallContent(
+      context.user.maxSensitivityTier,
+      access.sensitivityTier,
+    )
+  ) {
+    throw new AuthFailure(
+      403,
+      'PERMISSION_DENIED',
+      'Your account cannot access this call content',
+    )
+  }
+  return access
 }
 
 function sendJson(
@@ -293,11 +438,21 @@ function releaseGates(
     },
     {
       code: 'calibration',
-      label: 'AI calibration',
-      detail: dependencies.config.releaseGates.calibrationComplete
-        ? 'Calibration gate recorded complete'
-        : 'Accuracy has not been measured',
-      status: dependencies.config.releaseGates.calibrationComplete
+      label: dependencies.config.releaseGates
+        .automatedValidationApproved
+        ? 'Automated validation'
+        : 'AI calibration',
+      detail: dependencies.config.releaseGates
+        .automatedValidationApproved
+        ? 'Leadership-approved model consensus is active; this is not human-labeled ground truth'
+        : dependencies.config.releaseGates.calibrationComplete
+          ? 'Human-labeled calibration gate recorded complete'
+          : 'Accuracy has not been measured',
+      status: (
+        dependencies.config.releaseGates.calibrationComplete ||
+        dependencies.config.releaseGates
+          .automatedValidationApproved
+      )
         ? 'ready'
         : 'blocked',
     },
@@ -347,12 +502,254 @@ function publicAuthConfig(dependencies: Dependencies): unknown {
   }
 }
 
+function settingsRepository(
+  dependencies: Dependencies,
+): CallAuditSettingsReadPort {
+  return (
+    dependencies.callAuditSettings ??
+    createMysqlCallAuditSettingsRepository(dependencies.pool)
+  )
+}
+
+/**
+ * Re-shapes a typed Call Audit settings failure into the client-safe problem
+ * the server already knows how to render.
+ *
+ * Every message below names an entity and a FIELD only — the rule contract and
+ * the control repository both refuse to echo a submitted value — so a rejected
+ * save can be returned and logged without leaking a prompt, a label, or a hash.
+ */
+function callAuditSettingsFailure(error: unknown): never {
+  if (
+    error instanceof CallAuditRuleError ||
+    error instanceof CallAuditControlConflictError ||
+    error instanceof CallAuditControlError
+  ) {
+    throw Object.assign(new Error(error.message), {
+      code: error.code,
+      // A conflicting or forbidden lifecycle is a state disagreement, not a
+      // malformed request: an activated contract is immutable by design.
+      status: error instanceof CallAuditRuleError ? 400 : 409,
+    })
+  }
+  throw error
+}
+
+/**
+ * Creates a new immutable rule-version snapshot, optionally activated.
+ *
+ * Activation is append-only: the control repository has no UPDATE against
+ * `kaudit_call_audit_rule_version`, so "activate" means inserting a new active
+ * snapshot, never editing an existing row. It therefore succeeds only while no
+ * other version is active; the repository refuses the second one.
+ */
+async function createCallAuditRuleVersion(
+  dependencies: Dependencies,
+  body: unknown,
+  actorUserId: string | null,
+): Promise<CallAuditSettingsCreateResultDto> {
+  try {
+    const request = parseCallAuditSettingsCreate(body, actorUserId)
+    const snapshot = buildRuleActivation(request.settings)
+    const createdAt = naiveUtcTimestamp()
+    const control =
+      dependencies.callAuditControl ??
+      createMysqlCallAuditControlRepository(dependencies.pool)
+    const status = request.activate ? 'active' : 'draft'
+    const saved = await control.saveRuleVersionSnapshot(snapshot, {
+      status,
+      createdBy: request.createdBy,
+      changeReason: request.changeReason,
+      activatedBy: request.activate ? request.createdBy : null,
+      activatedAt: request.activate ? createdAt : null,
+    })
+    return toCreateResultDto({
+      ruleVersionId: saved.id,
+      versionLabel: snapshot.versionLabel,
+      status,
+      outcome: saved.outcome,
+      promptSha256: snapshot.promptSha256,
+      configSha256: snapshot.configSha256,
+      createdAt,
+    })
+  } catch (error) {
+    callAuditSettingsFailure(error)
+  }
+}
+
+/** Reads and parses a small JSON request body, rejecting any other media type. */
+async function readJsonBody(
+  request: IncomingMessage,
+  maximumBytes: number,
+  code = 'INVALID_CALL_AUDIT_SETTINGS_REQUEST',
+): Promise<unknown> {
+  const type = request.headers['content-type'] || ''
+  if (
+    typeof type !== 'string' ||
+    !type.toLowerCase().startsWith('application/json')
+  ) {
+    const error = new Error('Request requires application/json')
+    Object.assign(error, { code, status: 415 })
+    throw error
+  }
+  let bytes: Buffer
+  try {
+    bytes = await readRequestBody(request, maximumBytes)
+  } catch (error) {
+    // The shared reader's prose is sized for 25 MB file imports; a JSON body
+    // states its own bound instead. Its code and status carry through, and
+    // neither message quotes the submitted text.
+    const shaped = error as { code?: string; status?: number }
+    throw Object.assign(
+      new Error(
+        shaped.code === 'UPLOAD_TOO_LARGE'
+          ? `Request body exceeds the ${maximumBytes} byte limit`
+          : 'Request body is required',
+      ),
+      { code: shaped.code ?? code, status: shaped.status ?? 400 },
+    )
+  }
+  try {
+    return JSON.parse(bytes.toString('utf8')) as unknown
+  } catch {
+    // The parser message can quote the submitted body, so it is discarded.
+    const error = new Error('Request body is not valid JSON')
+    Object.assign(error, { code, status: 400 })
+    throw error
+  }
+}
+
+/**
+ * Re-shapes a typed rule-test failure into a client-safe problem.
+ *
+ * Both typed errors name a FIELD and never echo a value, so the message is safe
+ * to return and to log. A stored version that no longer satisfies the rule
+ * contract is a state disagreement rather than a malformed request, so it
+ * answers 409 and the administrator is pointed at the version, not the paste.
+ */
+function callAuditRuleTestFailure(error: unknown): never {
+  if (
+    error instanceof CallAuditRuleTestError ||
+    error instanceof CallAuditModelRequestError
+  ) {
+    throw Object.assign(new Error(error.message), {
+      code: error.code,
+      status: 400,
+    })
+  }
+  if (error instanceof CallAuditRuleError) {
+    throw Object.assign(new Error(error.message), {
+      code: error.code,
+      status: 409,
+    })
+  }
+  throw error
+}
+
+/** A rule version could not be resolved. Says which lookup failed, nothing else. */
+function ruleVersionUnavailable(
+  status: number,
+  code: string,
+  message: string,
+): never {
+  throw Object.assign(new Error(message), { code, status })
+}
+
+/**
+ * Resolves the version under test: the explicitly requested one, or the active
+ * one. The prompt read is EXPLICIT and separate, so it happens once a version
+ * is known and never as a side effect of listing.
+ */
+async function resolveRuleTestVersion(
+  repository: CallAuditSettingsReadPort,
+  ruleVersionId: string | null,
+): Promise<CallAuditRuleVersionDetailRecord> {
+  let wanted = ruleVersionId
+  if (wanted === null) {
+    const active = await repository.getActiveRuleVersion()
+    if (!active) {
+      ruleVersionUnavailable(
+        409,
+        'CALL_AUDIT_RULE_VERSION_NOT_ACTIVE',
+        'No rule version is active; activate one or name a version to test',
+      )
+    }
+    wanted = active.ruleVersionId
+  } else if (!isSafeRuleVersionId(wanted)) {
+    // The same id grammar the settings query uses, so a crafted id cannot reach
+    // the repository at all.
+    throw new CallAuditRuleTestError('ruleVersionId', 'must be a rule version id')
+  }
+  const detail = await repository.getRuleVersionDetail(wanted)
+  if (!detail) {
+    ruleVersionUnavailable(
+      404,
+      'CALL_AUDIT_RULE_VERSION_NOT_FOUND',
+      'Rule version was not found',
+    )
+  }
+  return detail
+}
+
+/** The transient test-lab response. Carries the sanitized DTO and nothing else. */
+interface CallAuditRuleTestResponseDto {
+  generatedAt: string
+  boundary: string
+  /** Which configuration was exercised. Never a call, lead, or source identity. */
+  ruleVersionId: string
+  result: CallAuditRuleTestResult
+}
+
+/**
+ * Runs one transient rule test.
+ *
+ * The submitted transcript lives in this call only: it is passed to the test lab
+ * and to no other collaborator, is never written, logged, hashed, or placed on
+ * the response, and no attempt row is created — a test is not an audit of a
+ * call. Nothing identifying a caller is accepted in the first place.
+ */
+async function runRuleTest(
+  dependencies: Dependencies,
+  model: ContentAuditModelAdapter,
+  body: unknown,
+): Promise<CallAuditRuleTestResponseDto> {
+  try {
+    const submission = parseCallAuditRuleTestSubmission(body)
+    const version = await resolveRuleTestVersion(
+      settingsRepository(dependencies),
+      submission.ruleVersionId,
+    )
+    const result = await runCallAuditRuleTest({
+      activation: {
+        versionLabel: version.versionLabel,
+        businessPrompt: version.businessPrompt,
+        modelProvider: version.modelProvider,
+        modelName: version.modelName,
+        modelVersion: version.modelVersion,
+        temperature: version.temperature,
+      },
+      transcript: submission.transcript,
+      context: submission.context,
+      model,
+    })
+    return {
+      generatedAt: new Date().toISOString(),
+      boundary: CALL_AUDIT_RULE_TEST_BOUNDARY,
+      ruleVersionId: version.ruleVersionId,
+      result,
+    }
+  } catch (error) {
+    callAuditRuleTestFailure(error)
+  }
+}
+
 async function apiResponse(
   url: URL,
   dependencies: Dependencies,
   context: AuthContext,
 ): Promise<unknown> {
   const pathname = url.pathname
+  const period = parseBillingMonth(url.searchParams.get('month'))
   if (pathname === '/api/v1/me') {
     return {
       id: context.user.id,
@@ -366,14 +763,19 @@ async function apiResponse(
         'Aggregate data only; raw audio and transcripts are not available in this app.',
     }
   }
+  if (pathname === '/api/v1/periods') {
+    return collectBillingMonths(dependencies.pool)
+  }
   if (pathname === '/api/v1/overview') {
     const [metrics, billing] = await Promise.all([
-      collectMetrics(dependencies.pool),
-      collectBilling(dependencies.pool),
+      collectMetrics(dependencies.pool, period),
+      collectBilling(dependencies.pool, period),
     ])
     const billingView = buildBillingView(billing, {
       calibrationComplete:
-        dependencies.config.releaseGates.calibrationComplete,
+        dependencies.config.releaseGates.calibrationComplete ||
+        dependencies.config.releaseGates
+          .automatedValidationApproved,
     })
     return {
       generatedAt: metrics.generatedAt,
@@ -385,7 +787,7 @@ async function apiResponse(
     }
   }
   if (pathname === '/api/v1/evidence') {
-    const metrics = await collectMetrics(dependencies.pool)
+    const metrics = await collectMetrics(dependencies.pool, period)
     const dashboard = buildDashboard(metrics)
     return {
       generatedAt: metrics.generatedAt,
@@ -395,40 +797,52 @@ async function apiResponse(
   }
   if (pathname === '/api/v1/findings') {
     const [metrics, quality] = await Promise.all([
-      collectMetrics(dependencies.pool),
-      collectQuality(dependencies.pool),
+      collectMetrics(dependencies.pool, period),
+      collectQuality(dependencies.pool, period),
     ])
     return {
       generatedAt: metrics.generatedAt,
       authority: dependencies.config.releaseGates
-        .calibrationComplete
-        ? 'calibrated'
+        .automatedValidationApproved
+        ? 'automated'
+        : dependencies.config.releaseGates.calibrationComplete
+          ? 'calibrated'
         : 'uncalibrated',
       quality: buildQualityView(quality, metrics.calls),
     }
   }
   if (pathname === '/api/v1/billing') {
-    const billing = await collectBilling(dependencies.pool)
+    const billing = await collectBilling(dependencies.pool, period)
     const billingView = buildBillingView(billing, {
       calibrationComplete:
-        dependencies.config.releaseGates.calibrationComplete,
+        dependencies.config.releaseGates.calibrationComplete ||
+        dependencies.config.releaseGates
+          .automatedValidationApproved,
     })
     return {
       generatedAt: new Date().toISOString(),
       authority: billingView.cycle.billGenerated
         ? 'authoritative'
-        : 'audit_pending',
+        : 'provisional',
       billing: billingView,
     }
   }
   if (pathname === '/api/v1/reports') {
-    const [billing, snapshots] = await Promise.all([
-      collectBilling(dependencies.pool),
-      collectRevenueSnapshots(dependencies.pool),
+    const [billing, snapshots, emailDelivery] = await Promise.all([
+      collectBilling(dependencies.pool, period),
+      collectRevenueSnapshots(dependencies.pool, period),
+      period
+        ? collectReportEmailDeliveryStatus(
+            dependencies.pool,
+            period.month,
+          )
+        : Promise.resolve(null),
     ])
     const billingView = buildBillingView(billing, {
       calibrationComplete:
-        dependencies.config.releaseGates.calibrationComplete,
+        dependencies.config.releaseGates.calibrationComplete ||
+        dependencies.config.releaseGates
+          .automatedValidationApproved,
     })
     const billGenerated = billingView.cycle.billGenerated
     return {
@@ -444,6 +858,7 @@ async function apiResponse(
       snapshots: buildRevenueSnapshots(snapshots, {
         releaseVerifiedValues: billGenerated,
       }),
+      emailDelivery,
     }
   }
   if (pathname === '/api/v1/operations') {
@@ -470,14 +885,57 @@ async function apiResponse(
     }
     return collectAuditMonitor(dependencies.pool, {
       page: integer('page', 1, 1, 100_000),
+      pendingPage: integer('pendingPage', 1, 1, 100_000),
+      noRecordingPage: integer(
+        'noRecordingPage',
+        1,
+        1,
+        100_000,
+      ),
       pageSize: integer('pageSize', 25, 10, 100),
       category: safeFilter('category'),
       language: safeFilter('language'),
+      periodStart: period?.start ?? null,
+      periodEnd: period?.end ?? null,
     })
+  }
+  if (pathname === '/api/v1/audit-call') {
+    const access = await resolveContentCall(
+      url,
+      dependencies,
+      context,
+    )
+    return collectAdminCallDetail(dependencies.pool, access)
+  }
+  if (pathname === CALL_AUDIT_REPORT_ROUTE) {
+    // Sanitized aggregate reporting: available to every logged-in user with
+    // aggregate metrics permission, never gated behind an admin role.
+    const repository =
+      dependencies.callAuditReporting ??
+      createMysqlCallAuditReportingRepository(dependencies.pool)
+    return buildCallAuditReport(
+      repository,
+      parseCallAuditReportQuery(url.searchParams),
+    )
+  }
+  if (pathname === CALL_AUDIT_SETTINGS_ROUTE) {
+    // Admin-only rule administration. Metadata by default; the prompt is read
+    // only when an explicit detail id is asked for.
+    return buildCallAuditSettings(
+      settingsRepository(dependencies),
+      parseCallAuditSettingsQuery(url.searchParams),
+    )
   }
   if (pathname === '/api/v1/imports') {
     if (!dependencies.imports) {
-      throw new Error('Cycle import service is not configured')
+      // A runtime with no durable storage never advertises imports as enabled;
+      // it says so with a bounded 503 rather than a generic failure.
+      const error = new Error('Imports are not available on this server')
+      Object.assign(error, {
+        code: 'IMPORT_NOT_AVAILABLE',
+        status: 503,
+      })
+      throw error
     }
     return {
       ...(await dependencies.imports.status()),
@@ -488,8 +946,63 @@ async function apiResponse(
   throw new Error('Unsupported API route')
 }
 
+/**
+ * Codes a dependency may raise to say "this deployment cannot do that", with the
+ * exact title returned for each.
+ *
+ * A 503 is allowed out of the generic error path only through this table, and
+ * the title is read from here rather than from the error. An unavailability
+ * reason is a fact about the deployment; an error's own message is not, and a
+ * driver or provider error that happens to carry a 503 must never be able to
+ * describe itself to a browser.
+ */
+const BOUNDED_UNAVAILABLE_TITLES: Readonly<Record<string, string>> = {
+  IMPORT_NOT_AVAILABLE: 'Imports are not available on this server',
+  IMPORT_ANALYSIS_NOT_CONFIGURED:
+    'Import analysis is not configured on this server',
+}
+
+/**
+ * Audit-log action for an import POST. The same name is recorded whether the
+ * upload succeeded or was refused, so a reviewer sees the attempt either way.
+ */
+function importAction(pathname: string): string {
+  if (pathname.endsWith('/analyze-usage')) return 'usage_import.analyze'
+  if (pathname.endsWith('/analyze-invoice')) return 'invoice_import.analyze'
+  return pathname.endsWith('/usage')
+    ? 'usage_import.create'
+    : 'invoice_import.create'
+}
+
+/** Audit-log action for an API read. Distinct per route, never derived loosely. */
+function apiAction(pathname: string): string {
+  if (pathname === '/api/v1/me') return 'identity.read'
+  if (pathname === CALL_AUDIT_REPORT_ROUTE) {
+    return 'call_audit_report.read'
+  }
+  if (pathname === CALL_AUDIT_SETTINGS_ROUTE) {
+    return 'call_audit_settings.read'
+  }
+  // Distinct from every settings action: a test runs a model, and an auditor
+  // must be able to tell one apart from a configuration read or a save.
+  if (pathname === CALL_AUDIT_RULE_TEST_ROUTE) {
+    return 'call_audit_rule_test.run'
+  }
+  return `${pathname.split('/').at(-1)}.read`
+}
+
 function apiPermission(pathname: string): string {
-  if (pathname === '/api/v1/audits') return 'audit:inspect'
+  // Rule administration is configuration, not reporting: admin-only, and never
+  // reachable with the aggregate metrics permission a normal user holds.
+  if (
+    pathname === CALL_AUDIT_SETTINGS_ROUTE ||
+    pathname === CALL_AUDIT_RULE_TEST_ROUTE
+  ) return 'config:manage'
+  if (
+    pathname === '/api/v1/audits' ||
+    pathname === '/api/v1/audit-call' ||
+    pathname === '/api/v1/audit-audio'
+  ) return 'audit:inspect'
   if (pathname.startsWith('/api/v1/imports')) return 'import:write'
   return pathname === '/api/v1/reports'
     ? 'snapshot:read'
@@ -524,6 +1037,13 @@ function pruneApiCache(cache: Map<string, ApiCacheEntry>): void {
 
 function cacheTtlMs(pathname: string): number {
   if (pathname === '/api/v1/me') return 0
+  if (
+    pathname === '/api/v1/audit-call' ||
+    pathname === '/api/v1/audit-audio'
+  ) return 0
+  // Rule administration must read its own writes: a cached version list would
+  // hide the snapshot an administrator just created.
+  if (pathname === CALL_AUDIT_SETTINGS_ROUTE) return 0
   if (
     pathname === '/api/v1/audits' ||
     pathname === '/api/v1/imports'
@@ -604,10 +1124,17 @@ export function createEnterpriseDashboardServer(
     const isPublicPost =
       request.method === 'POST' &&
       PUBLIC_POST_ROUTES.has(url.pathname)
+    const isSettingsPost =
+      request.method === 'POST' &&
+      CALL_AUDIT_SETTINGS_WRITE_ROUTES.has(url.pathname)
+    const isRuleTestPost =
+      request.method === 'POST' &&
+      CALL_AUDIT_RULE_TEST_ROUTES.has(url.pathname)
     if (
       request.method === 'GET' &&
       (IMPORT_WRITE_ROUTES.has(url.pathname) ||
-        IMPORT_ANALYSIS_ROUTES.has(url.pathname))
+        IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
+        CALL_AUDIT_RULE_TEST_ROUTES.has(url.pathname))
     ) {
       problem(
         response,
@@ -621,7 +1148,9 @@ export function createEnterpriseDashboardServer(
     if (
       request.method !== 'GET' &&
       !isImportPost &&
-      !isPublicPost
+      !isPublicPost &&
+      !isSettingsPost &&
+      !isRuleTestPost
     ) {
       problem(
         response,
@@ -882,8 +1411,117 @@ export function createEnterpriseDashboardServer(
     let context: AuthContext | null = null
     try {
       context = await authenticate(request, dependencies)
+      if (isSettingsPost) {
+        requirePermission(context, 'config:manage')
+        const created = await createCallAuditRuleVersion(
+          dependencies,
+          await readJsonBody(request, MAX_SETTINGS_BODY_BYTES),
+          context.user.id,
+        )
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          created.activated
+            ? 'call_audit_rule_version.activate'
+            : 'call_audit_rule_version.create',
+          'call_audit_rule_version',
+          created.ruleVersionId,
+          'call_audit_configuration',
+        )
+        apiCache.clear()
+        sendJson(response, correlation, created)
+        return
+      }
+      if (isRuleTestPost) {
+        requirePermission(context, 'config:manage')
+        const model = dependencies.callAuditRuleTestModel
+        if (!model) {
+          // Checked before the body is read and before any prompt is fetched:
+          // with no port there is nothing to test, and no transcript should be
+          // accepted only to be discarded.
+          await auditAccess(
+            dependencies,
+            request,
+            context,
+            correlation,
+            'failure',
+            'call_audit_rule_test.run',
+            'call_audit_rule_version',
+            null,
+            'call_audit_configuration',
+          )
+          problem(
+            response,
+            503,
+            'CALL_AUDIT_RULE_TEST_UNAVAILABLE',
+            'Rule testing is not configured on this server',
+            correlation,
+          )
+          return
+        }
+        const tested = await runRuleTest(
+          dependencies,
+          model,
+          await readJsonBody(
+            request,
+            MAX_RULE_TEST_BODY_BYTES,
+            'INVALID_CALL_AUDIT_RULE_TEST_REQUEST',
+          ),
+        )
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          'call_audit_rule_test.run',
+          'call_audit_rule_version',
+          tested.ruleVersionId,
+          'call_audit_configuration',
+        )
+        // Nothing was written, so no cached read can have gone stale.
+        sendJson(response, correlation, tested)
+        return
+      }
       if (isImportPost) {
         requirePermission(context, 'import:write')
+        const isAnalysis = IMPORT_ANALYSIS_ROUTES.has(url.pathname)
+        /**
+         * Availability is decided before a single body byte is read.
+         *
+         * A runtime without durable storage (a serverless function) has no
+         * cycle import service at all. Reading the upload first would pull up
+         * to 25 MB of an operator's usage CSV or invoice PDF into memory only
+         * to discard it — bytes this deployment cannot store and has no reason
+         * to hold. The refusal is bounded and says nothing about the upload.
+         */
+        if (
+          isAnalysis ? !dependencies.importAnalysis : !dependencies.imports
+        ) {
+          await auditAccess(
+            dependencies,
+            request,
+            context,
+            correlation,
+            'failure',
+            importAction(url.pathname),
+          )
+          problem(
+            response,
+            503,
+            isAnalysis
+              ? 'IMPORT_ANALYSIS_NOT_CONFIGURED'
+              : 'IMPORT_NOT_AVAILABLE',
+            isAnalysis
+              ? 'Import analysis is not configured on this server'
+              : 'Imports are not available on this server',
+            correlation,
+          )
+          return
+        }
         const bytes = await readRequestBody(request)
         const filename = header(request, 'x-kaudit-filename')
         let body: unknown
@@ -937,24 +1575,122 @@ export function createEnterpriseDashboardServer(
           context,
           correlation,
           'success',
-          url.pathname.endsWith('/analyze-usage')
-            ? 'usage_import.analyze'
-            : url.pathname.endsWith('/analyze-invoice')
-              ? 'invoice_import.analyze'
-              : url.pathname.endsWith('/usage')
-                ? 'usage_import.create'
-                : 'invoice_import.create',
+          importAction(url.pathname),
         )
         apiCache.clear()
         sendJson(response, correlation, body)
         return
       }
+      if (url.pathname === '/api/v1/audit-audio') {
+        requirePermission(context, 'audit:inspect')
+        const access = await resolveContentCall(
+          url,
+          dependencies,
+          context,
+        )
+        if (
+          !access.sourceUrl ||
+          !access.evidenceSha256 ||
+          !dependencies.recordingFetcher
+        ) {
+          const error = new Error(
+            'Verified recording is not available',
+          )
+          Object.assign(error, {
+            code: 'RECORDING_NOT_AVAILABLE',
+            status: 404,
+          })
+          throw error
+        }
+        const safety = isSafeVendorUrl(
+          access.sourceUrl,
+          dependencies.allowedRecordingHosts || [],
+        )
+        if (!safety.safe) {
+          const error = new Error(
+            'Recording reference is not permitted',
+          )
+          Object.assign(error, {
+            code: 'UNSAFE_RECORDING_REFERENCE',
+            status: 409,
+          })
+          throw error
+        }
+        const fetched = await dependencies.recordingFetcher.fetch(
+          access.sourceUrl,
+        )
+        if (!fetched.ok) {
+          const error = new Error(
+            'Recording could not be retrieved from KServe',
+          )
+          Object.assign(error, {
+            code: 'RECORDING_FETCH_FAILED',
+            status: 502,
+          })
+          throw error
+        }
+        if (sha256Hex(fetched.bytes) !== access.evidenceSha256) {
+          const error = new Error(
+            'Recording no longer matches its evidence hash',
+          )
+          Object.assign(error, {
+            code: 'EVIDENCE_ALTERED',
+            status: 409,
+          })
+          throw error
+        }
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          'call_audio.read',
+          'call',
+          access.callId,
+          'admin_call_review',
+        )
+        response.writeHead(200, {
+          ...JSON_SECURITY_HEADERS,
+          'content-type':
+            fetched.contentType || 'audio/ogg',
+          'content-length': String(fetched.bytes.byteLength),
+          'cache-control': 'private, no-store, max-age=0',
+          'content-disposition': 'inline',
+          'x-content-type-options': 'nosniff',
+          'x-correlation-id': correlation,
+        })
+        response.end(fetched.bytes)
+        return
+      }
+      if (url.pathname === '/api/v1/audit-call') {
+        requirePermission(context, 'audit:inspect')
+        const access = await resolveContentCall(
+          url,
+          dependencies,
+          context,
+        )
+        const body = await collectAdminCallDetail(
+          dependencies.pool,
+          access,
+        )
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          'call_content.read',
+          'call',
+          access.callId,
+          'admin_call_review',
+        )
+        sendJson(response, correlation, body)
+        return
+      }
       if (API_ROUTES.has(url.pathname)) {
         requirePermission(context, apiPermission(url.pathname))
-        const action =
-          url.pathname === '/api/v1/me'
-            ? 'identity.read'
-            : `${url.pathname.split('/').at(-1)}.read`
+        const action = apiAction(url.pathname)
         const body = await cachedApiResponse(
           url,
           dependencies,
@@ -974,11 +1710,14 @@ export function createEnterpriseDashboardServer(
       }
       requirePermission(
         context,
-        url.pathname === '/audits'
+        url.pathname === '/audits' ||
+          url.pathname === '/audits/call'
           ? 'audit:inspect'
           : url.pathname === '/imports/new'
             ? 'import:write'
-            : 'metrics:read',
+            : url.pathname === CALL_AUDIT_SETTINGS_PAGE_ROUTE
+              ? 'config:manage'
+              : 'metrics:read',
       )
       if (url.pathname.startsWith('/assets/')) {
         const served = await serveApp(
@@ -1024,11 +1763,11 @@ export function createEnterpriseDashboardServer(
           context,
           correlation,
           authFailure ? 'denied' : 'failure',
-          url.pathname === '/api/v1/me'
-            ? 'identity.read'
-            : url.pathname.startsWith('/api/')
-              ? `${url.pathname.split('/').at(-1)}.read`
-              : 'app.read',
+          url.pathname.startsWith('/api/')
+            ? isSettingsPost
+              ? 'call_audit_rule_version.create'
+              : apiAction(url.pathname)
+            : 'app.read',
         )
       } catch {
         // Privacy-safe structured logging below is the fallback when the
@@ -1066,6 +1805,20 @@ export function createEnterpriseDashboardServer(
           status?: number
           code?: string
           message?: string
+        }
+        const unavailableTitle =
+          typeof shaped.code === 'string'
+            ? BOUNDED_UNAVAILABLE_TITLES[shaped.code]
+            : undefined
+        if (shaped.status === 503 && unavailableTitle) {
+          problem(
+            response,
+            503,
+            shaped.code as string,
+            unavailableTitle,
+            correlation,
+          )
+          return
         }
         if (
           typeof shaped.status === 'number' &&
