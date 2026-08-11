@@ -135,10 +135,17 @@ test('the build and output match the existing Vite project', () => {
   assert.equal(PACKAGE.scripts?.['web:build'], 'vite build apps/web --config apps/web/vite.config.ts')
 })
 
-test('the function bundles the built web files it has to serve', () => {
+test('the function bundles the built web files and the source it imports', () => {
+  // Both halves matter, and neither is optional: the built web files because
+  // the function serves the SPA shell itself, and `src/` because the entry
+  // point imports the application through `.ts` specifiers that the platform
+  // resolves at runtime. Which paths each glob actually covers is checked
+  // against the real import graph in `functionPackaging.test.ts`.
   const fn = VERCEL.functions?.['api/index.ts']
   assert.ok(fn, 'the Node function must be configured')
-  assert.match(String(fn.includeFiles), /^apps\/web\/dist\//)
+  const includeFiles = String(fn.includeFiles)
+  assert.match(includeFiles, /apps\/web\/dist/)
+  assert.match(includeFiles, /(^|[{,/])src([},/]|$)/)
 })
 
 test('the function duration is sized for a web request, not a batch', () => {

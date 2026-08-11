@@ -6,7 +6,7 @@
   "functions": {
     "api/index.ts": {
       "maxDuration": 15,
-      "includeFiles": "apps/web/dist/**"
+      "includeFiles": "{apps/web/dist,src}/**"
     }
   },
   "routes": [
