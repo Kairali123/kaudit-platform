@@ -1,4 +1,9 @@
-import { ConfigurationError, loadRuntimeConfig } from '../config/runtime.ts'
+import {
+  ConfigurationError,
+  loadRuntimeConfig,
+  OIDC_BROWSER_FLOW_GATE,
+  OIDC_BROWSER_FLOW_VARIABLES,
+} from '../config/runtime.ts'
 import { looksLikePemCertificate } from '../runtime/databaseTls.ts'
 
 /**
@@ -45,7 +50,10 @@ export type PreflightErrorCode =
   | 'RUNTIME_CONFIG_UNAVAILABLE'
 
 /** Optional capabilities that were deliberately switched on. Fixed identifiers. */
-export type OptionalFeatureId = 'callAuditRuleTest' | 'recordingProxy'
+export type OptionalFeatureId =
+  | 'callAuditRuleTest'
+  | 'recordingProxy'
+  | 'oidcBrowserFlow'
 
 export interface PreflightFinding {
   code: PreflightErrorCode
@@ -83,6 +91,7 @@ export const PREFLIGHT_CHECKS = [
   'database-ca-source',
   'auth-mode-oidc',
   'oidc-settings',
+  'oidc-browser-flow',
   'local-auth-variables-absent',
   'call-audit-rule-test',
   'recording-proxy',
@@ -139,6 +148,9 @@ export const REPORTABLE_VARIABLES: readonly string[] = Object.freeze([
   'KAUDIT_OIDC_LOGOUT_URL',
   'KAUDIT_OIDC_TOKEN_COOKIE',
   'KAUDIT_OIDC_ALGORITHMS',
+  'KAUDIT_OIDC_MAX_TOKEN_AGE_SEC',
+  OIDC_BROWSER_FLOW_GATE,
+  ...OIDC_BROWSER_FLOW_VARIABLES,
   'KAUDIT_DEV_USER_EMAIL',
   'KAUDIT_LOCAL_PASSWORD_HASH',
   'KAUDIT_LOCAL_SESSION_SECRET',
@@ -246,6 +258,41 @@ export function evaluateVercelReleasePreflight(
   const missingOidc = OIDC_VARIABLES.filter((name) => !set(env, name))
   if (missingOidc.length > 0) {
     fail('REQUIRED_VARIABLE_MISSING', ...missingOidc)
+  }
+
+  // oidc-browser-flow — an optional capability with a dedicated gate, checked
+  // the same deny-by-default way as the rule test lab above.
+  //
+  // Presence only. `KAUDIT_OIDC_CLIENT_SECRET` is never read, compared, shaped,
+  // or counted beyond "non-blank", and only its NAME can appear in a finding.
+  const browserFlowGate = env[OIDC_BROWSER_FLOW_GATE]?.trim().toLowerCase()
+  if (
+    browserFlowGate &&
+    browserFlowGate !== 'true' &&
+    browserFlowGate !== 'false'
+  ) {
+    fail('FEATURE_FLAG_INVALID', OIDC_BROWSER_FLOW_GATE)
+  } else if (browserFlowGate === 'true') {
+    const missingBrowserFlow = [
+      ...OIDC_BROWSER_FLOW_VARIABLES,
+      // The callback's only output. The runtime refuses the gate without it.
+      'KAUDIT_OIDC_TOKEN_COOKIE',
+    ].filter((name) => !set(env, name))
+    if (missingBrowserFlow.length > 0) {
+      fail('FEATURE_CONFIG_INCOMPLETE', ...missingBrowserFlow)
+    } else {
+      optionalFeatures.push('oidcBrowserFlow')
+    }
+  } else {
+    // Gate off with client variables present is the ambiguous half-enabled
+    // state the runtime rejects. Reported here so the operator sees which
+    // names caused it rather than a generic config failure at boot.
+    const strayBrowserFlow = OIDC_BROWSER_FLOW_VARIABLES.filter((name) =>
+      set(env, name),
+    )
+    if (strayBrowserFlow.length > 0) {
+      fail('FEATURE_CONFIG_INCOMPLETE', OIDC_BROWSER_FLOW_GATE, ...strayBrowserFlow)
+    }
   }
 
   // local-auth-variables-absent

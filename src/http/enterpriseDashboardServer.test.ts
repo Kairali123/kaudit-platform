@@ -319,6 +319,8 @@ test('unauthenticated OIDC browser navigation redirects to the public login page
       logoutUrl: 'https://identity.example.test/logout',
       tokenCookie: 'kaudit_session',
       algorithms: ['RS256'],
+      maxTokenAgeSeconds: 900,
+      browserFlow: null,
     },
   }
   await withServer(

@@ -1,4 +1,22 @@
+import { OIDC_CALLBACK_ROUTE } from '../auth/oidcBrowserFlow.ts'
+
 export type AuthMode = 'oidc' | 'local' | 'preview'
+
+/**
+ * The browser half of OIDC: this application runs the authorization-code flow
+ * itself instead of receiving a token from an identity-aware proxy.
+ *
+ * The client secret is deliberately absent. Like the MySQL CA PEM above, this
+ * object reaches the HTTP server and every CLI, so the secret is read straight
+ * from the environment into the auth client in `runtime/dashboardRuntime.ts`
+ * and exists nowhere else. `secretConfigured` records the fact only.
+ */
+export interface OidcBrowserFlowConfig {
+  clientId: string
+  /** Same-origin HTTPS URL whose path is the fixed callback route. */
+  redirectUri: string
+  secretConfigured: true
+}
 
 export interface RuntimeConfig {
   environment: 'development' | 'test' | 'production'
@@ -44,6 +62,15 @@ export interface RuntimeConfig {
         logoutUrl: string | null
         tokenCookie: string | null
         algorithms: string[]
+        /**
+         * Maximum accepted age of a presented ID token, in seconds.
+         *
+         * This bounds `iat`; `exp` and the signature are verified regardless and
+         * cannot be turned off. See {@link resolveMaxTokenAgeSeconds}.
+         */
+        maxTokenAgeSeconds: number
+        /** Null when this deployment only accepts a proxy-supplied token. */
+        browserFlow: OidcBrowserFlowConfig | null
       }
   releaseGates: {
     calibrationComplete: boolean
@@ -110,6 +137,114 @@ function safeCookieName(value: string | null): string | null {
   return value
 }
 
+/**
+ * The three operator-supplied names that describe this application as an OAuth
+ * client. All three, or none — see {@link resolveOidcBrowserFlow}.
+ */
+export const OIDC_BROWSER_FLOW_VARIABLES: readonly string[] = Object.freeze([
+  'KAUDIT_OIDC_CLIENT_ID',
+  'KAUDIT_OIDC_CLIENT_SECRET',
+  'KAUDIT_OIDC_REDIRECT_URI',
+])
+
+/** The dedicated gate. Deny by default; nothing else turns the flow on. */
+export const OIDC_BROWSER_FLOW_GATE = 'KAUDIT_OIDC_BROWSER_FLOW'
+
+/**
+ * Decides whether this deployment runs the browser flow, and refuses to guess.
+ *
+ * Two failure modes are being avoided, and they pull in opposite directions.
+ * Inferring "enabled" from the presence of a client id would let one variable
+ * pasted into a project's settings silently arm a browser-facing login on a
+ * deployment reviewed as token-only. Inferring "disabled" from a missing secret
+ * would leave an operator who set the gate staring at a 404 with nothing said.
+ *
+ * So the gate alone decides, and the variables must agree with it:
+ *
+ * - gate unset/`false`, none of the three set — token-only. The existing
+ *   identity-proxy deployment is unchanged and this returns null.
+ * - gate unset/`false`, any of the three set — rejected as ambiguous.
+ * - gate `true`, all three set — enabled.
+ * - gate `true`, any missing — rejected, naming what is missing.
+ *
+ * The secret is only tested for presence. Its value is never read here.
+ */
+function resolveOidcBrowserFlow(
+  env: NodeJS.ProcessEnv,
+): OidcBrowserFlowConfig | null {
+  const gate = env[OIDC_BROWSER_FLOW_GATE]?.trim().toLowerCase()
+  if (gate && gate !== 'true' && gate !== 'false') {
+    throw new ConfigurationError(`${OIDC_BROWSER_FLOW_GATE} must be true or false`)
+  }
+  const present = OIDC_BROWSER_FLOW_VARIABLES.filter((name) =>
+    Boolean(env[name]?.trim()),
+  )
+  if (gate !== 'true') {
+    if (present.length > 0) {
+      throw new ConfigurationError(
+        `${present.join(', ')} require ${OIDC_BROWSER_FLOW_GATE}=true`,
+      )
+    }
+    return null
+  }
+  const missing = OIDC_BROWSER_FLOW_VARIABLES.filter(
+    (name) => !env[name]?.trim(),
+  )
+  if (missing.length > 0) {
+    throw new ConfigurationError(
+      `${missing.join(', ')} is required when ${OIDC_BROWSER_FLOW_GATE} is true`,
+    )
+  }
+  const clientId = required(env, 'KAUDIT_OIDC_CLIENT_ID')
+  if (clientId.length > 512) {
+    throw new ConfigurationError('KAUDIT_OIDC_CLIENT_ID is too long')
+  }
+  const redirectUri = httpsUrl(
+    required(env, 'KAUDIT_OIDC_REDIRECT_URI'),
+    'KAUDIT_OIDC_REDIRECT_URI',
+  )
+  // The callback is a route this server owns, so the registered redirect URI
+  // has to be that exact route. Checked here rather than at request time
+  // because a mismatch is a deployment mistake, and because the token exchange
+  // derives its `redirect_uri` from this value.
+  const parsed = new URL(redirectUri)
+  if (parsed.pathname !== OIDC_CALLBACK_ROUTE || parsed.search) {
+    throw new ConfigurationError(
+      `KAUDIT_OIDC_REDIRECT_URI must end in ${OIDC_CALLBACK_ROUTE} with no query`,
+    )
+  }
+  return { clientId, redirectUri, secretConfigured: true }
+}
+
+/**
+ * Bounds how old a presented ID token may be, and states the policy explicitly.
+ *
+ * The accepted runtime pinned this at 15 minutes, which suits a token an
+ * identity-aware proxy re-mints continuously. It does not suit a token this
+ * application obtained itself and parked in a cookie: conforming providers
+ * (Google among them) issue ID tokens with a one-hour lifetime, so a 15-minute
+ * `iat` ceiling would bounce the operator back through the provider four times
+ * an hour for no security gain — the token's own `exp` has not passed.
+ *
+ * The rule, therefore: the operator's explicit value wins; otherwise the
+ * default is one hour when this deployment runs the browser flow and the
+ * existing 15 minutes when it does not. The ceiling is one hour in both cases,
+ * the floor is one minute, and neither this value nor anything else can switch
+ * off signature or `exp` verification.
+ */
+function resolveMaxTokenAgeSeconds(
+  env: NodeJS.ProcessEnv,
+  browserFlow: OidcBrowserFlowConfig | null,
+): number {
+  return integer(
+    env,
+    'KAUDIT_OIDC_MAX_TOKEN_AGE_SEC',
+    browserFlow ? 3_600 : 900,
+    60,
+    3_600,
+  )
+}
+
 export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   const rawEnvironment = env.NODE_ENV?.trim() || 'development'
   if (!['development', 'test', 'production'].includes(rawEnvironment)) {
@@ -169,6 +304,15 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     sslCaInline,
   }
 
+  // Evaluated for every mode so a browser-flow variable left on a local or
+  // preview deployment is reported rather than ignored.
+  const browserFlow = resolveOidcBrowserFlow(env)
+  if (browserFlow && mode !== 'oidc') {
+    throw new ConfigurationError(
+      `${OIDC_BROWSER_FLOW_GATE} requires KAUDIT_AUTH_MODE=oidc`,
+    )
+  }
+
   const auth: RuntimeConfig['auth'] =
     mode === 'preview'
       ? { mode }
@@ -224,6 +368,8 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
             .split(',')
             .map((value) => value.trim())
             .filter(Boolean),
+          maxTokenAgeSeconds: resolveMaxTokenAgeSeconds(env, browserFlow),
+          browserFlow,
         }
 
   if (
@@ -236,6 +382,24 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     throw new ConfigurationError(
       'KAUDIT_OIDC_ALGORITHMS contains an unapproved algorithm',
     )
+  }
+  if (auth.mode === 'oidc' && auth.browserFlow) {
+    // The callback's only durable output is this cookie. Without a name for it
+    // a successful sign-in would have nowhere to put the token it just
+    // validated, so the flow is refused at load rather than at redirect time.
+    if (!auth.tokenCookie) {
+      throw new ConfigurationError(
+        `KAUDIT_OIDC_TOKEN_COOKIE is required when ${OIDC_BROWSER_FLOW_GATE} is true`,
+      )
+    }
+    // Two login entry points is the ambiguous state: the dashboard advertises
+    // exactly one, and silently preferring either would make the deployment's
+    // behaviour depend on which line of this file ran last.
+    if (auth.loginUrl) {
+      throw new ConfigurationError(
+        `KAUDIT_OIDC_LOGIN_URL cannot be combined with ${OIDC_BROWSER_FLOW_GATE}=true`,
+      )
+    }
   }
   if (
     auth.mode === 'local' &&

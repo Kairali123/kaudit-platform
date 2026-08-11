@@ -10,8 +10,25 @@ import {
   authenticateLocal,
   authenticateOidc,
   extractBearerToken,
+  parseCookie,
   requirePermission,
 } from '../auth/authenticate.ts'
+import {
+  boundedFlowFailure,
+  callbackUrlFor,
+  clearOidcIdentityCookie,
+  clearOidcTransactionCookie,
+  identityCookieMaxAge,
+  oidcIdentityCookie,
+  oidcTransactionCookie,
+  stateMatches,
+  OidcBrowserFlowError,
+  OIDC_CALLBACK_ROUTE,
+  OIDC_LOGIN_ROUTE,
+  OIDC_LOGIN_SUCCESS_PATH,
+  OIDC_TRANSACTION_COOKIE,
+} from '../auth/oidcBrowserFlow.ts'
+import type { OidcAuthorizationClient } from '../auth/oidcAuthorizationClient.ts'
 import {
   clearLocalSessionCookie,
   issueLocalSession,
@@ -113,6 +130,14 @@ interface Dependencies {
   access: AccessRepository
   audit: AuditSink
   verifier: TokenVerifier | null
+  /**
+   * The authorization-code browser flow's protocol edge. Constructed by the
+   * shared runtime factory only when `config.auth.browserFlow` is set, and
+   * injected here so a server test can exercise the routes with no provider,
+   * no discovery request, and no socket. Absent means the routes report
+   * themselves unknown.
+   */
+  oidcAuthorizationClient?: OidcAuthorizationClient
   imports?: CycleImportService
   importAnalysis?: ImportAnalysisService
   recordingFetcher?: UrlFetcher
@@ -202,6 +227,19 @@ const MAX_RULE_TEST_BODY_BYTES = 1024 * 1024
 
 const PUBLIC_API_ROUTES = new Set(['/api/v1/auth/config'])
 const PUBLIC_POST_ROUTES = new Set(['/api/v1/auth/login'])
+
+/**
+ * The two public GETs of the authorization-code browser flow.
+ *
+ * Public by necessity — a caller starting a sign-in has no session yet, and the
+ * provider's redirect back arrives without one either. Neither reads a body,
+ * neither touches the database beyond the access-audit write, and neither
+ * returns anything but a redirect or a fixed problem document.
+ */
+const OIDC_BROWSER_FLOW_ROUTES = new Set([
+  OIDC_LOGIN_ROUTE,
+  OIDC_CALLBACK_ROUTE,
+])
 const IMPORT_WRITE_ROUTES = new Set([
   '/api/v1/imports/usage',
   '/api/v1/imports/invoice',
@@ -226,12 +264,15 @@ function problem(
   code: string,
   title: string,
   correlation: string,
+  /** Extra response headers; used to clear a cookie while refusing. */
+  headers: Record<string, string | string[]> = {},
 ): void {
   response.writeHead(status, {
     ...JSON_SECURITY_HEADERS,
     'content-type':
       'application/problem+json; charset=utf-8',
     'x-correlation-id': correlation,
+    ...headers,
   })
   response.end(
     JSON.stringify({
@@ -300,6 +341,279 @@ async function authenticate(
     dependencies.verifier,
     dependencies.access,
   )
+}
+
+/**
+ * What the browser flow needs, or null when this deployment does not run it.
+ *
+ * All four conditions are required together. `config.auth.browserFlow` is the
+ * operator's deny-by-default gate, `tokenCookie` is where a validated token
+ * would go, and the client is the dependency the runtime factory only builds
+ * when the first two hold. A missing piece means the routes do not exist here —
+ * not that they exist in a degraded form.
+ */
+interface OidcBrowserFlowRuntime {
+  client: OidcAuthorizationClient
+  redirectUri: string
+  tokenCookie: string
+  maxTokenAgeSeconds: number
+}
+
+function oidcBrowserFlowRuntime(
+  dependencies: Dependencies,
+): OidcBrowserFlowRuntime | null {
+  const auth = dependencies.config.auth
+  if (auth.mode !== 'oidc' || !auth.browserFlow || !auth.tokenCookie) {
+    return null
+  }
+  const client = dependencies.oidcAuthorizationClient
+  if (!client) return null
+  return {
+    client,
+    redirectUri: auth.browserFlow.redirectUri,
+    tokenCookie: auth.tokenCookie,
+    maxTokenAgeSeconds: auth.maxTokenAgeSeconds,
+  }
+}
+
+/**
+ * The only thing written to the process log for a sign-in.
+ *
+ * A fixed event name, one of the flow's bounded codes, and the correlation id.
+ * No query string, no code, no state, no nonce, no verifier, no token, no
+ * provider text, no client id, no claim, and no thrown value — the request is
+ * not even in scope here, so none of that can be reached by a later edit.
+ */
+function logOidcFlowEvent(
+  event: 'oidc_login_started' | 'oidc_callback_completed' | 'oidc_flow_refused',
+  code: string,
+  correlation: string,
+): void {
+  process.stderr.write(
+    `${JSON.stringify({
+      level: event === 'oidc_flow_refused' ? 'warn' : 'info',
+      event,
+      code,
+      correlationId: correlation,
+      occurredAt: new Date().toISOString(),
+    })}\n`,
+  )
+}
+
+/**
+ * Starts a sign-in: mint state, nonce and a PKCE S256 pair, park them in the
+ * transaction cookie, and redirect to the provider's authorization endpoint.
+ *
+ * The authorization URL is built by the library from discovered metadata, so
+ * neither the provider's endpoints nor this deployment's hostname is written
+ * down. Nothing is stored server-side, and the response has no body.
+ */
+async function handleOidcLogin(
+  flow: OidcBrowserFlowRuntime,
+  response: ServerResponse,
+  correlation: string,
+): Promise<void> {
+  try {
+    const start = await flow.client.beginAuthorization()
+    logOidcFlowEvent('oidc_login_started', 'OIDC_LOGIN_REDIRECT', correlation)
+    response.writeHead(302, {
+      ...HTML_SECURITY_HEADERS,
+      location: start.authorizationUrl.toString(),
+      // The sealed envelope, never the raw transaction: only a value this
+      // deployment's key authenticated is accepted back at the callback.
+      'set-cookie': oidcTransactionCookie(start.transactionCookie),
+      'x-correlation-id': correlation,
+    })
+    response.end()
+  } catch (error) {
+    const failure =
+      error instanceof OidcBrowserFlowError
+        ? error
+        : new OidcBrowserFlowError('OIDC_LOGIN_START_FAILED')
+    logOidcFlowEvent('oidc_flow_refused', failure.code, correlation)
+    problem(
+      response,
+      failure.status,
+      failure.code,
+      failure.message,
+      correlation,
+      // A started transaction that cannot be redirected is not resumable.
+      { 'set-cookie': clearOidcTransactionCookie() },
+    )
+  }
+}
+
+/**
+ * What a callback turned out to be, before anything is written to the browser.
+ *
+ * `authenticated` is not yet a sign-in: it says the exchange and the ID token
+ * validation succeeded and names the cookie that *would* be issued. Whether it
+ * is issued at all is decided after the access audit, by the caller.
+ */
+type OidcCallbackResolution =
+  | { kind: 'authenticated'; idToken: string; maxAgeSeconds: number }
+  | { kind: 'refused'; failure: OidcBrowserFlowError }
+
+/**
+ * Resolves a callback. Writes nothing, logs nothing, sets no cookie.
+ *
+ * The order is deliberate. A provider refusal is recognized before anything
+ * else is read; the transaction cookie must open under this deployment's key;
+ * the returned `state` must match it exactly before a code is presented
+ * anywhere; the exchange runs server to server against a callback URL rebuilt
+ * from configuration; and only a validated ID token yields `authenticated`.
+ *
+ * Keeping the response out of this function is what makes the audit ordering in
+ * the caller structural rather than a matter of statement order: there is no
+ * `response` in scope here, so nothing in this path can commit one early.
+ *
+ * Authorization is unchanged and is not performed here: the identity cookie
+ * only carries a verified token, and the next request still has to resolve a
+ * provisioned, active user through the existing `authenticate` path.
+ */
+async function resolveOidcCallback(
+  flow: OidcBrowserFlowRuntime,
+  request: IncomingMessage,
+  url: URL,
+): Promise<OidcCallbackResolution> {
+  try {
+    if (url.searchParams.has('error')) {
+      // The parameter's value is never read. `error_description` is provider
+      // prose and `error_uri` is a provider URL; reflecting either is how a
+      // callback becomes a content-injection surface.
+      throw new OidcBrowserFlowError('OIDC_PROVIDER_REFUSED')
+    }
+    // Opened behind the authorization client's edge, under the key derived
+    // from the client secret. A cookie written by a sibling host on a shared
+    // parent domain carries no valid authenticator and is refused here — one
+    // bounded code, and before any code reaches the token endpoint.
+    const transaction = flow.client.openTransaction(
+      parseCookie(request.headers.cookie, OIDC_TRANSACTION_COOKIE),
+    )
+    if (!stateMatches(url.searchParams.get('state'), transaction.state)) {
+      throw new OidcBrowserFlowError('OIDC_STATE_MISMATCH')
+    }
+    const verified = await flow.client.exchange({
+      callbackUrl: callbackUrlFor(flow.redirectUri, url.search),
+      expectedState: transaction.state,
+      expectedNonce: transaction.nonce,
+      codeVerifier: transaction.codeVerifier,
+    })
+    const maxAgeSeconds = identityCookieMaxAge(
+      verified.expiresAtSeconds,
+      flow.maxTokenAgeSeconds,
+      Math.floor(Date.now() / 1000),
+    )
+    if (maxAgeSeconds <= 0) {
+      // Validated but already spent. Setting a cookie the verifier would reject
+      // on the very next request would present itself to the operator as a
+      // successful sign-in that silently does not work.
+      throw new OidcBrowserFlowError('OIDC_IDENTITY_UNVERIFIED')
+    }
+    return { kind: 'authenticated', idToken: verified.idToken, maxAgeSeconds }
+  } catch (error) {
+    // The thrown value is dropped unread; only a fixed code survives.
+    return { kind: 'refused', failure: boundedFlowFailure(error) }
+  }
+}
+
+/**
+ * How a refusal is recorded, matching the local login path.
+ *
+ * There, an `AuthFailure` — a 4xx the caller caused — is `denied`, and anything
+ * else is `failure`. The browser flow's codes carry the same distinction in
+ * their status: a missing transaction, a state mismatch or an unverifiable
+ * identity is `denied`; an unreachable provider or a failed exchange is a
+ * `failure` of this deployment's dependency, not a rejected caller.
+ */
+function oidcAuditOutcome(
+  failure: OidcBrowserFlowError,
+): 'denied' | 'failure' {
+  return failure.status >= 500 ? 'failure' : 'denied'
+}
+
+/**
+ * Completes a sign-in, or refuses it, writing exactly one response.
+ *
+ * The rule this function exists to enforce: **a successful exchange sets no
+ * identity cookie and produces no success redirect until the durable access
+ * audit for it has completed.** That is the same order the local password
+ * login uses — `auditAccess` is awaited before `issueLocalSession`'s cookie is
+ * handed to `sendJson` — and it is why the audit here is not a fire-and-forget
+ * write after the response.
+ *
+ * If the audit sink cannot record the event, the sign-in fails closed: a
+ * bounded 502, the transaction cookie cleared, no identity cookie, and nothing
+ * from the thrown value in the log. An operator sees a failed sign-in they can
+ * retry, rather than a session with no record that it was ever granted.
+ *
+ * A refusal still audits — `denied` or `failure` — but an audit sink that is
+ * itself unavailable cannot turn a refusal into something else, so that write
+ * is bounded and its failure changes nothing about the response.
+ *
+ * Every outcome clears the transaction cookie, so a code replayed against the
+ * same transaction finds nothing to replay against.
+ */
+async function handleOidcCallback(
+  dependencies: Dependencies,
+  flow: OidcBrowserFlowRuntime,
+  request: IncomingMessage,
+  response: ServerResponse,
+  url: URL,
+  correlation: string,
+): Promise<void> {
+  const resolution = await resolveOidcCallback(flow, request, url)
+  // Recorded with a null actor: the callback resolves no user, and the claims
+  // it did validate are not written anywhere. Only that a sign-in completed or
+  // was refused, from this address, at this time.
+  let recorded = true
+  try {
+    await auditAccess(
+      dependencies,
+      request,
+      null,
+      correlation,
+      resolution.kind === 'authenticated'
+        ? 'success'
+        : oidcAuditOutcome(resolution.failure),
+      'auth.oidc_callback',
+    )
+  } catch {
+    // Nothing from the thrown value is read, kept, or logged.
+    recorded = false
+  }
+
+  if (resolution.kind === 'authenticated' && recorded) {
+    logOidcFlowEvent(
+      'oidc_callback_completed',
+      'OIDC_LOGIN_COMPLETE',
+      correlation,
+    )
+    response.writeHead(302, {
+      ...HTML_SECURITY_HEADERS,
+      location: OIDC_LOGIN_SUCCESS_PATH,
+      'set-cookie': [
+        clearOidcTransactionCookie(),
+        oidcIdentityCookie(
+          flow.tokenCookie,
+          resolution.idToken,
+          resolution.maxAgeSeconds,
+        ),
+      ],
+      'x-correlation-id': correlation,
+    })
+    response.end()
+    return
+  }
+
+  const failure =
+    resolution.kind === 'authenticated'
+      ? new OidcBrowserFlowError('OIDC_ACCESS_NOT_RECORDED')
+      : resolution.failure
+  logOidcFlowEvent('oidc_flow_refused', failure.code, correlation)
+  problem(response, failure.status, failure.code, failure.message, correlation, {
+    'set-cookie': clearOidcTransactionCookie(),
+  })
 }
 
 async function auditAccess(
@@ -487,6 +801,7 @@ function permissionsFor(roles: readonly string[]): string[] {
 
 function publicAuthConfig(dependencies: Dependencies): unknown {
   const auth = dependencies.config.auth
+  const browserFlow = Boolean(oidcBrowserFlowRuntime(dependencies))
   return {
     mode: auth.mode,
     providerLabel:
@@ -495,8 +810,19 @@ function publicAuthConfig(dependencies: Dependencies): unknown {
         : auth.mode === 'local'
           ? 'Local Kairali account'
           : 'Local preview',
-    loginUrl: auth.mode === 'oidc' ? auth.loginUrl : null,
-    logoutUrl: auth.mode === 'oidc' ? auth.logoutUrl : '/login',
+    // The browser flow's own route when this deployment runs it, so the
+    // existing UI navigates here instead of to a provider URL. Configuration
+    // rejects having both, so this is a choice between exclusive states rather
+    // than a precedence rule. Neither value carries a client id or a secret.
+    loginUrl: browserFlow
+      ? OIDC_LOGIN_ROUTE
+      : auth.mode === 'oidc'
+        ? auth.loginUrl
+        : null,
+    logoutUrl:
+      auth.mode === 'oidc'
+        ? (auth.logoutUrl ?? (browserFlow ? '/login' : null))
+        : '/login',
     accessControlEnforced: auth.mode !== 'preview',
     passwordLoginSupported: auth.mode === 'local',
   }
@@ -1211,6 +1537,7 @@ export function createEnterpriseDashboardServer(
       IMPORT_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
       APP_ROUTES.has(url.pathname) ||
+      OIDC_BROWSER_FLOW_ROUTES.has(url.pathname) ||
       url.pathname === '/logout' ||
       url.pathname.startsWith('/assets/')
     if (!isKnownRoute) {
@@ -1224,10 +1551,51 @@ export function createEnterpriseDashboardServer(
       return
     }
 
+    if (OIDC_BROWSER_FLOW_ROUTES.has(url.pathname)) {
+      const flow = oidcBrowserFlowRuntime(dependencies)
+      if (!flow) {
+        // Deny by default. A deployment that does not run the browser flow does
+        // not have these routes at all, and says so exactly as it would for any
+        // other unknown path.
+        problem(
+          response,
+          404,
+          'NOT_FOUND',
+          'Not found',
+          correlation,
+        )
+        return
+      }
+      if (url.pathname === OIDC_LOGIN_ROUTE) {
+        await handleOidcLogin(flow, response, correlation)
+        return
+      }
+      // Owns its own audit write, because the audit has to complete before the
+      // response and the identity cookie are committed.
+      await handleOidcCallback(
+        dependencies,
+        flow,
+        request,
+        response,
+        url,
+        correlation,
+      )
+      return
+    }
+
     if (url.pathname === '/logout') {
       const auth = dependencies.config.auth
+      const browserFlow = auth.mode === 'oidc' ? auth.browserFlow : null
       const location =
-        auth.mode === 'oidc' ? auth.logoutUrl : '/login'
+        auth.mode !== 'oidc'
+          ? '/login'
+          : // A provider end-session endpoint when one is configured; otherwise
+            // the application's own sign-in page, which is reachable only
+            // because the browser flow owns a login route on this origin. Both
+            // are validated destinations — the first as an HTTPS URL at
+            // configuration load, the second a fixed same-origin path — and
+            // neither can be influenced by the request.
+            (auth.logoutUrl ?? (browserFlow ? '/login' : null))
       if (!location) {
         problem(
           response,
@@ -1238,17 +1606,30 @@ export function createEnterpriseDashboardServer(
         )
         return
       }
+      /**
+       * Local sign-out happens first and unconditionally.
+       *
+       * The provider's end-session endpoint is a redirect this server cannot
+       * observe: the browser may never arrive, the provider may refuse, the
+       * operator may close the tab. If the identity cookie were left for that
+       * round trip to clear, a "logged out" browser would keep presenting a
+       * valid token to this origin until the token expired on its own.
+       */
+      const cleared: string[] = []
+      if (auth.mode === 'local') {
+        cleared.push(clearLocalSessionCookie(auth.sessionCookie))
+      }
+      if (auth.mode === 'oidc' && auth.tokenCookie) {
+        cleared.push(clearOidcIdentityCookie(auth.tokenCookie))
+      }
+      if (browserFlow) {
+        cleared.push(clearOidcTransactionCookie())
+      }
       response.writeHead(302, {
         ...HTML_SECURITY_HEADERS,
         location,
         'x-correlation-id': correlation,
-        ...(auth.mode === 'local'
-          ? {
-              'set-cookie': clearLocalSessionCookie(
-                auth.sessionCookie,
-              ),
-            }
-          : {}),
+        ...(cleared.length > 0 ? { 'set-cookie': cleared } : {}),
       })
       response.end()
       return

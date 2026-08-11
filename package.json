@@ -13,7 +13,7 @@
     "test": "node --test \"src/**/*.test.ts\"",
     "test:w3": "node --test src/storage/verifyEvidenceUrl.test.ts src/security/urlSafety.test.ts src/adapters/proxyResolvingFetcher.test.ts",
     "test:backfill": "node --test src/backfill/normalizeRecordingUrl.test.ts src/backfill/backfillSourceUrl.test.ts",
-    "test:w1": "node --test src/identity/resolveIdentity.test.ts src/identity/buildUserSet.test.ts src/identity/access.test.ts",
+    "test:w1": "node --test src/identity/resolveIdentity.test.ts src/identity/buildUserSet.test.ts src/identity/access.test.ts src/identity/oidcBinding.test.ts src/adapters/mysqlOidcBinding.test.ts src/audit/transactionalAuditWriter.test.ts src/cli/runOidcBindCli.test.ts",
     "test:billing": "node --test src/billing/*.test.ts",
     "test:reaudit": "node --test src/reaudit/*.test.ts",
     "test:callaudit": "node --test src/callaudit/*.test.ts src/adapters/mysqlCallAuditSource.test.ts src/adapters/mysqlCallAuditPersistence.test.ts src/adapters/mysqlCallAuditControl.test.ts src/adapters/mysqlCallAuditReporting.test.ts src/adapters/mysqlCallAuditSettings.test.ts src/adapters/openaiCallAuditModel.test.ts src/adapters/openaiCallAuditClient.test.ts src/cli/runSecureDashboardCallAudit.test.ts src/cli/runCallAuditBatchCli.test.ts src/reporting/callAuditReport.test.ts src/reporting/callAuditReportArtifacts.test.ts src/reporting/callAuditWebContract.test.ts src/reporting/callAuditSettingsWebContract.test.ts src/http/enterpriseDashboardServer.callAudit.test.ts src/http/enterpriseDashboardServer.callAuditSettings.test.ts src/http/enterpriseDashboardServer.callAuditRuleTest.test.ts",
@@ -40,6 +40,7 @@
     "w3:backfill": "node --env-file-if-exists=.env src/cli/run-backfill.ts",
     "w1:identity": "node --env-file-if-exists=.env src/cli/run-identity-backfill.ts",
     "w1:grant-admin": "node --env-file-if-exists=.env src/cli/run-admin-grant.ts",
+    "w1:bind-oidc": "node --env-file-if-exists=.env --env-file-if-exists=.env.local src/cli/run-oidc-bind.ts",
     "reaudit:sample": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --env-file-if-exists=$HOME/.kcrm-audit/.env.local src/cli/run-reaudit-sample.ts",
     "audit:worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --env-file-if-exists=$HOME/.kcrm-audit/.env.local src/cli/run-reaudit-worker.ts",
     "automation:validate": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --env-file-if-exists=$HOME/.kcrm-audit/.env.local src/cli/run-automated-validation.ts",
@@ -59,10 +60,11 @@
     "mysql2": "^3.18.2",
     "nodemailer": "^9.0.3",
     "openai": "^6.49.0",
+    "openid-client": "^6.8.4",
     "pdfkit": "^0.19.1",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
-    "react-router-dom": "^7.18.1"
+    "react-router-dom": "^7.18.2"
   },
   "devDependencies": {
     "@types/node": "^22.0.0",

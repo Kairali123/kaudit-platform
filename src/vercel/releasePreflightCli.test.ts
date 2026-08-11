@@ -97,7 +97,7 @@ test('a passing environment writes the pass line and exits zero', () => {
   const result = run()
   assert.equal(result.status, 0)
   assert.deepEqual(result.lines, [
-    '{"preflight":"vercel-release","result":"pass","checks":11,"optionalFeatures":[]}\n',
+    '{"preflight":"vercel-release","result":"pass","checks":12,"optionalFeatures":[]}\n',
   ])
 })
 
@@ -113,7 +113,7 @@ test('a failing environment writes the evaluator report and exits nonzero', () =
     errors: Array<{ code: string }>
   }
   assert.equal(parsed.result, 'fail')
-  assert.equal(parsed.checks, 11)
+  assert.equal(parsed.checks, 12)
   // The evaluator's own verdict, forwarded whole: the missing CA, and the
   // accepted parser refusing the same environment for the same reason.
   assert.deepEqual(

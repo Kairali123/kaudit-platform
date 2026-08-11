@@ -4,6 +4,7 @@ import mysql, { type Pool, type PoolOptions } from 'mysql2/promise'
 import { createMysqlAccessRepository } from '../adapters/mysqlAccessRepo.ts'
 import { createMysqlAuditSink } from '../adapters/mysqlAuditSink.ts'
 import { createOidcVerifier } from '../auth/oidcVerifier.ts'
+import { createOidcAuthorizationClient } from '../auth/oidcAuthorizationClient.ts'
 import { loadRuntimeConfig, type RuntimeConfig } from '../config/runtime.ts'
 import { createEnterpriseDashboardServer } from '../http/enterpriseDashboardServer.ts'
 import { createMysqlCycleImportService } from '../adapters/mysqlCycleImport.ts'
@@ -61,6 +62,8 @@ export interface DashboardCapabilities {
   importAnalysis: boolean
   callAuditRuleTest: boolean
   recordingProxy: boolean
+  /** Whether this deployment runs the OIDC authorization-code browser flow. */
+  oidcBrowserFlow: boolean
 }
 
 export interface DashboardRuntime {
@@ -174,8 +177,31 @@ export function createDashboardRuntime(
           audience: config.auth.audience,
           jwksUri: config.auth.jwksUri,
           algorithms: config.auth.algorithms,
+          maxTokenAgeSeconds: config.auth.maxTokenAgeSeconds,
         })
       : null
+  /**
+   * OIDC authorization-code browser flow, and the only place it is decided.
+   *
+   * `config.auth.browserFlow` is the operator's dedicated deny-by-default gate,
+   * already validated as all-or-nothing, so nothing is inferred here from a
+   * stray variable. With no gate the client is never constructed and the
+   * deployment keeps its existing token-only/identity-proxy behaviour.
+   *
+   * The client secret is read from the environment on this line and handed
+   * straight to the client. It is not placed in `config`, not returned in the
+   * runtime, not stored in a local that outlives this call, and not logged —
+   * the same treatment `resolveDatabaseTls` gives the inline CA PEM.
+   */
+  const oidcAuthorizationClient =
+    config.auth.mode === 'oidc' && config.auth.browserFlow
+      ? createOidcAuthorizationClient({
+          issuer: config.auth.issuer,
+          clientId: config.auth.browserFlow.clientId,
+          clientSecret: env.KAUDIT_OIDC_CLIENT_SECRET?.trim() || '',
+          redirectUri: config.auth.browserFlow.redirectUri,
+        })
+      : undefined
   const server = createEnterpriseDashboardServer({
     config,
     pool,
@@ -187,6 +213,7 @@ export function createDashboardRuntime(
     allowedRecordingHosts,
     callAuditRuleTestModel,
     verifier,
+    oidcAuthorizationClient,
     webDistRoot: options.webDistRoot,
   })
   return {
@@ -198,6 +225,7 @@ export function createDashboardRuntime(
       importAnalysis: Boolean(importAnalysis),
       callAuditRuleTest: Boolean(callAuditRuleTestModel),
       recordingProxy: Boolean(recordingFetcher),
+      oidcBrowserFlow: Boolean(oidcAuthorizationClient),
     },
   }
 }

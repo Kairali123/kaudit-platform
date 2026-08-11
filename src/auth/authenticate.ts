@@ -28,7 +28,10 @@ export class AuthFailure extends Error {
   }
 }
 
-function parseCookie(header: string | undefined, name: string): string | null {
+export function parseCookie(
+  header: string | undefined,
+  name: string,
+): string | null {
   if (!header) return null
   for (const part of header.split(';')) {
     const index = part.indexOf('=')

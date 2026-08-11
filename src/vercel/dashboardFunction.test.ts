@@ -27,6 +27,7 @@ function syntheticRuntime(): DashboardRuntime {
       importAnalysis: false,
       callAuditRuleTest: false,
       recordingProxy: false,
+      oidcBrowserFlow: false,
     },
   }
 }

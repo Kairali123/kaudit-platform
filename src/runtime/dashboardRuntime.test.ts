@@ -1,6 +1,11 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { hkdfSync } from 'node:crypto'
 import type { Pool, PoolOptions } from 'mysql2/promise'
+import {
+  OIDC_TRANSACTION_KEY_INFO,
+  OIDC_TRANSACTION_KEY_SALT,
+} from '../auth/oidcTransactionSeal.ts'
 import { ConfigurationError } from '../config/runtime.ts'
 import { createDashboardRuntime } from './dashboardRuntime.ts'
 
@@ -287,4 +292,97 @@ test('the runtime binds no port', () => {
   const { runtime } = boot(base())
   assert.equal(runtime.server.listening, false)
   assert.equal(runtime.server.address(), null)
+})
+
+// ---------------------------------------------------------------------------
+// OIDC authorization-code browser flow
+// ---------------------------------------------------------------------------
+
+/**
+ * Synthetic; invented here to be searched for in the runtime's own output. It
+ * is not a credential and authenticates to nothing.
+ */
+const SYNTHETIC_CLIENT_SECRET = 'synthetic-client-secret-not-a-credential'
+
+function browserFlowEnv(): NodeJS.ProcessEnv {
+  return {
+    ...productionOidc(),
+    DB_SSL_CA_PEM: SYNTHETIC_CA_PEM,
+    KAUDIT_OIDC_TOKEN_COOKIE: 'kaudit_id_token',
+    KAUDIT_OIDC_BROWSER_FLOW: 'true',
+    KAUDIT_OIDC_CLIENT_ID: 'synthetic-client-id.apps.example.test',
+    KAUDIT_OIDC_CLIENT_SECRET: SYNTHETIC_CLIENT_SECRET,
+    KAUDIT_OIDC_REDIRECT_URI:
+      'https://audit.example.test/api/v1/auth/oidc/callback',
+  }
+}
+
+test('the browser flow is constructed only behind its dedicated gate', () => {
+  // Constructing the client opens nothing: discovery is deferred to the first
+  // sign-in, so no request leaves this test.
+  const { runtime } = boot(browserFlowEnv())
+  assert.equal(runtime.capabilities.oidcBrowserFlow, true)
+
+  const off = browserFlowEnv()
+  delete off.KAUDIT_OIDC_BROWSER_FLOW
+  delete off.KAUDIT_OIDC_CLIENT_ID
+  delete off.KAUDIT_OIDC_CLIENT_SECRET
+  delete off.KAUDIT_OIDC_REDIRECT_URI
+  assert.equal(boot(off).runtime.capabilities.oidcBrowserFlow, false)
+})
+
+test('a half-configured browser flow refuses to boot rather than half-enable', () => {
+  for (const name of [
+    'KAUDIT_OIDC_CLIENT_ID',
+    'KAUDIT_OIDC_CLIENT_SECRET',
+    'KAUDIT_OIDC_REDIRECT_URI',
+    'KAUDIT_OIDC_TOKEN_COOKIE',
+  ]) {
+    const env = browserFlowEnv()
+    delete env[name]
+    assert.throws(() => boot(env), ConfigurationError, `${name} must be required`)
+  }
+  // And the mirror image: a client variable with the gate off.
+  const stray = browserFlowEnv()
+  delete stray.KAUDIT_OIDC_BROWSER_FLOW
+  delete stray.KAUDIT_OIDC_CLIENT_SECRET
+  delete stray.KAUDIT_OIDC_REDIRECT_URI
+  assert.throws(() => boot(stray), ConfigurationError)
+})
+
+test('neither the client secret nor the transaction key is carried on the runtime', () => {
+  const { runtime } = boot(browserFlowEnv())
+  // The risk being guarded is that something stringifies the runtime or the
+  // configuration it exposes into a log line.
+  const serialized = JSON.stringify({
+    config: runtime.config,
+    capabilities: runtime.capabilities,
+  })
+  assert.equal(serialized.includes(SYNTHETIC_CLIENT_SECRET), false)
+  assert.equal(serialized.includes('KAUDIT_OIDC_CLIENT_SECRET'), false)
+
+  // The transaction envelope's HMAC key is derived from that secret inside the
+  // authorization client. It must be no more reachable than the secret was:
+  // not in the configuration, not on the runtime, not in a capability flag.
+  const derived = Buffer.from(
+    hkdfSync(
+      'sha256',
+      Buffer.from(SYNTHETIC_CLIENT_SECRET, 'utf8'),
+      Buffer.from(OIDC_TRANSACTION_KEY_SALT, 'utf8'),
+      Buffer.from(OIDC_TRANSACTION_KEY_INFO, 'utf8'),
+      32,
+    ),
+  )
+  for (const encoding of ['base64url', 'base64', 'hex'] as const) {
+    assert.equal(serialized.includes(derived.toString(encoding)), false)
+  }
+  // And the configuration's OIDC section names only what an operator set.
+  const auth = runtime.config.auth
+  assert.equal(auth.mode, 'oidc')
+  if (auth.mode !== 'oidc') throw new Error('synthetic config')
+  assert.deepEqual(Object.keys(auth.browserFlow ?? {}).sort(), [
+    'clientId',
+    'redirectUri',
+    'secretConfigured',
+  ])
 })

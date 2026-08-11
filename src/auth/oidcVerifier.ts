@@ -6,6 +6,15 @@ export interface OidcVerifierConfig {
   audience: string
   jwksUri: string
   algorithms: string[]
+  /**
+   * Maximum accepted `iat` age, in seconds. Bounded to 60..3600 by
+   * `config/runtime.ts`, which also owns the default.
+   *
+   * This is a freshness ceiling layered on top of the signature, issuer,
+   * audience and `exp` checks below — never a replacement for any of them, and
+   * there is no value it can take that skips one.
+   */
+  maxTokenAgeSeconds: number
 }
 
 export function createOidcVerifier(config: OidcVerifierConfig): TokenVerifier {
@@ -22,7 +31,7 @@ export function createOidcVerifier(config: OidcVerifierConfig): TokenVerifier {
         audience: config.audience,
         algorithms: config.algorithms,
         clockTolerance: 5,
-        maxTokenAge: '15m',
+        maxTokenAge: config.maxTokenAgeSeconds,
         requiredClaims: ['sub', 'iat', 'exp'],
       })
       if (typeof payload.sub !== 'string' || !payload.sub) {

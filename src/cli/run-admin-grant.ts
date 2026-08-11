@@ -4,11 +4,7 @@ import mysql, {
   type PoolConnection,
   type RowDataPacket,
 } from 'mysql2/promise'
-import {
-  AUDIT_GENESIS_HASH,
-  hashAuditEntry,
-} from '../audit/hashChain.ts'
-import type { AuditEvent } from '../audit/types.ts'
+import { recordAuditEventInTransaction } from '../audit/transactionalAuditWriter.ts'
 import {
   planAdminGrant,
   targetAdminAccessState,
@@ -25,14 +21,6 @@ interface UserRow extends RowDataPacket {
 
 interface RoleRow extends RowDataPacket {
   role_code: string
-}
-
-interface CountRow extends RowDataPacket {
-  n: number | string
-}
-
-interface HeadRow extends RowDataPacket {
-  head_hash: string
 }
 
 function required(name: string): string {
@@ -73,97 +61,6 @@ async function loadIdentity(
     maxSensitivityTier: user.max_sensitivity_tier,
     roles: roles.map((row) => row.role_code),
   }
-}
-
-async function supportsHashChainedAudit(
-  connection: PoolConnection,
-): Promise<boolean> {
-  const [rows] = await connection.query<CountRow[]>(
-    `SELECT COUNT(*) AS n
-     FROM information_schema.COLUMNS
-     WHERE TABLE_SCHEMA = DATABASE()
-       AND TABLE_NAME = 'kaudit_audit_log'
-       AND COLUMN_NAME IN
-         ('actor_user_id','outcome','purpose','previous_hash','entry_hash')`,
-  )
-  return Number(rows[0]?.n) === 5
-}
-
-async function recordGrantAudit(
-  connection: PoolConnection,
-  event: AuditEvent,
-): Promise<'hash-chained' | 'legacy'> {
-  const id = randomUUID()
-  if (await supportsHashChainedAudit(connection)) {
-    await connection.execute(
-      `INSERT INTO kaudit_audit_chain_head
-         (chain_name, head_hash, head_event_id)
-       VALUES ('primary', ?, NULL)
-       ON DUPLICATE KEY UPDATE chain_name = chain_name`,
-      [AUDIT_GENESIS_HASH],
-    )
-    const [rows] = await connection.execute<HeadRow[]>(
-      `SELECT head_hash
-       FROM kaudit_audit_chain_head
-       WHERE chain_name = 'primary'
-       FOR UPDATE`,
-    )
-    const previousHash = rows[0]?.head_hash ?? AUDIT_GENESIS_HASH
-    const entryHash = hashAuditEntry(id, previousHash, event)
-    await connection.execute(
-      `INSERT INTO kaudit_audit_log
-         (id, actor_email, actor_user_id, action, resource_type, resource_id,
-          before_hash, after_hash, ip_address, client, correlation_id,
-          outcome, purpose, previous_hash, entry_hash, occurred_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-      [
-        id,
-        event.actorEmail,
-        event.actorUserId,
-        event.action,
-        event.resourceType,
-        event.resourceId,
-        event.beforeHash ?? null,
-        event.afterHash ?? null,
-        event.ipAddress,
-        event.client,
-        event.correlationId,
-        event.outcome,
-        event.purpose,
-        previousHash,
-        entryHash,
-        event.occurredAt,
-      ],
-    )
-    await connection.execute(
-      `UPDATE kaudit_audit_chain_head
-       SET head_hash = ?, head_event_id = ?, updated_at = ?
-       WHERE chain_name = 'primary'`,
-      [entryHash, id, event.occurredAt],
-    )
-    return 'hash-chained'
-  }
-
-  await connection.execute(
-    `INSERT INTO kaudit_audit_log
-       (id, actor_email, action, resource_type, resource_id, before_hash,
-        after_hash, ip_address, client, correlation_id, occurred_at)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [
-      id,
-      event.actorEmail,
-      event.action,
-      event.resourceType,
-      event.resourceId,
-      event.beforeHash ?? null,
-      event.afterHash ?? null,
-      event.ipAddress,
-      event.client,
-      event.correlationId,
-      event.occurredAt,
-    ],
-  )
-  return 'legacy'
 }
 
 async function main(): Promise<void> {
@@ -266,7 +163,7 @@ async function main(): Promise<void> {
     )
 
     const occurredAt = new Date()
-    const auditMode = await recordGrantAudit(connection, {
+    const auditMode = await recordAuditEventInTransaction(connection, {
       actorUserId: userId,
       actorEmail: plan.email,
       action: 'USER_ADMIN_ACCESS_GRANTED',

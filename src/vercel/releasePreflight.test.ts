@@ -77,7 +77,7 @@ test('a complete production candidate passes with no findings', () => {
 test('success output is a small fixed JSON object', () => {
   assert.equal(
     formatPreflightReport(evaluate(productionEnv())),
-    '{"preflight":"vercel-release","result":"pass","checks":11,"optionalFeatures":[]}',
+    '{"preflight":"vercel-release","result":"pass","checks":12,"optionalFeatures":[]}',
   )
 })
 
