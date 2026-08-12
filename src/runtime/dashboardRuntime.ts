@@ -5,6 +5,7 @@ import { createMysqlAccessRepository } from '../adapters/mysqlAccessRepo.ts'
 import { createMysqlAuditSink } from '../adapters/mysqlAuditSink.ts'
 import { createMysqlUserCredentialRepository } from '../adapters/mysqlUserCredentialRepo.ts'
 import { createMysqlLoginService } from '../adapters/mysqlLoginService.ts'
+import { createMysqlUserAdministration } from '../adapters/mysqlUserAdministration.ts'
 import { createOidcVerifier } from '../auth/oidcVerifier.ts'
 import { createOidcAuthorizationClient } from '../auth/oidcAuthorizationClient.ts'
 import { loadRuntimeConfig, type RuntimeConfig } from '../config/runtime.ts'
@@ -145,6 +146,10 @@ export function createDashboardRuntime(
           sessionSecret: config.auth.sessionSecret,
         })
       : undefined
+  const userAdministration =
+    config.auth.mode === 'database'
+      ? createMysqlUserAdministration(pool)
+      : undefined
   const allowedRecordingHosts = hostList(env)
   const imports =
     options.cycleImports === 'local-disk'
@@ -231,6 +236,7 @@ export function createDashboardRuntime(
     verifier,
     credentials,
     loginService,
+    userAdministration,
     oidcAuthorizationClient,
     webDistRoot: options.webDistRoot,
   })

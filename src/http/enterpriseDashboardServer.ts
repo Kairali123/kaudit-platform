@@ -51,6 +51,11 @@ import type {
   TokenVerifier,
 } from '../auth/types.ts'
 import type { AuditSink } from '../audit/types.ts'
+import {
+  UserAdminError,
+  type AssignableRole,
+  type UserAdministrationPort,
+} from '../identity/userAdministration.ts'
 import type { CycleImportService } from '../imports/types.ts'
 import type { ImportAnalysisService } from '../imports/analysis.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
@@ -141,6 +146,7 @@ interface Dependencies {
   verifier: TokenVerifier | null
   credentials?: CredentialRepository
   loginService?: LoginServicePort
+  userAdministration?: UserAdministrationPort
   /**
    * The authorization-code browser flow's protocol edge. Constructed by the
    * shared runtime factory only when `config.auth.browserFlow` is set, and
@@ -190,6 +196,7 @@ const APP_ROUTES = new Set([
   '/audits',
   '/audits/call',
   '/call-audit',
+  '/users',
   CALL_AUDIT_SETTINGS_PAGE_ROUTE,
   '/imports/new',
 ])
@@ -207,6 +214,7 @@ const API_ROUTES = new Set([
   '/api/v1/audit-call',
   '/api/v1/audit-audio',
   '/api/v1/imports',
+  '/api/v1/users',
   CALL_AUDIT_REPORT_ROUTE,
   CALL_AUDIT_SETTINGS_ROUTE,
   CALL_AUDIT_RULE_TEST_ROUTE,
@@ -238,6 +246,14 @@ const MAX_RULE_TEST_BODY_BYTES = 1024 * 1024
 
 const PUBLIC_API_ROUTES = new Set(['/api/v1/auth/config'])
 const PUBLIC_POST_ROUTES = new Set(['/api/v1/auth/login'])
+const USER_ADMIN_WRITE_ROUTES = new Set([
+  '/api/v1/users/create',
+  '/api/v1/users/update',
+  '/api/v1/users/activation',
+  '/api/v1/users/password',
+  '/api/v1/users/tombstone',
+])
+const MAX_USER_ADMIN_BODY_BYTES = 16 * 1024
 
 /**
  * The two public GETs of the authorization-code browser flow.
@@ -1120,6 +1136,22 @@ async function apiResponse(
         'Aggregate data only; raw audio and transcripts are not available in this app.',
     }
   }
+  if (pathname === '/api/v1/users') {
+    const limit = Number(url.searchParams.get('limit') ?? 50)
+    const offset = Number(url.searchParams.get('offset') ?? 0)
+    const administration = dependencies.userAdministration
+    if (!administration) {
+      throw Object.assign(new Error('User administration is unavailable'), {
+        code: 'USER_ADMIN_UNAVAILABLE',
+        status: 503,
+      })
+    }
+    return administration.listUsers({
+      actorUserId: context.user.id,
+      limit,
+      offset,
+    })
+  }
   if (pathname === '/api/v1/periods') {
     return collectBillingMonths(dependencies.pool)
   }
@@ -1317,6 +1349,8 @@ const BOUNDED_UNAVAILABLE_TITLES: Readonly<Record<string, string>> = {
   IMPORT_NOT_AVAILABLE: 'Imports are not available on this server',
   IMPORT_ANALYSIS_NOT_CONFIGURED:
     'Import analysis is not configured on this server',
+  USER_ADMIN_UNAVAILABLE:
+    'User administration is not available on this server',
 }
 
 /**
@@ -1334,6 +1368,10 @@ function importAction(pathname: string): string {
 /** Audit-log action for an API read. Distinct per route, never derived loosely. */
 function apiAction(pathname: string): string {
   if (pathname === '/api/v1/me') return 'identity.read'
+  if (pathname === '/api/v1/users') return 'user_accounts.read'
+  if (pathname.startsWith('/api/v1/users/')) {
+    return `user_accounts.${pathname.slice('/api/v1/users/'.length)}`
+  }
   if (pathname === CALL_AUDIT_REPORT_ROUTE) {
     return 'call_audit_report.read'
   }
@@ -1355,6 +1393,7 @@ function apiPermission(pathname: string): string {
     pathname === CALL_AUDIT_SETTINGS_ROUTE ||
     pathname === CALL_AUDIT_RULE_TEST_ROUTE
   ) return 'config:manage'
+  if (pathname === '/api/v1/users') return 'user:manage'
   if (
     pathname === '/api/v1/audits' ||
     pathname === '/api/v1/audit-call' ||
@@ -1394,6 +1433,7 @@ function pruneApiCache(cache: Map<string, ApiCacheEntry>): void {
 
 function cacheTtlMs(pathname: string): number {
   if (pathname === '/api/v1/me') return 0
+  if (pathname === '/api/v1/users') return 0
   if (
     pathname === '/api/v1/audit-call' ||
     pathname === '/api/v1/audit-audio'
@@ -1487,6 +1527,9 @@ export function createEnterpriseDashboardServer(
     const isRuleTestPost =
       request.method === 'POST' &&
       CALL_AUDIT_RULE_TEST_ROUTES.has(url.pathname)
+    const isUserAdminPost =
+      request.method === 'POST' &&
+      USER_ADMIN_WRITE_ROUTES.has(url.pathname)
     if (
       request.method === 'GET' &&
       (IMPORT_WRITE_ROUTES.has(url.pathname) ||
@@ -1507,7 +1550,8 @@ export function createEnterpriseDashboardServer(
       !isImportPost &&
       !isPublicPost &&
       !isSettingsPost &&
-      !isRuleTestPost
+      !isRuleTestPost &&
+      !isUserAdminPost
     ) {
       problem(
         response,
@@ -1591,6 +1635,7 @@ export function createEnterpriseDashboardServer(
       API_ROUTES.has(url.pathname) ||
       PUBLIC_API_ROUTES.has(url.pathname) ||
       PUBLIC_POST_ROUTES.has(url.pathname) ||
+      USER_ADMIN_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
       APP_ROUTES.has(url.pathname) ||
@@ -1904,6 +1949,62 @@ export function createEnterpriseDashboardServer(
     let context: AuthContext | null = null
     try {
       context = await authenticate(request, dependencies)
+      if (isUserAdminPost) {
+        requirePermission(context, 'user:manage')
+        const administration = dependencies.userAdministration
+        if (!administration) {
+          throw Object.assign(new Error('User administration is unavailable'), {
+            code: 'USER_ADMIN_UNAVAILABLE',
+            status: 503,
+          })
+        }
+        const body = await readJsonBody(
+          request,
+          MAX_USER_ADMIN_BODY_BYTES,
+          'INVALID_USER_ADMIN_REQUEST',
+        )
+        const input =
+          body && typeof body === 'object' && !Array.isArray(body)
+            ? body as Record<string, unknown>
+            : {}
+        const actorUserId = context.user.id
+        const result =
+          url.pathname === '/api/v1/users/create'
+            ? await administration.createUser({
+                actorUserId,
+                username: input.username as string,
+                email: input.email as string,
+                password: input.password as string,
+                role: input.role as AssignableRole,
+              })
+            : url.pathname === '/api/v1/users/update'
+              ? await administration.updateUser({
+                  actorUserId,
+                  targetUserId: input.userId as string,
+                  username: input.username as string,
+                  email: input.email as string,
+                  role: input.role as AssignableRole,
+                })
+              : url.pathname === '/api/v1/users/activation'
+                ? await administration.setUserActivation({
+                    actorUserId,
+                    targetUserId: input.userId as string,
+                    active: input.active as boolean,
+                  })
+                : url.pathname === '/api/v1/users/password'
+                  ? await administration.resetUserPassword({
+                      actorUserId,
+                      targetUserId: input.userId as string,
+                      password: input.password as string,
+                    })
+                  : await administration.tombstoneUser({
+                      actorUserId,
+                      targetUserId: input.userId as string,
+                    })
+        apiCache.clear()
+        sendJson(response, correlation, result)
+        return
+      }
       if (isSettingsPost) {
         requirePermission(context, 'config:manage')
         const created = await createCallAuditRuleVersion(
@@ -2206,6 +2307,8 @@ export function createEnterpriseDashboardServer(
         url.pathname === '/audits' ||
           url.pathname === '/audits/call'
           ? 'audit:inspect'
+          : url.pathname === '/users'
+            ? 'user:manage'
           : url.pathname === '/imports/new'
             ? 'import:write'
             : url.pathname === CALL_AUDIT_SETTINGS_PAGE_ROUTE
@@ -2266,12 +2369,17 @@ export function createEnterpriseDashboardServer(
         // Privacy-safe structured logging below is the fallback when the
         // protected database audit sink is unavailable.
       }
+      const userAdminFailure = error instanceof UserAdminError
       const safeLog = {
         level: authFailure ? 'warn' : 'error',
         event: authFailure
           ? 'access_denied'
           : 'dashboard_request_failed',
-        code: authFailure ? error.code : 'INTERNAL_ERROR',
+        code: authFailure
+          ? error.code
+          : userAdminFailure
+            ? error.code
+            : 'INTERNAL_ERROR',
         correlationId: correlation,
         occurredAt: new Date().toISOString(),
       }
@@ -2291,6 +2399,23 @@ export function createEnterpriseDashboardServer(
           error.status,
           error.code,
           error.message,
+          correlation,
+        )
+      } else if (userAdminFailure) {
+        const status = error.kind === 'input'
+          ? 400
+          : error.kind === 'refusal'
+            ? 409
+            : 503
+        problem(
+          response,
+          status,
+          error.code,
+          error.kind === 'input'
+            ? 'User details are invalid'
+            : error.kind === 'refusal'
+              ? 'User account change was refused'
+              : 'User administration is temporarily unavailable',
           correlation,
         )
       } else {

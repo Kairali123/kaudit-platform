@@ -15,6 +15,7 @@ import {
   Sparkles,
   ScanSearch,
   UploadCloud,
+  Users,
   X,
   type LucideIcon,
 } from 'lucide-react'
@@ -75,6 +76,12 @@ const NAVIGATION_GROUPS: NavGroup[] = [
     items: [
       { to: '/', label: 'Home', icon: Home, end: true },
       { to: '/overview', label: 'Overview', icon: Gauge },
+      {
+        to: '/users',
+        label: 'User management',
+        icon: Users,
+        admin: true,
+      },
     ],
   },
   {

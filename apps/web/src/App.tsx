@@ -13,6 +13,7 @@ import { ImportPage } from './pages/ImportPage'
 import { AuditCallDetailPage } from './pages/AuditCallDetailPage'
 import { CallAuditReportPage } from './pages/CallAuditReportPage'
 import { CallAuditSettingsPage } from './pages/CallAuditSettingsPage'
+import { UserManagementPage } from './pages/UserManagementPage'
 
 export function App() {
   return (
@@ -38,6 +39,7 @@ export function App() {
           element={<AuditCallDetailPage />}
         />
         <Route path="imports/new" element={<ImportPage />} />
+        <Route path="users" element={<UserManagementPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

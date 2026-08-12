@@ -33,6 +33,37 @@ export interface AuthConfig {
   passwordLoginSupported: boolean
 }
 
+export type UserRole = 'admin' | 'user'
+
+export interface UserAdminListItem {
+  id: string
+  username: string
+  email: string | null
+  displayName: string | null
+  userStatus: string
+  credentialStatus: string
+  roles: string[]
+  maxSensitivityTier: string
+  lastLoginAt: string | null
+  passwordChangedAt: string | null
+  disabledAt: string | null
+  createdAt: string | null
+}
+
+export interface UserAdminListPage {
+  users: UserAdminListItem[]
+  limit: number
+  offset: number
+}
+
+export interface UserAdminChangeResult {
+  userId: string
+  action: string
+  changed: boolean
+  sessionVersion: number
+  auditMode: 'hash-chained' | 'legacy' | null
+}
+
 export interface BillingPeriodsData {
   generatedAt: string
   defaultMonth: string | null
