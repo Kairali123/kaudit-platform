@@ -69,6 +69,25 @@ test('accepts database authentication in production with bounded sessions', () =
   assert.equal(config.auth.sessionTtlSeconds, 28_800)
 })
 
+test('database mode leaves prior OIDC browser settings dormant for rollback', () => {
+  const config = loadRuntimeConfig({
+    ...base(),
+    NODE_ENV: 'production',
+    DB_TLS_MODE: 'disabled',
+    KAUDIT_AUTH_MODE: 'database',
+    KAUDIT_SECURE_HOST: '0.0.0.0',
+    KAUDIT_DATABASE_SESSION_SECRET:
+      'synthetic-database-session-secret-at-least-32-characters',
+    KAUDIT_OIDC_BROWSER_FLOW: 'true',
+    KAUDIT_OIDC_CLIENT_ID: 'dormant-client',
+    KAUDIT_OIDC_CLIENT_SECRET: 'dormant-secret',
+    KAUDIT_OIDC_REDIRECT_URI:
+      'https://audit.example.test/api/v1/auth/oidc/callback',
+  })
+  assert.equal(config.auth.mode, 'database')
+  assert.equal(JSON.stringify(config).includes('dormant'), false)
+})
+
 function productionOidc(): NodeJS.ProcessEnv {
   return {
     ...base(),

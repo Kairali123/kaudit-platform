@@ -314,7 +314,10 @@ export function evaluateVercelReleasePreflight(
   // Presence only. `KAUDIT_OIDC_CLIENT_SECRET` is never read, compared, shaped,
   // or counted beyond "non-blank", and only its NAME can appear in a finding.
   const browserFlowGate = env[OIDC_BROWSER_FLOW_GATE]?.trim().toLowerCase()
-  if (
+  if (authMode === 'database') {
+    // Dormant by contract. Retaining the previous OIDC values makes rollback a
+    // one-variable operation and database mode never constructs the client.
+  } else if (
     browserFlowGate &&
     browserFlowGate !== 'true' &&
     browserFlowGate !== 'false'

@@ -87,6 +87,19 @@ test('a database-auth production candidate passes without OIDC settings', () => 
   assert.deepEqual(report.findings, [])
 })
 
+test('database auth may retain dormant OIDC settings for one-variable rollback', () => {
+  const env = productionEnv()
+  env.KAUDIT_AUTH_MODE = 'database'
+  env.KAUDIT_DATABASE_SESSION_SECRET =
+    'synthetic-database-session-secret-at-least-32-characters'
+  env.KAUDIT_OIDC_BROWSER_FLOW = 'true'
+  env.KAUDIT_OIDC_CLIENT_ID = 'dormant-client'
+  env.KAUDIT_OIDC_CLIENT_SECRET = 'dormant-secret'
+  env.KAUDIT_OIDC_REDIRECT_URI =
+    'https://audit.example.test/api/v1/auth/oidc/callback'
+  assert.equal(evaluate(env).ok, true)
+})
+
 test('success output is a small fixed JSON object', () => {
   assert.equal(
     formatPreflightReport(evaluate(productionEnv())),

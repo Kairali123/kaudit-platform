@@ -382,9 +382,11 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     sslCaInline,
   }
 
-  // Evaluated for every mode so a browser-flow variable left on a local or
-  // preview deployment is reported rather than ignored.
-  const browserFlow = resolveOidcBrowserFlow(env)
+  // Database auth deliberately leaves OIDC values dormant so an operator can
+  // roll back by changing one mode variable. Local and preview retain their
+  // strict development-only ambiguity checks.
+  const browserFlow =
+    mode === 'database' ? null : resolveOidcBrowserFlow(env)
   if (browserFlow && mode !== 'oidc') {
     throw new ConfigurationError(
       `${OIDC_BROWSER_FLOW_GATE} requires KAUDIT_AUTH_MODE=oidc`,
