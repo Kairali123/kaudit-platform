@@ -309,13 +309,20 @@ async function main(): Promise<CallAuditBatchRunSummary> {
   const maxCandidates = optionalPositiveInteger(ENV.maxCandidates, null)
 
   let config: ReturnType<typeof loadRuntimeConfig>
-  let ssl: { ca: string; rejectUnauthorized: true } | undefined
+  // `verifyIdentity` is a second decision, not a restatement of the first:
+  // mysql2 installs a `checkServerIdentity` that returns `undefined` unless the
+  // flag is set, so `rejectUnauthorized` alone proves only that the peer chains
+  // to the configured CA — not that the certificate was issued for this host.
+  let ssl:
+    | { ca: string; rejectUnauthorized: true; verifyIdentity: true }
+    | undefined
   try {
     config = loadRuntimeConfig(process.env)
     ssl = config.database.sslCaFile
       ? {
           ca: fs.readFileSync(config.database.sslCaFile, 'utf8'),
           rejectUnauthorized: true,
+          verifyIdentity: true,
         }
       : undefined
   } catch {

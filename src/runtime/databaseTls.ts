@@ -6,10 +6,20 @@ import { ConfigurationError, type RuntimeConfig } from '../config/runtime.ts'
  *
  * `rejectUnauthorized` is fixed true and is not configurable: a CA that is not
  * actually verified against is decoration.
+ *
+ * `verifyIdentity` is fixed true for the same reason, and it is a second
+ * decision rather than a restatement of the first: mysql2 replaces Node's
+ * `checkServerIdentity` with a function that returns `undefined` whenever this
+ * flag is absent, so `rejectUnauthorized` alone proves only that the peer
+ * certificate chains to the configured CA — not that it was issued for
+ * `DB_HOST`. Any other host holding a certificate from the same authority would
+ * satisfy the connection. Both flags are required to make a host-specific leaf
+ * certificate mean what it looks like it means.
  */
 export interface DatabaseTlsOptions {
   ca: string
   rejectUnauthorized: true
+  verifyIdentity: true
 }
 
 export type CaFileReader = (filePath: string) => string
@@ -53,15 +63,33 @@ function restoreNewlines(value: string): string {
  * written anywhere — so every error raised below names the *variable*, never any
  * part of its value.
  *
- * Returns `undefined` only outside production with no CA source configured,
- * which is the existing loopback-development behaviour.
+ * Returns `undefined` in exactly two cases, and they are different decisions:
+ * `DB_TLS_MODE=disabled`, which an operator stated; and, outside production
+ * only, no CA source configured, which is the existing loopback-development
+ * behaviour. Production never reaches the second case.
  */
 export function resolveDatabaseTls(
   config: RuntimeConfig,
   env: NodeJS.ProcessEnv,
   readCaFile: CaFileReader = defaultReadCaFile,
 ): DatabaseTlsOptions | undefined {
-  const { sslCaFile, sslCaInline } = config.database
+  const { tlsMode, sslCaFile, sslCaInline } = config.database
+
+  // Plaintext, because the environment says so in as many words. No mysql2 `ssl`
+  // option is produced at all — an empty or partial one would still start a
+  // handshake, and the point of this mode is that there isn't one.
+  //
+  // Configured trust material contradicts the mode and is refused rather than
+  // dropped, for the same reason `loadRuntimeConfig` refuses it: a CA that is
+  // present and unused looks, in a settings page, exactly like a CA in force.
+  if (tlsMode === 'disabled') {
+    if (sslCaFile || sslCaInline) {
+      throw new ConfigurationError(
+        'DB_TLS_MODE=disabled connects in plaintext and cannot use DB_SSL_CA_FILE or DB_SSL_CA_PEM',
+      )
+    }
+    return undefined
+  }
 
   // `loadRuntimeConfig` already rejects both-at-once and a production runtime
   // with neither. Re-checked here because this function is what actually decides
@@ -74,8 +102,10 @@ export function resolveDatabaseTls(
   }
   if (!sslCaFile && !sslCaInline) {
     if (config.environment === 'production') {
+      // A missing CA is never read as consent to plaintext. `DB_TLS_MODE` is
+      // the only thing that says that, and it did not.
       throw new ConfigurationError(
-        'DB_SSL_CA_FILE or DB_SSL_CA_PEM is required in production',
+        'DB_SSL_CA_FILE or DB_SSL_CA_PEM is required in production unless DB_TLS_MODE=disabled is set explicitly',
       )
     }
     return undefined
@@ -88,7 +118,7 @@ export function resolveDatabaseTls(
         'DB_SSL_CA_PEM does not contain a PEM certificate',
       )
     }
-    return { ca, rejectUnauthorized: true }
+    return { ca, rejectUnauthorized: true, verifyIdentity: true }
   }
 
   let ca: string
@@ -104,5 +134,5 @@ export function resolveDatabaseTls(
       'DB_SSL_CA_FILE does not contain a PEM certificate',
     )
   }
-  return { ca, rejectUnauthorized: true }
+  return { ca, rejectUnauthorized: true, verifyIdentity: true }
 }

@@ -3,6 +3,24 @@ import { OIDC_CALLBACK_ROUTE } from '../auth/oidcBrowserFlow.ts'
 export type AuthMode = 'oidc' | 'local' | 'preview'
 
 /**
+ * How this deployment connects to MySQL, as an explicit operator decision.
+ *
+ * `required` is the default and the only mode that verifies anything: exactly
+ * one CA source, verified, for this host. Production refuses to boot without a
+ * CA in this mode.
+ *
+ * `disabled` is a plaintext connection, chosen to match the transport the CRM
+ * already uses against the same database. It is deliberately NOT inferable: a
+ * missing CA never means "plaintext", in any environment. Only the exact word
+ * below turns TLS off, so the downgrade is a line in a configuration an
+ * operator can be shown rather than the absence of one.
+ */
+export type DatabaseTlsMode = 'required' | 'disabled'
+
+/** The variable that carries {@link DatabaseTlsMode}. */
+export const DB_TLS_MODE = 'DB_TLS_MODE'
+
+/**
  * The browser half of OIDC: this application runs the authorization-code flow
  * itself instead of receiving a token from an identity-aware proxy.
  *
@@ -29,6 +47,12 @@ export interface RuntimeConfig {
     name: string
     user: string
     password: string
+    /**
+     * The transport decision, resolved from `DB_TLS_MODE`. See
+     * {@link DatabaseTlsMode}. Never inferred from whether a CA happens to be
+     * configured, in either direction.
+     */
+    tlsMode: DatabaseTlsMode
     sslCaFile: string | null
     /**
      * Whether an inline CA PEM (`DB_SSL_CA_PEM`) is configured — the fact only.
@@ -114,6 +138,22 @@ function bool(env: NodeJS.ProcessEnv, name: string, fallback = false): boolean {
   if (raw === 'true') return true
   if (raw === 'false') return false
   throw new ConfigurationError(`${name} must be true or false`)
+}
+
+/**
+ * The transport mode, from the one variable that decides it.
+ *
+ * Unset or blank is `required`, so an environment that says nothing keeps the
+ * verified-TLS posture it has today — the default is the closed one, and every
+ * other value is a typo rather than a guess to be resolved. `Disabled` and
+ * `DISABLED` are accepted for the same reason the other flags in this file
+ * accept them: case is not a second decision. Nothing else is.
+ */
+function databaseTlsMode(env: NodeJS.ProcessEnv): DatabaseTlsMode {
+  const raw = env[DB_TLS_MODE]?.trim().toLowerCase()
+  if (!raw) return 'required'
+  if (raw === 'required' || raw === 'disabled') return raw
+  throw new ConfigurationError(`${DB_TLS_MODE} must be required or disabled`)
 }
 
 function httpsUrl(value: string, name: string): string {
@@ -271,27 +311,50 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   }
 
   /**
-   * Exactly one MySQL CA source.
+   * The transport, then the authority — in that order, because the first
+   * question decides whether the second one is asked at all.
    *
-   * `DB_SSL_CA_FILE` is a path mounted by the host, which a persistent server or
-   * worker has. A Vercel Function does not: nothing mounts a secret file there,
-   * so the CA arrives as an inline PEM in `DB_SSL_CA_PEM` instead.
+   * In `required` mode: exactly one MySQL CA source. `DB_SSL_CA_FILE` is a path
+   * mounted by the host, which a persistent server or worker has. A Vercel
+   * Function does not: nothing mounts a secret file there, so the CA arrives as
+   * an inline PEM in `DB_SSL_CA_PEM` instead.
    *
    * Both at once is rejected everywhere rather than silently preferring one. If
    * an operator rotates the CA in one place and the runtime happens to read the
    * other, the deployment keeps trusting a stale authority and nothing says so.
+   *
+   * In `disabled` mode there is no handshake, so a CA is not merely unnecessary
+   * — it is a contradiction. Either variable is rejected rather than ignored:
+   * an operator who supplied trust material believes it is being used, and a
+   * plaintext connection that quietly discards it is exactly the gap between
+   * what a configuration looks like and what it does.
    */
+  const tlsMode = databaseTlsMode(env)
   const sslCaFile = optional(env, 'DB_SSL_CA_FILE')
   const sslCaInline = Boolean(env.DB_SSL_CA_PEM?.trim())
-  if (sslCaFile && sslCaInline) {
-    throw new ConfigurationError(
-      'DB_SSL_CA_FILE and DB_SSL_CA_PEM are both set; configure exactly one MySQL CA source',
-    )
-  }
-  if (environment === 'production' && !sslCaFile && !sslCaInline) {
-    throw new ConfigurationError(
-      'DB_SSL_CA_FILE or DB_SSL_CA_PEM is required in production',
-    )
+  if (tlsMode === 'disabled') {
+    const configuredCa = [
+      sslCaFile ? 'DB_SSL_CA_FILE' : null,
+      sslCaInline ? 'DB_SSL_CA_PEM' : null,
+    ].filter((name): name is string => name !== null)
+    if (configuredCa.length > 0) {
+      throw new ConfigurationError(
+        `${DB_TLS_MODE}=disabled connects in plaintext and cannot use ${configuredCa.join(
+          ' or ',
+        )}; unset it or set ${DB_TLS_MODE}=required`,
+      )
+    }
+  } else {
+    if (sslCaFile && sslCaInline) {
+      throw new ConfigurationError(
+        'DB_SSL_CA_FILE and DB_SSL_CA_PEM are both set; configure exactly one MySQL CA source',
+      )
+    }
+    if (environment === 'production' && !sslCaFile && !sslCaInline) {
+      throw new ConfigurationError(
+        `DB_SSL_CA_FILE or DB_SSL_CA_PEM is required in production unless ${DB_TLS_MODE}=disabled is set explicitly`,
+      )
+    }
   }
 
   const database = {
@@ -300,6 +363,7 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     name: required(env, 'DB_NAME'),
     user: required(env, 'DB_USER'),
     password: required(env, 'DB_PASSWORD'),
+    tlsMode,
     sslCaFile,
     sslCaInline,
   }

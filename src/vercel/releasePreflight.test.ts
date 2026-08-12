@@ -77,7 +77,7 @@ test('a complete production candidate passes with no findings', () => {
 test('success output is a small fixed JSON object', () => {
   assert.equal(
     formatPreflightReport(evaluate(productionEnv())),
-    '{"preflight":"vercel-release","result":"pass","checks":12,"optionalFeatures":[]}',
+    '{"preflight":"vercel-release","result":"pass","checks":13,"optionalFeatures":[]}',
   )
 })
 
@@ -257,6 +257,86 @@ test('a truncated inline CA is rejected on shape alone', () => {
   })
   assert.deepEqual(codes(report), ['DB_CA_PEM_MALFORMED'])
   assert.deepEqual(variablesFor(report, 'DB_CA_PEM_MALFORMED'), ['DB_SSL_CA_PEM'])
+})
+
+// ---------------------------------------------------------------------------
+// DB_TLS_MODE — the transport a release is being made with
+// ---------------------------------------------------------------------------
+
+test('an explicitly disabled transport passes production with no CA at all', () => {
+  // The accepted downgrade, released deliberately: plaintext to the same MySQL
+  // instance the CRM connects to. It passes only because the environment states
+  // the mode — the case immediately below is the same environment without it.
+  const env = productionEnv()
+  delete env.DB_SSL_CA_PEM
+  env.DB_TLS_MODE = 'disabled'
+  const report = evaluate(env)
+  assert.deepEqual(report.findings, [])
+  assert.equal(report.ok, true)
+})
+
+test('a missing CA without the explicit mode still fails production', () => {
+  const env = productionEnv()
+  delete env.DB_SSL_CA_PEM
+  for (const mode of [undefined, 'required']) {
+    if (mode) env.DB_TLS_MODE = mode
+    else delete env.DB_TLS_MODE
+    assert.ok(codes(evaluate(env)).includes('DB_CA_SOURCE_MISSING'))
+  }
+})
+
+test('the required mode is what an unset mode already was', () => {
+  const report = evaluate({ ...productionEnv(), DB_TLS_MODE: 'required' })
+  assert.deepEqual(report.findings, [])
+  assert.equal(report.ok, true)
+})
+
+test('a CA set beside the disabled mode is reported, not ignored', () => {
+  for (const [source, expected] of [
+    [{ DB_SSL_CA_PEM: SYNTHETIC_CA_PEM }, ['DB_TLS_MODE', 'DB_SSL_CA_PEM']],
+    [
+      { DB_SSL_CA_FILE: '/run/secrets/db-ca.pem' },
+      ['DB_TLS_MODE', 'DB_SSL_CA_FILE'],
+    ],
+  ] as const) {
+    const env = productionEnv()
+    delete env.DB_SSL_CA_PEM
+    const report = evaluate({ ...env, ...source, DB_TLS_MODE: 'disabled' })
+    assert.ok(codes(report).includes('DB_TLS_DISABLED_WITH_CA'))
+    assert.deepEqual(variablesFor(report, 'DB_TLS_DISABLED_WITH_CA'), expected)
+    // Names only, as everywhere else in this report.
+    assert.equal(
+      JSON.stringify(report).includes('BEGIN CERTIFICATE'),
+      false,
+    )
+    assert.equal(JSON.stringify(report).includes('/run/secrets'), false)
+  }
+})
+
+test('an unrecognised transport mode is a stop, not a fallback', () => {
+  for (const written of ['off', 'false', '0', 'none', 'prefer']) {
+    const report = evaluate({ ...productionEnv(), DB_TLS_MODE: written })
+    assert.ok(
+      codes(report).includes('DB_TLS_MODE_INVALID'),
+      `${written} must be reported`,
+    )
+    assert.deepEqual(variablesFor(report, 'DB_TLS_MODE_INVALID'), ['DB_TLS_MODE'])
+    // And the accepted parser refuses the same environment for the same reason,
+    // so the preflight is not passing a deployment the runtime would reject.
+    assert.ok(codes(report).includes('RUNTIME_CONFIG_INVALID'))
+    assert.deepEqual(variablesFor(report, 'RUNTIME_CONFIG_INVALID'), [
+      'DB_TLS_MODE',
+    ])
+  }
+})
+
+test('an invalid mode is never treated as the disabled one', () => {
+  // `off` means plaintext to whoever wrote it. It must not act like it.
+  const env = productionEnv()
+  delete env.DB_SSL_CA_PEM
+  const report = evaluate({ ...env, DB_TLS_MODE: 'off' })
+  assert.equal(report.ok, false)
+  assert.ok(codes(report).includes('DB_CA_SOURCE_MISSING'))
 })
 
 test('a single-line CA with escaped separators is accepted', () => {

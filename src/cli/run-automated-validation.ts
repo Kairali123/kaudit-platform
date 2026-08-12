@@ -64,10 +64,14 @@ async function main(): Promise<void> {
   )
   if (!period) throw new Error('A specific billing month is required')
   const config = loadRuntimeConfig(process.env)
+  // Both flags, always: mysql2 skips the hostname check unless `verifyIdentity`
+  // is set, so a CA-only pool would accept any host holding any certificate the
+  // configured authority ever issued.
   const ssl = config.database.sslCaFile
     ? {
         ca: fs.readFileSync(config.database.sslCaFile, 'utf8'),
         rejectUnauthorized: true,
+        verifyIdentity: true,
       }
     : undefined
   const pool = mysql.createPool({

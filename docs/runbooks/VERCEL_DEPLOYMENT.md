@@ -102,7 +102,26 @@ DB_USER
 DB_PASSWORD
 ```
 
-**MySQL TLS — exactly one CA source**
+**MySQL transport — an explicit decision**
+
+```
+DB_TLS_MODE        required (default) | disabled
+```
+
+`required` is the verified-TLS posture: exactly one CA source, `rejectUnauthorized`
+and `verifyIdentity` both on, so the certificate must chain to the configured
+authority **and** have been issued for `DB_HOST`.
+
+`disabled` is a plaintext connection, matching the transport the CRM already uses
+against the same database instance. It is an accepted downgrade, and it only ever
+happens because this variable says so: a missing CA is **never** read as consent to
+plaintext, in production or anywhere else. Unset or blank means `required`, and any
+other value — `off`, `false`, `0`, `prefer` — is refused at startup and by the
+preflight rather than guessed at. In `disabled` mode the runtime hands the driver no
+`ssl` option at all, and **either CA variable being set is rejected**: trust material
+that would be silently ignored is a configuration that lies about its own connection.
+
+**MySQL TLS — exactly one CA source (`required` mode only)**
 
 ```
 DB_SSL_CA_PEM      inline CA PEM; use this on Vercel
@@ -110,10 +129,10 @@ DB_SSL_CA_FILE     mounted CA path; use this on hosts that mount secret files
 ```
 
 Vercel mounts no secret file, so the CA arrives inline as `DB_SSL_CA_PEM`. A
-single-line value with `\n` separators is accepted. Production requires one of the two
-and **rejects both being set at once**: after a CA rotation only one is current, and a
-runtime that silently prefers the other would keep trusting a stale authority. The CA
-content is never logged, returned, hashed, or persisted.
+single-line value with `\n` separators is accepted. In `required` mode production
+requires one of the two and **rejects both being set at once**: after a CA rotation
+only one is current, and a runtime that silently prefers the other would keep trusting
+a stale authority. The CA content is never logged, returned, hashed, or persisted.
 
 Workers and CLIs continue to read `DB_SSL_CA_FILE`. If a host runs both a worker and a
 web deployment, give each its own environment with its own single CA source.
@@ -169,8 +188,8 @@ involved. No value, path, URL, issuer, CA text, key, or thrown-error text is eve
 printed, so the output is safe to keep in a CI log.
 
 ```
-{"preflight":"vercel-release","result":"pass","checks":11,"optionalFeatures":[]}
-{"preflight":"vercel-release","result":"fail","checks":11,"errors":[{"code":"DB_CA_SOURCE_AMBIGUOUS","variables":["DB_SSL_CA_FILE","DB_SSL_CA_PEM"]}]}
+{"preflight":"vercel-release","result":"pass","checks":13,"optionalFeatures":[]}
+{"preflight":"vercel-release","result":"fail","checks":13,"errors":[{"code":"DB_CA_SOURCE_AMBIGUOUS","variables":["DB_SSL_CA_FILE","DB_SSL_CA_PEM"]}]}
 ```
 
 If the command cannot get as far as a verdict — the repository manifest is unreadable
@@ -184,8 +203,14 @@ broken checkout, not as an environment finding:
 ```
 
 It checks the Node major against `engines.node`, `NODE_ENV=production`,
-`KAUDIT_TRUST_PROXY=true`, the required MySQL settings, **exactly one** CA source
-(and that an inline `DB_SSL_CA_PEM` actually carries a certificate), OIDC identity
+`KAUDIT_TRUST_PROXY=true`, the required MySQL settings, that `DB_TLS_MODE` is one of
+the two accepted words (`DB_TLS_MODE_INVALID`), and then the CA source *for the mode
+being released*: in `required` mode **exactly one** source (and that an inline
+`DB_SSL_CA_PEM` actually carries a certificate); in `disabled` mode no source at all,
+reporting `DB_TLS_DISABLED_WITH_CA` with the mode and the offending variable if one is
+set. A release with `DB_TLS_MODE=disabled` and no CA passes — that is the accepted
+plaintext posture — while the same environment *without* the mode still fails with
+`DB_CA_SOURCE_MISSING`. It also checks OIDC identity
 and its approved signing algorithms, the absence of the local-password and import
 variables that do not belong on a function, and that an explicitly enabled optional
 feature has its own configuration — `KAUDIT_CALL_AUDIT_RULE_TEST_ENABLED=true`

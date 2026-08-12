@@ -53,6 +53,7 @@ const config: RuntimeConfig = {
     name: 'synthetic',
     user: 'synthetic',
     password: 'synthetic',
+    tlsMode: 'required',
     sslCaFile: null,
     sslCaInline: false,
   },

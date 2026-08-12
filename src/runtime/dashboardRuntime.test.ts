@@ -102,6 +102,7 @@ test('an inline CA PEM becomes the verified MySQL authority', () => {
   assert.deepEqual(options.ssl, {
     ca: SYNTHETIC_CA_PEM,
     rejectUnauthorized: true,
+    verifyIdentity: true,
   })
 })
 
@@ -115,6 +116,7 @@ test('a single-line inline CA PEM has its separators restored', () => {
   assert.deepEqual(options.ssl, {
     ca: SYNTHETIC_CA_PEM,
     rejectUnauthorized: true,
+    verifyIdentity: true,
   })
 })
 
@@ -135,7 +137,30 @@ test('a file CA keeps working and is read from the configured path', () => {
   assert.deepEqual(options.ssl, {
     ca: SYNTHETIC_CA_PEM,
     rejectUnauthorized: true,
+    verifyIdentity: true,
   })
+})
+
+test('the pool the dashboard boots verifies the server identity, not just the CA', () => {
+  // The bootstrap contract, stated separately from the CA-source cases above:
+  // whichever source supplied the certificate, the options handed to the driver
+  // must carry both flags. mysql2 skips the hostname check when `verifyIdentity`
+  // is absent, so a CA-only pool would accept any certificate that authority
+  // issued for any host.
+  for (const [env, readCaFile] of [
+    [{ ...productionOidc(), DB_SSL_CA_PEM: SYNTHETIC_CA_PEM }, undefined],
+    [
+      { ...productionOidc(), DB_SSL_CA_FILE: '/run/secrets/db-ca.pem' },
+      () => SYNTHETIC_CA_PEM,
+    ],
+  ] as const) {
+    const { options } = boot(env as NodeJS.ProcessEnv, {
+      readCaFile: readCaFile as ((filePath: string) => string) | undefined,
+    })
+    const ssl = options.ssl as { rejectUnauthorized: unknown; verifyIdentity: unknown }
+    assert.equal(ssl.verifyIdentity, true)
+    assert.equal(ssl.rejectUnauthorized, true)
+  }
 })
 
 test('production with no CA source is refused before a pool exists', () => {
@@ -208,6 +233,75 @@ test('a CA failure reports the variable and never any CA content', () => {
 test('loopback development still runs with no CA source at all', () => {
   const { options } = boot(base(), { poolProfile: 'persistent' })
   assert.equal(options.ssl, undefined)
+})
+
+test('the explicitly disabled transport boots a pool with no ssl option', () => {
+  // The accepted downgrade: production, no CA, plaintext — and reachable only
+  // because the environment says so in as many words. `ssl` is absent from the
+  // options rather than present holding `undefined`, so the object the driver
+  // receives states the transport instead of leaving it to be inferred.
+  const { options, runtime } = boot({
+    ...productionOidc(),
+    DB_TLS_MODE: 'disabled',
+  })
+  assert.equal('ssl' in options, false)
+  assert.equal(options.ssl, undefined)
+  assert.equal(runtime.config.database.tlsMode, 'disabled')
+  // The rest of the pool is untouched by the transport decision.
+  assert.equal(options.host, 'db.internal')
+  assert.equal(options.connectionLimit, 2)
+})
+
+test('a verified transport still carries its ssl option', () => {
+  // The other half of the assertion above: `ssl` is omitted for plaintext and
+  // for nothing else.
+  const { options } = boot({
+    ...productionOidc(),
+    DB_SSL_CA_PEM: SYNTHETIC_CA_PEM,
+  })
+  assert.equal('ssl' in options, true)
+})
+
+test('production without a CA and without the explicit mode is still refused', () => {
+  // A missing CA never means plaintext. Only `DB_TLS_MODE` says that.
+  const capture = capturingPool()
+  assert.throws(
+    () =>
+      createDashboardRuntime({
+        poolProfile: 'serverless',
+        cycleImports: 'unavailable',
+        env: productionOidc(),
+        createPool: capture.createPool,
+      }),
+    /DB_SSL_CA_FILE or DB_SSL_CA_PEM is required in production/,
+  )
+  assert.equal(capture.options.length, 0)
+})
+
+test('a CA configured beside the disabled mode refuses before a pool exists', () => {
+  for (const source of [
+    { DB_SSL_CA_PEM: SYNTHETIC_CA_PEM },
+    { DB_SSL_CA_FILE: '/run/secrets/db-ca.pem' },
+  ]) {
+    const capture = capturingPool()
+    assert.throws(
+      () =>
+        createDashboardRuntime({
+          poolProfile: 'serverless',
+          cycleImports: 'unavailable',
+          env: { ...productionOidc(), ...source, DB_TLS_MODE: 'disabled' },
+          createPool: capture.createPool,
+          readCaFile: () => SYNTHETIC_CA_PEM,
+        }),
+      (error: Error) => {
+        assert.ok(error instanceof ConfigurationError)
+        assert.match(error.message, /DB_TLS_MODE/)
+        assert.equal(error.message.includes('BEGIN CERTIFICATE'), false)
+        return true
+      },
+    )
+    assert.equal(capture.options.length, 0)
+  }
 })
 
 // ---------------------------------------------------------------------------

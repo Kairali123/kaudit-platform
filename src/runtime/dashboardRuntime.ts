@@ -122,7 +122,11 @@ export function createDashboardRuntime(
     database: config.database.name,
     user: config.database.user,
     password: config.database.password,
-    ssl,
+    // Present only when there is a handshake to configure. mysql2 decides
+    // whether to negotiate TLS from whether this key carries options, so a
+    // plaintext runtime hands the driver no `ssl` key at all rather than one
+    // holding `undefined` — the pool options then say what the connection is.
+    ...(ssl ? { ssl } : {}),
     connectTimeout: 10_000,
     decimalNumbers: false,
     ...poolLimits(options.poolProfile),

@@ -73,10 +73,14 @@ async function main(): Promise<void> {
     database: required('DB_NAME'),
     user: required('DB_USER'),
     password: required('DB_PASSWORD'),
+    // Both flags, always: mysql2 skips the hostname check unless
+    // `verifyIdentity` is set, so a CA-only pool would accept any host holding
+    // any certificate the configured authority ever issued.
     ssl: sslCaFile
       ? {
           ca: fs.readFileSync(sslCaFile, 'utf8'),
           rejectUnauthorized: true,
+          verifyIdentity: true,
         }
       : undefined,
     connectionLimit: 2,

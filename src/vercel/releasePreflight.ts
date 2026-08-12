@@ -1,5 +1,6 @@
 import {
   ConfigurationError,
+  DB_TLS_MODE,
   loadRuntimeConfig,
   OIDC_BROWSER_FLOW_GATE,
   OIDC_BROWSER_FLOW_VARIABLES,
@@ -39,6 +40,8 @@ export type PreflightErrorCode =
   | 'NODE_ENV_NOT_PRODUCTION'
   | 'TRUST_PROXY_NOT_ENABLED'
   | 'REQUIRED_VARIABLE_MISSING'
+  | 'DB_TLS_MODE_INVALID'
+  | 'DB_TLS_DISABLED_WITH_CA'
   | 'DB_CA_SOURCE_MISSING'
   | 'DB_CA_SOURCE_AMBIGUOUS'
   | 'DB_CA_PEM_MALFORMED'
@@ -88,6 +91,7 @@ export const PREFLIGHT_CHECKS = [
   'node-env-production',
   'trust-proxy',
   'database-settings',
+  'database-tls-mode',
   'database-ca-source',
   'auth-mode-oidc',
   'oidc-settings',
@@ -135,6 +139,7 @@ export const REPORTABLE_VARIABLES: readonly string[] = Object.freeze([
   'DB_NAME',
   'DB_USER',
   'DB_PASSWORD',
+  DB_TLS_MODE,
   'DB_SSL_CA_FILE',
   'DB_SSL_CA_PEM',
   'KAUDIT_AUTH_MODE',
@@ -229,16 +234,39 @@ export function evaluateVercelReleasePreflight(
     fail('REQUIRED_VARIABLE_MISSING', ...missingDatabase)
   }
 
-  // database-ca-source — exactly one trusted authority. Checked here on the raw
-  // variables so the operator gets the specific reason; `loadRuntimeConfig`
-  // enforces the same rule for the runtime itself.
+  // database-tls-mode — which transport this deployment is being released with,
+  // asked before anything about a CA because it decides whether a CA is even
+  // the right question. Unset is `required`, the mode the runtime defaults to.
+  //
+  // A value that is neither word is a stop, not a fallback: an operator who
+  // wrote `off` or `false` intended plaintext and would otherwise be told only
+  // that a CA is missing.
+  const tlsMode = env[DB_TLS_MODE]?.trim().toLowerCase()
+  const tlsModeValid = !tlsMode || tlsMode === 'required' || tlsMode === 'disabled'
+  if (!tlsModeValid) {
+    fail('DB_TLS_MODE_INVALID', DB_TLS_MODE)
+  }
+
+  // database-ca-source — exactly one trusted authority, in the mode that has
+  // one. Checked here on the raw variables so the operator gets the specific
+  // reason; `loadRuntimeConfig` enforces the same rules for the runtime itself.
   //
   // The CA is never read. A path is only observed to be set: opening it would
   // be a filesystem read this command has no business doing, and on Vercel the
   // path would not exist anyway because nothing mounts a secret file there.
   const caFile = set(env, 'DB_SSL_CA_FILE')
   const caInline = set(env, 'DB_SSL_CA_PEM')
-  if (caFile && caInline) {
+  if (tlsMode === 'disabled') {
+    // Plaintext by explicit decision, so a missing CA is the expected state and
+    // is not reported. A CA that IS set contradicts the stated transport and is
+    // reported with the mode beside it, because the pair is the finding.
+    const configuredCa = ['DB_SSL_CA_FILE', 'DB_SSL_CA_PEM'].filter((name) =>
+      set(env, name),
+    )
+    if (configuredCa.length > 0) {
+      fail('DB_TLS_DISABLED_WITH_CA', DB_TLS_MODE, ...configuredCa)
+    }
+  } else if (caFile && caInline) {
     fail('DB_CA_SOURCE_AMBIGUOUS', 'DB_SSL_CA_FILE', 'DB_SSL_CA_PEM')
   } else if (!caFile && !caInline) {
     fail('DB_CA_SOURCE_MISSING', 'DB_SSL_CA_FILE', 'DB_SSL_CA_PEM')

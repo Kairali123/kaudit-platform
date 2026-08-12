@@ -138,10 +138,14 @@ async function main(): Promise<void> {
     10_000,
     3_600_000,
   )
+  // Both flags, always: mysql2 skips the hostname check unless `verifyIdentity`
+  // is set, so a CA-only pool would accept any host holding any certificate the
+  // configured authority ever issued.
   const ssl = config.database.sslCaFile
     ? {
         ca: fs.readFileSync(config.database.sslCaFile, 'utf8'),
         rejectUnauthorized: true,
+        verifyIdentity: true,
       }
     : undefined
   const pool = mysql.createPool({

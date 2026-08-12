@@ -280,6 +280,44 @@ test('one pool is created and every repository shares it', () => {
   }
 })
 
+test('the pool TLS options verify the server identity, not just the CA', () => {
+  // mysql2 replaces Node's `checkServerIdentity` with a function that returns
+  // `undefined` whenever `verifyIdentity` is absent, so `rejectUnauthorized`
+  // alone proves only that the peer chains to the configured authority — any
+  // other host holding a certificate from it would satisfy the connection.
+  const ssl = MAIN.slice(
+    positionInMain('ssl = config.database.sslCaFile'),
+    positionInMain('mysql.createPool('),
+  )
+  assert.match(ssl, /rejectUnauthorized: true,/)
+  assert.match(ssl, /verifyIdentity: true,/)
+
+  // The declared type carries both too, so a future edit that drops one is a
+  // compile error rather than a silently weaker handshake.
+  const declaration = MAIN.slice(
+    positionInMain('let ssl:'),
+    positionInMain('config = loadRuntimeConfig('),
+  )
+  assert.match(declaration, /rejectUnauthorized: true/)
+  assert.match(declaration, /verifyIdentity: true/)
+
+  // Neither flag is configurable: no environment variable, in any shape, is
+  // read as consent to weaken the handshake.
+  assert.equal(/verifyIdentity:(?!\s*true\b)/.test(MAIN), false)
+  assert.equal(/rejectUnauthorized:(?!\s*true\b)/.test(MAIN), false)
+  assert.equal(
+    /(VERIFY_IDENTITY|REJECT_UNAUTHORIZED|SSL_INSECURE|NODE_TLS)/.test(CLI_CODE),
+    false,
+  )
+})
+
+test('the CA file is read only after the execute gate', () => {
+  // The CA read is a filesystem touch on the operator's host; like the pool and
+  // the credential, it stays behind the gate.
+  assert.ok(positionInMain('!== EXECUTE_MODE') < positionInMain('readFileSync('))
+  assert.equal([...MAIN.matchAll(/readFileSync\(/g)].length, 1)
+})
+
 test('the orchestrator receives the repositories, the model, and the active rule', () => {
   const call = MAIN.slice(positionInMain('runCallAuditBatch({'))
   assert.match(call, /control: createMysqlCallAuditControlRepository\(pool\)/)

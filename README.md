@@ -90,7 +90,9 @@ numbers, customer identifiers, or health content. See `docs/FULL_DASHBOARD.md`.
 
 `npm run ui:secure` starts the protected aggregate server after migrations 0003/0004,
 user provisioning, and the environment in `.env.example` are configured. Production
-requires OIDC, a pre-provisioned active user/role, MySQL TLS, and a working
+requires OIDC, a pre-provisioned active user/role, a stated MySQL transport
+(`DB_TLS_MODE=required` with a CA, or `DB_TLS_MODE=disabled` for the plaintext
+connection the CRM uses — never inferred from a missing CA), and a working
 hash-chained audit sink; it rejects the loopback development-auth mode.
 
 Do not apply migrations or point this path at production until the staged sequence in
