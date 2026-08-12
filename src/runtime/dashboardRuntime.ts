@@ -3,6 +3,8 @@ import type http from 'node:http'
 import mysql, { type Pool, type PoolOptions } from 'mysql2/promise'
 import { createMysqlAccessRepository } from '../adapters/mysqlAccessRepo.ts'
 import { createMysqlAuditSink } from '../adapters/mysqlAuditSink.ts'
+import { createMysqlUserCredentialRepository } from '../adapters/mysqlUserCredentialRepo.ts'
+import { createMysqlLoginService } from '../adapters/mysqlLoginService.ts'
 import { createOidcVerifier } from '../auth/oidcVerifier.ts'
 import { createOidcAuthorizationClient } from '../auth/oidcAuthorizationClient.ts'
 import { loadRuntimeConfig, type RuntimeConfig } from '../config/runtime.ts'
@@ -133,6 +135,16 @@ export function createDashboardRuntime(
   })
   const access = createMysqlAccessRepository(pool)
   const audit = createMysqlAuditSink(pool)
+  const credentials =
+    config.auth.mode === 'database'
+      ? createMysqlUserCredentialRepository(pool)
+      : undefined
+  const loginService =
+    config.auth.mode === 'database' && credentials
+      ? createMysqlLoginService(pool, credentials, {
+          sessionSecret: config.auth.sessionSecret,
+        })
+      : undefined
   const allowedRecordingHosts = hostList(env)
   const imports =
     options.cycleImports === 'local-disk'
@@ -217,6 +229,8 @@ export function createDashboardRuntime(
     allowedRecordingHosts,
     callAuditRuleTestModel,
     verifier,
+    credentials,
+    loginService,
     oidcAuthorizationClient,
     webDistRoot: options.webDistRoot,
   })

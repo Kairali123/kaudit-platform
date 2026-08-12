@@ -25,5 +25,7 @@ export interface TokenVerifier {
 export interface AccessRepository {
   findByOidc(issuer: string, subject: string): Promise<AccessUser | null>
   findByEmail(email: string): Promise<AccessUser | null>
+  /** Database-session lookup; optional for legacy test and OIDC adapters. */
+  findById?(userId: string): Promise<AccessUser | null>
   readiness(): Promise<boolean>
 }

@@ -29,6 +29,15 @@ import {
   OIDC_TRANSACTION_COOKIE,
 } from '../auth/oidcBrowserFlow.ts'
 import type { OidcAuthorizationClient } from '../auth/oidcAuthorizationClient.ts'
+import type { CredentialRepository } from '../auth/credentialTypes.ts'
+import type { LoginServicePort } from '../auth/loginService.ts'
+import {
+  clearUserSessionCookie,
+  isSessionCurrent,
+  issueUserSession,
+  userSessionCookie,
+  verifyUserSession,
+} from '../auth/userSession.ts'
 import {
   clearLocalSessionCookie,
   issueLocalSession,
@@ -130,6 +139,8 @@ interface Dependencies {
   access: AccessRepository
   audit: AuditSink
   verifier: TokenVerifier | null
+  credentials?: CredentialRepository
+  loginService?: LoginServicePort
   /**
    * The authorization-code browser flow's protocol edge. Constructed by the
    * shared runtime factory only when `config.auth.browserFlow` is set, and
@@ -327,6 +338,23 @@ async function authenticate(
       email,
       dependencies.access,
     )
+  }
+  if (dependencies.config.auth.mode === 'database') {
+    const auth = dependencies.config.auth
+    const token = parseCookie(request.headers.cookie, auth.sessionCookie)
+    const claims = verifyUserSession(token, auth.sessionSecret)
+    if (!claims || !dependencies.credentials || !dependencies.access.findById) {
+      throw new AuthFailure(401, 'AUTH_REQUIRED', 'Authentication is required')
+    }
+    const state = await dependencies.credentials.getSessionState(claims.sub)
+    if (!isSessionCurrent(claims, state)) {
+      throw new AuthFailure(401, 'AUTH_INVALID', 'Authentication session is invalid')
+    }
+    const user = await dependencies.access.findById(claims.sub)
+    if (!user || user.id !== claims.sub || user.status !== 'active') {
+      throw new AuthFailure(401, 'AUTH_INVALID', 'Authentication session is invalid')
+    }
+    return { user, issuer: 'kaudit-database', subject: user.id }
   }
   if (!dependencies.verifier) {
     throw new Error('OIDC verifier is unavailable')
@@ -807,6 +835,8 @@ function publicAuthConfig(dependencies: Dependencies): unknown {
     providerLabel:
       auth.mode === 'oidc'
         ? 'Kairali SSO'
+        : auth.mode === 'database'
+          ? 'Kairali account'
         : auth.mode === 'local'
           ? 'Local Kairali account'
           : 'Local preview',
@@ -824,7 +854,8 @@ function publicAuthConfig(dependencies: Dependencies): unknown {
         ? (auth.logoutUrl ?? (browserFlow ? '/login' : null))
         : '/login',
     accessControlEnforced: auth.mode !== 'preview',
-    passwordLoginSupported: auth.mode === 'local',
+    passwordLoginSupported:
+      auth.mode === 'local' || auth.mode === 'database',
   }
 }
 
@@ -1500,7 +1531,9 @@ export function createEnterpriseDashboardServer(
       try {
         const preview =
           dependencies.config.auth.mode === 'preview'
-        const [dbResult, identityReady, auditReady] =
+        const databaseAuth =
+          dependencies.config.auth.mode === 'database'
+        const [dbResult, identityReady, auditReady, credentialsReady, guardReady] =
           await Promise.all([
             dependencies.pool.query('SELECT 1'),
             preview
@@ -1509,8 +1542,32 @@ export function createEnterpriseDashboardServer(
             preview
               ? Promise.resolve(true)
               : dependencies.audit.readiness(),
+            databaseAuth
+              ? dependencies.credentials?.readiness() ?? Promise.resolve(false)
+              : Promise.resolve(true),
+            databaseAuth
+              ? dependencies.pool.query(
+                  `SELECT COUNT(*) AS n
+                   FROM information_schema.COLUMNS
+                   WHERE TABLE_SCHEMA = DATABASE()
+                     AND TABLE_NAME = 'kaudit_login_guard'
+                     AND COLUMN_NAME IN
+                       ('guard_scope','guard_digest','failure_count','blocked_until','expires_at')`,
+                )
+              : Promise.resolve([[{ n: 5 }], []]),
           ])
-        if (!dbResult || !identityReady || !auditReady) {
+        const guardCount = Number(
+          Array.isArray(guardReady) && Array.isArray(guardReady[0])
+            ? (guardReady[0][0] as { n?: unknown } | undefined)?.n
+            : 0,
+        )
+        if (
+          !dbResult ||
+          !identityReady ||
+          !auditReady ||
+          !credentialsReady ||
+          guardCount !== 5
+        ) {
           throw new Error('dependency not ready')
         }
         response.writeHead(200, {
@@ -1616,6 +1673,9 @@ export function createEnterpriseDashboardServer(
        * valid token to this origin until the token expired on its own.
        */
       const cleared: string[] = []
+      if (auth.mode === 'database') {
+        cleared.push(clearUserSessionCookie(auth.sessionCookie))
+      }
       if (auth.mode === 'local') {
         cleared.push(clearLocalSessionCookie(auth.sessionCookie))
       }
@@ -1646,7 +1706,7 @@ export function createEnterpriseDashboardServer(
 
     if (PUBLIC_POST_ROUTES.has(url.pathname)) {
       const auth = dependencies.config.auth
-      if (auth.mode !== 'local') {
+      if (auth.mode !== 'local' && auth.mode !== 'database') {
         problem(
           response,
           404,
@@ -1676,70 +1736,112 @@ export function createEnterpriseDashboardServer(
         }
         const bytes = await readRequestBody(request, 8 * 1024)
         const input = JSON.parse(bytes.toString('utf8')) as {
+          login?: unknown
           email?: unknown
           password?: unknown
         }
-        const email =
-          typeof input.email === 'string'
-            ? input.email.trim().toLowerCase()
-            : ''
         const password =
           typeof input.password === 'string'
             ? input.password
             : ''
-        const passwordValid = verifyLocalPassword(
-          password,
-          auth.passwordHash,
-        )
-        if (email !== auth.email || !passwordValid) {
-          throw new AuthFailure(
-            401,
-            'AUTH_INVALID',
-            'Email or password is incorrect',
+        let token: string
+        let cookie: string
+        if (auth.mode === 'database') {
+          const login =
+            typeof input.login === 'string'
+              ? input.login
+              : typeof input.email === 'string'
+                ? input.email
+                : ''
+          const source = clientAddress(request, dependencies.config.trustProxy)
+          if (!dependencies.loginService || !source) {
+            throw new Error('Database login is unavailable')
+          }
+          const result = await dependencies.loginService.authenticate({
+            login,
+            password,
+            clientSource: source,
+          })
+          if (!result.ok) {
+            throw new AuthFailure(
+              401,
+              'AUTH_INVALID',
+              'Username/email or password is incorrect',
+            )
+          }
+          token = issueUserSession(
+            {
+              userId: result.authorization.userId,
+              sessionVersion: result.authorization.sessionVersion,
+            },
+            auth.sessionSecret,
+            auth.sessionTtlSeconds,
           )
-        }
-        context = await authenticateLocal(email, dependencies.access)
-        const token = issueLocalSession(
-          email,
-          auth.sessionSecret,
-          auth.sessionTtlSeconds,
-        )
-        await auditAccess(
-          dependencies,
-          request,
-          context,
-          correlation,
-          'success',
-          'auth.login',
-        )
-        sendJson(
-          response,
-          correlation,
-          {
-            authenticated: true,
-            email: context.user.email,
-          },
-          {
-            'set-cookie': localSessionCookie(
-              auth.sessionCookie,
-              token,
-              auth.sessionTtlSeconds,
-            ),
-          },
-        )
-      } catch (error) {
-        const authFailure = error instanceof AuthFailure
-        try {
+          cookie = userSessionCookie(
+            auth.sessionCookie,
+            token,
+            auth.sessionTtlSeconds,
+          )
+        } else {
+          const email =
+            typeof input.email === 'string'
+              ? input.email.trim().toLowerCase()
+              : typeof input.login === 'string'
+                ? input.login.trim().toLowerCase()
+                : ''
+          const passwordValid = verifyLocalPassword(password, auth.passwordHash)
+          if (email !== auth.email || !passwordValid) {
+            throw new AuthFailure(
+              401,
+              'AUTH_INVALID',
+              'Email or password is incorrect',
+            )
+          }
+          context = await authenticateLocal(email, dependencies.access)
+          token = issueLocalSession(
+            email,
+            auth.sessionSecret,
+            auth.sessionTtlSeconds,
+          )
           await auditAccess(
             dependencies,
             request,
             context,
             correlation,
-            authFailure ? 'denied' : 'failure',
+            'success',
             'auth.login',
           )
-        } catch {
-          // Authentication still fails closed if audit storage is unavailable.
+          cookie = localSessionCookie(
+            auth.sessionCookie,
+            token,
+            auth.sessionTtlSeconds,
+          )
+        }
+        sendJson(
+          response,
+          correlation,
+          {
+            authenticated: true,
+          },
+          {
+            'set-cookie': cookie,
+          },
+        )
+      } catch (error) {
+        const authFailure = error instanceof AuthFailure
+        if (auth.mode === 'local') {
+          try {
+            await auditAccess(
+              dependencies,
+              request,
+              context,
+              correlation,
+              authFailure ? 'denied' : 'failure',
+              'auth.login',
+            )
+          } catch {
+            // Authentication still fails closed if audit storage is unavailable.
+          }
         }
         if (authFailure) {
           problem(
@@ -1747,6 +1849,16 @@ export function createEnterpriseDashboardServer(
             error.status,
             error.code,
             error.message,
+            correlation,
+          )
+          return
+        }
+        if (auth.mode === 'database') {
+          problem(
+            response,
+            503,
+            'AUTH_UNAVAILABLE',
+            'Sign-in is temporarily unavailable',
             correlation,
           )
           return

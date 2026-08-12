@@ -1,6 +1,6 @@
 import { OIDC_CALLBACK_ROUTE } from '../auth/oidcBrowserFlow.ts'
 
-export type AuthMode = 'oidc' | 'local' | 'preview'
+export type AuthMode = 'database' | 'oidc' | 'local' | 'preview'
 
 /**
  * How this deployment connects to MySQL, as an explicit operator decision.
@@ -73,6 +73,12 @@ export interface RuntimeConfig {
         mode: 'local'
         email: string
         passwordHash: string
+        sessionSecret: string
+        sessionCookie: string
+        sessionTtlSeconds: number
+      }
+    | {
+        mode: 'database'
         sessionSecret: string
         sessionCookie: string
         sessionTtlSeconds: number
@@ -169,10 +175,13 @@ function httpsUrl(value: string, name: string): string {
   return url.toString()
 }
 
-function safeCookieName(value: string | null): string | null {
+function safeCookieName(
+  value: string | null,
+  name = 'KAUDIT_OIDC_TOKEN_COOKIE',
+): string | null {
   if (value == null) return null
   if (!/^[A-Za-z0-9_.-]{1,80}$/.test(value)) {
-    throw new ConfigurationError('KAUDIT_OIDC_TOKEN_COOKIE contains unsafe characters')
+    throw new ConfigurationError(`${name} contains unsafe characters`)
   }
   return value
 }
@@ -292,9 +301,14 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   }
   const environment = rawEnvironment as RuntimeConfig['environment']
   const mode = (env.KAUDIT_AUTH_MODE?.trim() || 'oidc') as AuthMode
-  if (mode !== 'oidc' && mode !== 'local' && mode !== 'preview') {
+  if (
+    mode !== 'database' &&
+    mode !== 'oidc' &&
+    mode !== 'local' &&
+    mode !== 'preview'
+  ) {
     throw new ConfigurationError(
-      'KAUDIT_AUTH_MODE must be oidc, local, or preview',
+      'KAUDIT_AUTH_MODE must be database, oidc, local, or preview',
     )
   }
 
@@ -380,6 +394,23 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
   const auth: RuntimeConfig['auth'] =
     mode === 'preview'
       ? { mode }
+      : mode === 'database'
+      ? {
+          mode,
+          sessionSecret: required(env, 'KAUDIT_DATABASE_SESSION_SECRET'),
+          sessionCookie: safeCookieName(
+            optional(env, 'KAUDIT_DATABASE_SESSION_COOKIE') ??
+              'kaudit_user_session',
+            'KAUDIT_DATABASE_SESSION_COOKIE',
+          ) as string,
+          sessionTtlSeconds: integer(
+            env,
+            'KAUDIT_DATABASE_SESSION_TTL_SEC',
+            28_800,
+            300,
+            43_200,
+          ),
+        }
       : mode === 'local'
       ? {
           mode,
@@ -466,11 +497,15 @@ export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
     }
   }
   if (
-    auth.mode === 'local' &&
+    (auth.mode === 'local' || auth.mode === 'database') &&
     auth.sessionSecret.length < 32
   ) {
     throw new ConfigurationError(
-      'KAUDIT_LOCAL_SESSION_SECRET must contain at least 32 characters',
+      `${
+        auth.mode === 'database'
+          ? 'KAUDIT_DATABASE_SESSION_SECRET'
+          : 'KAUDIT_LOCAL_SESSION_SECRET'
+      } must contain at least 32 characters`,
     )
   }
 

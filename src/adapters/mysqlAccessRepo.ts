@@ -56,6 +56,17 @@ export function createMysqlAccessRepository(
       return mapUser(rows[0])
     },
 
+    async findById(userId) {
+      const [rows] = await pool.execute<UserRow[]>(
+        `${USER_SELECT}
+         WHERE u.kind = 'user' AND u.id = ?
+         GROUP BY u.id, u.email, u.status, u.max_sensitivity_tier
+         LIMIT 1`,
+        [userId],
+      )
+      return mapUser(rows[0])
+    },
+
     async readiness() {
       const [rows] = await pool.query<RowDataPacket[]>(
         `SELECT COUNT(*) AS n

@@ -53,6 +53,22 @@ test('rejects local authentication in production', () => {
   )
 })
 
+test('accepts database authentication in production with bounded sessions', () => {
+  const config = loadRuntimeConfig({
+    ...base(),
+    NODE_ENV: 'production',
+    KAUDIT_AUTH_MODE: 'database',
+    KAUDIT_SECURE_HOST: '0.0.0.0',
+    DB_TLS_MODE: 'disabled',
+    KAUDIT_DATABASE_SESSION_SECRET:
+      'synthetic-database-session-secret-at-least-32-characters',
+  })
+  assert.equal(config.auth.mode, 'database')
+  if (config.auth.mode !== 'database') throw new Error('synthetic config')
+  assert.equal(config.auth.sessionCookie, 'kaudit_user_session')
+  assert.equal(config.auth.sessionTtlSeconds, 28_800)
+})
+
 function productionOidc(): NodeJS.ProcessEnv {
   return {
     ...base(),

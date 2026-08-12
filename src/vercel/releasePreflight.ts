@@ -125,6 +125,10 @@ const UNSUPPORTED_VARIABLES = [
   'KAUDIT_IMPORT_ROOT',
 ] as const
 
+const DATABASE_AUTH_VARIABLES = [
+  'KAUDIT_DATABASE_SESSION_SECRET',
+] as const
+
 /**
  * The only variable names this command may ever print.
  *
@@ -161,6 +165,9 @@ export const REPORTABLE_VARIABLES: readonly string[] = Object.freeze([
   'KAUDIT_LOCAL_SESSION_SECRET',
   'KAUDIT_LOCAL_SESSION_COOKIE',
   'KAUDIT_LOCAL_SESSION_TTL_SEC',
+  'KAUDIT_DATABASE_SESSION_SECRET',
+  'KAUDIT_DATABASE_SESSION_COOKIE',
+  'KAUDIT_DATABASE_SESSION_TTL_SEC',
   'KAUDIT_CALIBRATION_COMPLETE',
   'KAUDIT_AUTOMATED_VALIDATION_APPROVED',
   'KAUDIT_REPORTING_APPROVED',
@@ -276,16 +283,29 @@ export function evaluateVercelReleasePreflight(
     fail('DB_CA_PEM_MALFORMED', 'DB_SSL_CA_PEM')
   }
 
-  // auth-mode-oidc — required explicitly rather than by default, because the
-  // deployed identity mode should be visible in the project's settings.
-  if (env.KAUDIT_AUTH_MODE?.trim() !== 'oidc') {
+  // Production supports either database credentials or OIDC. The choice must
+  // be explicit so the deployed identity boundary is visible in settings.
+  const authMode = env.KAUDIT_AUTH_MODE?.trim()
+  if (authMode !== 'oidc' && authMode !== 'database') {
     fail('AUTH_MODE_NOT_OIDC', 'KAUDIT_AUTH_MODE')
   }
 
   // oidc-settings
-  const missingOidc = OIDC_VARIABLES.filter((name) => !set(env, name))
+  const missingOidc =
+    authMode === 'oidc'
+      ? OIDC_VARIABLES.filter((name) => !set(env, name))
+      : []
   if (missingOidc.length > 0) {
     fail('REQUIRED_VARIABLE_MISSING', ...missingOidc)
+  }
+
+  if (authMode === 'database') {
+    const missingDatabaseAuth = DATABASE_AUTH_VARIABLES.filter(
+      (name) => !set(env, name),
+    )
+    if (missingDatabaseAuth.length > 0) {
+      fail('REQUIRED_VARIABLE_MISSING', ...missingDatabaseAuth)
+    }
   }
 
   // oidc-browser-flow — an optional capability with a dedicated gate, checked
@@ -306,7 +326,9 @@ export function evaluateVercelReleasePreflight(
       // The callback's only output. The runtime refuses the gate without it.
       'KAUDIT_OIDC_TOKEN_COOKIE',
     ].filter((name) => !set(env, name))
-    if (missingBrowserFlow.length > 0) {
+    if (authMode !== 'oidc') {
+      fail('FEATURE_CONFIG_INCOMPLETE', OIDC_BROWSER_FLOW_GATE)
+    } else if (missingBrowserFlow.length > 0) {
       fail('FEATURE_CONFIG_INCOMPLETE', ...missingBrowserFlow)
     } else {
       optionalFeatures.push('oidcBrowserFlow')

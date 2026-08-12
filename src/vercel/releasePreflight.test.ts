@@ -74,6 +74,19 @@ test('a complete production candidate passes with no findings', () => {
   assert.deepEqual(report.optionalFeatures, [])
 })
 
+test('a database-auth production candidate passes without OIDC settings', () => {
+  const env = productionEnv()
+  env.KAUDIT_AUTH_MODE = 'database'
+  env.KAUDIT_DATABASE_SESSION_SECRET =
+    'synthetic-database-session-secret-at-least-32-characters'
+  delete env.KAUDIT_OIDC_ISSUER
+  delete env.KAUDIT_OIDC_AUDIENCE
+  delete env.KAUDIT_OIDC_JWKS_URI
+  const report = evaluate(env)
+  assert.equal(report.ok, true)
+  assert.deepEqual(report.findings, [])
+})
+
 test('success output is a small fixed JSON object', () => {
   assert.equal(
     formatPreflightReport(evaluate(productionEnv())),

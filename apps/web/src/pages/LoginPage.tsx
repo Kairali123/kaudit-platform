@@ -31,12 +31,14 @@ export function LoginPage() {
   const auth = query.data
   const preview = auth?.mode === 'preview'
   const local = auth?.mode === 'local'
+  const database = auth?.mode === 'database'
+  const passwordLogin = local || database
   const destination =
     auth?.mode === 'oidc' ? auth.loginUrl : '/'
   const ready = Boolean(destination)
   const login = useMutation({
-    mutationFn: (input: { email: string; password: string }) =>
-      postJson<{ authenticated: true; email: string }>(
+    mutationFn: (input: { login: string; password: string }) =>
+      postJson<{ authenticated: true }>(
         '/api/v1/auth/login',
         input,
       ),
@@ -49,7 +51,7 @@ export function LoginPage() {
     event.preventDefault()
     const form = new FormData(event.currentTarget)
     login.mutate({
-      email: String(form.get('email') || ''),
+      login: String(form.get('login') || ''),
       password: String(form.get('password') || ''),
     })
   }
@@ -97,8 +99,7 @@ export function LoginPage() {
           <span className="eyebrow">Secure access</span>
           <h2>Sign in to your workspace</h2>
           <p className="login-intro">
-            Use your approved Kairali identity. Local credentials are
-            accepted only by this loopback development server.
+            Use your approved Kairali username or email and password.
           </p>
 
           {query.isLoading && (
@@ -150,6 +151,13 @@ export function LoginPage() {
                 </div>
               )}
 
+              {database && (
+                <div className="login-message info">
+                  Your password is verified securely and is never stored in
+                  the browser.
+                </div>
+              )}
+
               {auth.mode === 'oidc' && !auth.loginUrl && (
                 <div className="login-message danger">
                   Kairali SSO login is not configured yet. Set the
@@ -157,14 +165,14 @@ export function LoginPage() {
                 </div>
               )}
 
-              {local ? (
+              {passwordLogin ? (
                 <form className="login-form" onSubmit={submit}>
                   <label>
-                    Email
+                    Username or email
                     <input
                       required
-                      type="email"
-                      name="email"
+                      type="text"
+                      name="login"
                       autoComplete="username"
                       autoFocus
                     />

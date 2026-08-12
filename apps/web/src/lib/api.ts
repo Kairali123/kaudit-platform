@@ -25,7 +25,7 @@ export interface Profile {
 }
 
 export interface AuthConfig {
-  mode: 'oidc' | 'local' | 'preview'
+  mode: 'database' | 'oidc' | 'local' | 'preview'
   providerLabel: string
   loginUrl: string | null
   logoutUrl: string | null
