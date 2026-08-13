@@ -12,6 +12,7 @@ import {
   CallAuditSourceRowError,
   type InternalSourceCandidate,
 } from '../callaudit/sourceTypes.ts'
+import { hasAuditableTranscript } from '../callaudit/eligibility.ts'
 
 /**
  * READ-ONLY adapter over the external KServe source table.
@@ -73,12 +74,14 @@ const CHANGE_SELECT_LIST = `${SELECT_LIST},
     ${SOURCE_CHANGE_TIME} AS source_change_time`
 
 /**
- * Half-open period predicate: start inclusive, end exclusive. Every call in the
- * period is selected, including calls with no transcript, so operational
- * reporting stays complete.
+ * Half-open period predicate: start inclusive, end exclusive.
  */
 const PERIOD_PREDICATE = `${EFFECTIVE_CALL_TIME} >= ?
      AND ${EFFECTIVE_CALL_TIME} < ?`
+
+/** Call Audit reads content evidence only; Billing Audit has its own source. */
+const TRANSCRIPT_PREDICATE =
+  "src.`transcription` IS NOT NULL\n     AND src.`transcription` REGEXP '[^[:space:]]'"
 
 /**
  * Keyset pagination, never OFFSET: strictly after the last row consumed. The
@@ -101,11 +104,13 @@ const ORDER_AND_LIMIT = `ORDER BY effective_call_time ASC, src.\`id\` ASC
 export const SOURCE_CANDIDATE_SQL = `SELECT${SELECT_LIST}
    FROM \`${CALL_AUDIT_SOURCE_TABLE}\` src
    WHERE ${PERIOD_PREDICATE}
+     AND ${TRANSCRIPT_PREDICATE}
    ${ORDER_AND_LIMIT}`
 
 export const SOURCE_CANDIDATE_SQL_AFTER_CURSOR = `SELECT${SELECT_LIST}
    FROM \`${CALL_AUDIT_SOURCE_TABLE}\` src
    WHERE ${PERIOD_PREDICATE}
+     AND ${TRANSCRIPT_PREDICATE}
      ${CURSOR_PREDICATE}
    ${ORDER_AND_LIMIT}`
 
@@ -116,6 +121,7 @@ export const SOURCE_CHANGED_CANDIDATE_SQL = `SELECT${CHANGE_SELECT_LIST}
        OR (${SOURCE_CHANGE_TIME} = ? AND src.\`id\` > ?)
      )
      AND ${SOURCE_CHANGE_TIME} < ?
+     AND ${TRANSCRIPT_PREDICATE}
    ORDER BY source_change_time ASC, src.\`id\` ASC
    LIMIT ?`
 
@@ -266,7 +272,9 @@ export function createMysqlCallAuditSourceReader(pool: Pool) {
             validated.periodEndExclusive,
             validated.batchSize,
           ])
-      return rows.map(mapRow)
+      return rows
+        .filter((row) => hasAuditableTranscript(row.transcription))
+        .map(mapRow)
     },
 
     /**
@@ -288,19 +296,21 @@ export function createMysqlCallAuditSourceReader(pool: Pool) {
           validated.batchSize,
         ],
       )
-      return rows.map((row) => {
-        const candidate = mapRow(row)
-        const changedAt = naiveDatetime(row.source_change_time ?? null)
-        if (!changedAt) {
-          throw new CallAuditSourceRowError(
-            'Source row has no valid change time',
-          )
-        }
-        return {
-          candidate,
-          cursor: { changedAt, sourceRowId: candidate.sourceRowId },
-        }
-      })
+      return rows
+        .filter((row) => hasAuditableTranscript(row.transcription))
+        .map((row) => {
+          const candidate = mapRow(row)
+          const changedAt = naiveDatetime(row.source_change_time ?? null)
+          if (!changedAt) {
+            throw new CallAuditSourceRowError(
+              'Source row has no valid change time',
+            )
+          }
+          return {
+            candidate,
+            cursor: { changedAt, sourceRowId: candidate.sourceRowId },
+          }
+        })
     },
   }
 }

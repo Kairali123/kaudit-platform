@@ -213,7 +213,7 @@ test('selects exactly the approved columns', () => {
 })
 
 test('never selects PII, URLs, or source free text', () => {
-  for (const [label, sql] of BOTH_QUERIES) {
+  for (const [label, sql] of ALL_QUERIES) {
     for (const column of [
       'client_name',
       'customer_name',
@@ -287,11 +287,18 @@ test('the period predicate is half open and parameterized', () => {
   }
 })
 
-test('does not filter out calls that have no transcript', () => {
-  for (const [, sql] of BOTH_QUERIES) {
-    assert.equal(/transcription\s+IS\s+NOT\s+NULL/i.test(sql), false)
-    assert.equal(/transcription\s*(<>|!=)/i.test(sql), false)
-    assert.equal(/WHERE[\s\S]*transcription/i.test(sql), false)
+test('requires a non-null transcript with a non-whitespace character', () => {
+  for (const [label, sql] of ALL_QUERIES) {
+    assert.match(
+      sql,
+      /src\.`transcription` IS NOT NULL/,
+      `${label} accepts a null transcript`,
+    )
+    assert.match(
+      sql,
+      /src\.`transcription` REGEXP '\[\^\[:space:\]\]'/,
+      `${label} accepts an empty or whitespace-only transcript`,
+    )
   }
 })
 
@@ -449,15 +456,61 @@ test('maps rows explicitly into server-internal candidates', async () => {
   assert.equal(candidate.followup_required, 'yes')
 })
 
-test('keeps calls without a transcript', async () => {
-  const { pool } = recordingPool([
-    syntheticRow({ transcription: null, call_duration_sec: null }),
-  ])
+test('defensively omits null, empty, and whitespace-only transcripts', async () => {
+  for (const transcription of [null, '', ' ', '\t', '\n', ' \t\n ']) {
+    const { pool } = recordingPool([syntheticRow({ transcription })])
+    const reader = createMysqlCallAuditSourceReader(pool)
+    assert.deepEqual(await reader.listCandidates(QUERY), [])
+  }
+})
+
+test('a later transcript-bearing source revision remains eligible', async () => {
+  const calls: Array<{ sql: string; parameters: unknown[] }> = []
+  const pages = [
+    [
+      syntheticRow({
+        transcription: '   ',
+        source_change_time: '2026-08-01 09:20:00',
+      }),
+    ],
+    [
+      syntheticRow({
+        transcription: 'Synthetic speaker: follow-up received.',
+        source_change_time: '2026-08-01 09:22:00',
+      }),
+    ],
+  ]
+  const pool = {
+    async execute(sql: string, parameters: unknown[]) {
+      calls.push({ sql, parameters })
+      return [pages.shift() ?? []]
+    },
+  } as unknown as Pool
   const reader = createMysqlCallAuditSourceReader(pool)
-  const [candidate] = await reader.listCandidates(QUERY)
-  assert.equal(candidate.transcript, null)
-  assert.equal(candidate.callDurationSec, null)
-  assert.equal(candidate.sourceRowId, '4021')
+
+  const first = await reader.listChangedCandidates({
+    changedAfter: { changedAt: '2026-08-01 09:19:00', sourceRowId: '0' },
+    changedBeforeExclusive: '2026-08-01 09:21:00',
+    batchSize: 25,
+  })
+  const second = await reader.listChangedCandidates({
+    changedAfter: { changedAt: '2026-08-01 09:21:00', sourceRowId: '0' },
+    changedBeforeExclusive: '2026-08-01 09:23:00',
+    batchSize: 25,
+  })
+
+  assert.deepEqual(first, [])
+  assert.equal(second.length, 1)
+  assert.equal(second[0].candidate.sourceRowId, '4021')
+  assert.equal(
+    second[0].candidate.transcript,
+    'Synthetic speaker: follow-up received.',
+  )
+  assert.deepEqual(second[0].cursor, {
+    changedAt: '2026-08-01 09:22:00.000000',
+    sourceRowId: '4021',
+  })
+  assert.equal(calls[1].parameters[0], '2026-08-01 09:21:00.000000')
 })
 
 test('keeps calls whose call_start_time is null', async () => {

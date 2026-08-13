@@ -142,8 +142,7 @@ test('an empty change window advances the durable watermark without a run', asyn
   ])
 })
 
-test('a changed operational row is persisted and checkpointed without model spend', async () => {
-  const control = workerControl('running')
+test('an ineligible changed row is checkpointed before processor or spend logic', async () => {
   const candidate: InternalSourceCandidate = {
     sourceTable: CALL_AUDIT_SOURCE_TABLE,
     sourceRowId: '701',
@@ -172,79 +171,71 @@ test('a changed operational row is persisted and checkpointed without model spen
     calculated_qualification_status: null,
     followup_required: null,
   }
-  const runControl: CallAuditRunControlPort = {
-    async createRun() { return { id: 'crn_synthetic_auto_1', outcome: 'inserted' } },
-    async markRunRunning(input) {
-      return { id: input.runId, status: 'running', outcome: 'updated' }
-    },
-    async updateRunCounters(runId) {
-      return { id: runId, status: 'running', outcome: 'updated' }
-    },
-    async markRunCompleted(input) {
-      return { id: input.runId, status: 'completed', outcome: 'updated' }
-    },
-    async markRunFailed(input) {
-      return { id: input.runId, status: 'failed', outcome: 'updated' }
-    },
-  }
-  let resultBundles = 0
-  let modelCalls = 0
-  const persistence: CallAuditPersistenceRepository = {
-    async upsertSourceReference() {
-      return { id: `cas_${'a'.repeat(36)}`, outcome: 'inserted' }
-    },
-    async claimContentAuditSpend() {
-      throw new Error('operational-only evidence must not claim model spend')
-    },
-    async saveResultBundle() {
-      resultBundles += 1
-      return { outcome: 'inserted' }
-    },
-    async recordUsageAttempt() {
-      throw new Error('operational-only evidence must not record model usage')
-    },
-  }
-  const model: ContentAuditModelAdapter = {
-    async auditTranscript() {
-      modelCalls += 1
-      throw new Error('operational-only evidence must not call the model')
-    },
-  }
-
-  const result = await runAutomaticCallAuditCycle({
-    workerControl: control.port,
-    runControl,
-    settings: settings(true),
-    source: {
-      async listChangedCandidates() {
-        return [{
-          candidate,
-          cursor: {
-            changedAt: '2026-08-01 00:00:20.000000',
-            sourceRowId: candidate.sourceRowId,
-          },
-        }]
+  for (const transcript of [null, '', ' ', '\t', '\n', ' \t\n ']) {
+    const control = workerControl('running')
+    const touched: string[] = []
+    const runControl = {
+      async createRun() {
+        touched.push('run')
+        throw new Error('an ineligible row must not create a Call Audit run')
       },
-    },
-    persistence,
-    model,
-    initialCheckpoint: '2026-08-01 00:00:00.000000',
-    batchSize: 25,
-    now: () => new Date('2026-08-01T00:01:00.000Z'),
-  })
+    } as unknown as CallAuditRunControlPort
+    const persistence = {
+      async upsertSourceReference() {
+        touched.push('source-reference')
+        throw new Error('an ineligible row must not create a source reference')
+      },
+      async claimContentAuditSpend() {
+        touched.push('spend-claim')
+        throw new Error('an ineligible row must not claim model spend')
+      },
+      async saveResultBundle() {
+        touched.push('result')
+        throw new Error('an ineligible row must not create a result')
+      },
+      async recordUsageAttempt() {
+        touched.push('usage')
+        throw new Error('an ineligible row must not create a usage event')
+      },
+    } as unknown as CallAuditPersistenceRepository
+    const model = {
+      async auditTranscript() {
+        touched.push('model')
+        throw new Error('an ineligible row must not call the model')
+      },
+    } as ContentAuditModelAdapter
 
-  assert.equal(result.outcome, 'processed')
-  assert.equal(resultBundles, 1)
-  assert.equal(modelCalls, 0)
-  assert.deepEqual(control.advances.at(-1), {
-    changedAt: '2026-08-01 00:00:20.000000',
-    sourceRowId: '701',
-  })
-  assert.equal(
-    control.observations.reduce(
-      (total, item) => total + Number(item.processedDelta ?? 0),
-      0,
-    ),
-    1,
-  )
+    const result = await runAutomaticCallAuditCycle({
+      workerControl: control.port,
+      runControl,
+      settings: settings(true),
+      source: {
+        async listChangedCandidates() {
+          return [{
+            candidate: { ...candidate, transcript },
+            cursor: {
+              changedAt: '2026-08-01 00:00:20.000000',
+              sourceRowId: candidate.sourceRowId,
+            },
+          }]
+        },
+      },
+      persistence,
+      model,
+      initialCheckpoint: '2026-08-01 00:00:00.000000',
+      batchSize: 25,
+      now: () => new Date('2026-08-01T00:01:00.000Z'),
+    })
+
+    assert.deepEqual(result, { outcome: 'idle' })
+    assert.deepEqual(touched, [])
+    assert.deepEqual(control.advances.at(-1), {
+      changedAt: '2026-08-01 00:00:20.000000',
+      sourceRowId: '701',
+    })
+    assert.equal(
+      control.observations.some((item) => 'processedDelta' in item),
+      false,
+    )
+  }
 })

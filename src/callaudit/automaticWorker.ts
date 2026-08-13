@@ -12,6 +12,7 @@ import {
   type CallAuditSourceReaderPort,
 } from './batchRunner.ts'
 import { processCallAuditCandidate } from './processor.ts'
+import { hasAuditableTranscript } from './eligibility.ts'
 
 export const AUTOMATIC_CALL_AUDIT_ERROR_CODES = {
   noActiveRule: 'CALL_AUDIT_AUTO_NO_ACTIVE_RULE',
@@ -178,11 +179,29 @@ export async function runAutomaticCallAuditCycle(input: {
     return { outcome: 'idle' }
   }
 
+  // The MySQL source adapter applies the same rule in SQL and while mapping.
+  // Keep this port-level guard so an alternate source cannot send an
+  // operational-only row into the processor or any spend-related dependency.
+  const eligibleChanged = changed.filter((item) =>
+    hasAuditableTranscript(item.candidate.transcript),
+  )
+  if (eligibleChanged.length === 0) {
+    const lastObserved = changed.at(-1)?.cursor
+    if (lastObserved) {
+      await input.workerControl.advanceCallCheckpoint(lastObserved)
+    }
+    await input.workerControl.recordObservation({
+      system: 'call',
+      observedState: 'idle',
+    })
+    return { outcome: 'idle' }
+  }
+
   const sequence = await input.workerControl.nextWorkSequence('call')
   const idempotencyKey = `callaudit-auto:${canonicalJsonSha256({
     ruleVersionId: detail.ruleVersionId,
     changedAfter: checkpoint.changedAt,
-    changedBefore: changed.at(-1)?.cursor.changedAt ?? pollEnd,
+    changedBefore: eligibleChanged.at(-1)?.cursor.changedAt ?? pollEnd,
     sequence,
   })}`
   let delivered = false
@@ -190,11 +209,11 @@ export async function runAutomaticCallAuditCycle(input: {
     async listCandidates() {
       if (delivered) return []
       delivered = true
-      return changed.map((item) => item.candidate)
+      return eligibleChanged.map((item) => item.candidate)
     },
   }
   const cursorByRow = new Map(
-    changed.map((item) => [item.candidate.sourceRowId, item.cursor]),
+    eligibleChanged.map((item) => [item.candidate.sourceRowId, item.cursor]),
   )
   let settledCheckpoint = checkpoint
 
@@ -227,7 +246,7 @@ export async function runAutomaticCallAuditCycle(input: {
         periodStart: checkpoint.changedAt,
         periodEndExclusive: pollEnd,
       },
-      batchSize: changed.length,
+      batchSize: eligibleChanged.length,
       maxPages: 1,
       control: input.runControl,
       source: memorySource,
