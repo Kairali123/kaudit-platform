@@ -140,8 +140,6 @@ test('administrators can read, stop, and resume only safe worker state', async (
     assert.equal(events.at(-1)?.resourceId, 'call')
     assert.deepEqual(dispatched, [])
 
-    rows.find((item) => item.system === 'call')!.observedState = 'paused'
-
     const resume = await fetch(`${base}/api/v1/audit-workers/control`, {
       method: 'POST',
       headers: { cookie: cookie(), 'content-type': 'application/json' },

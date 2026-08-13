@@ -71,6 +71,7 @@ import { createMysqlAuditWorkerControl } from '../adapters/mysqlAuditWorkerContr
 import {
   parseAuditSystem,
   parseDesiredState,
+  settleStalePausedWorker,
   type AuditWorkerControlPort,
 } from '../auditWorkers/control.ts'
 import {
@@ -1347,10 +1348,11 @@ async function apiResponse(
     const control =
       dependencies.auditWorkerControl ??
       createMysqlAuditWorkerControl(dependencies.pool)
+    const systems = await control.listPublicStates()
     return {
       generatedAt: new Date().toISOString(),
       dispatchAvailable: Boolean(dependencies.auditWorkerDispatcher),
-      systems: await control.listPublicStates(),
+      systems: systems.map((state) => settleStalePausedWorker(state)),
     }
   }
   if (pathname === '/api/v1/audit-call') {
@@ -2081,10 +2083,13 @@ export function createEnterpriseDashboardServer(
             },
           )
         }
-        const previousState =
+        const storedPreviousState =
           (await control.listPublicStates()).find(
             (item) => item.system === system,
           ) ?? null
+        const previousState = storedPreviousState
+          ? settleStalePausedWorker(storedPreviousState)
+          : null
         const shouldDispatch =
           desiredState === 'running' &&
           previousState?.observedState !== 'running' &&

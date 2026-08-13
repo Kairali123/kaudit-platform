@@ -27,6 +27,30 @@ export interface AuditWorkerPublicState {
   failedTotal: number
 }
 
+export const AUDIT_WORKER_HEARTBEAT_STALE_MS = 5 * 60 * 1000
+
+export function settleStalePausedWorker(
+  state: AuditWorkerPublicState,
+  nowMs = Date.now(),
+): AuditWorkerPublicState {
+  if (
+    state.desiredState !== 'paused' ||
+    (state.observedState !== 'running' && state.observedState !== 'pausing')
+  ) {
+    return state
+  }
+  const heartbeatMs = state.lastHeartbeatAt
+    ? Date.parse(state.lastHeartbeatAt)
+    : Number.NaN
+  if (
+    Number.isFinite(heartbeatMs) &&
+    nowMs - heartbeatMs <= AUDIT_WORKER_HEARTBEAT_STALE_MS
+  ) {
+    return state
+  }
+  return { ...state, observedState: 'paused' }
+}
+
 export interface CallAuditCheckpoint {
   changedAt: string
   sourceRowId: string

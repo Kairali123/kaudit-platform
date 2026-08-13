@@ -66,6 +66,12 @@ enabled. Enabling an incomplete configuration makes dashboard startup fail
 closed. A refused provider dispatch becomes only
 `AUDIT_WORKER_DISPATCH_FAILED`; provider response text is discarded.
 
+The persistent dashboard token needs only repository **Actions: write**. It
+cannot provision repository secrets. Initial secret setup requires a separate,
+temporary fine-grained token with repository **Secrets: write**. Keep that
+provisioning token out of Vercel and tracked files, remove its local copy as soon
+as the secret names are verified, and revoke it after setup.
+
 ## Operation
 
 1. Open the matching audit report as an administrator.
