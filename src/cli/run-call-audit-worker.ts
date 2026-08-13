@@ -111,7 +111,13 @@ async function main(): Promise<void> {
         )
         if (drain) {
           if (result.outcome === 'faulted') throw new Error(WORKER_ERROR)
-          break
+          if (result.outcome === 'paused') break
+          await workerControl.recordObservation({
+            system: 'call',
+            observedState: 'running',
+          })
+          await wait(pollMs)
+          continue
         }
         await wait(pollMs)
       }

@@ -80,7 +80,7 @@ test('paused Call Audit performs no source read or model work', async () => {
   assert.equal(control.observations[0]?.observedState, 'paused')
 })
 
-test('a first launch without an approved checkpoint faults before source or model work', async () => {
+test('a first launch starts at now without historical source or model work', async () => {
   const control = workerControl('running')
   let reads = 0
   const result = await runAutomaticCallAuditCycle({
@@ -95,12 +95,10 @@ test('a first launch without an approved checkpoint faults before source or mode
     now: () => new Date('2026-08-01T00:01:00.000Z'),
   })
 
-  assert.deepEqual(result, {
-    outcome: 'faulted',
-    errorCode: AUTOMATIC_CALL_AUDIT_ERROR_CODES.checkpointRequired,
-  })
+  assert.deepEqual(result, { outcome: 'idle' })
   assert.equal(reads, 0)
   assert.equal(control.advances.length, 0)
+  assert.equal(control.observations.at(-1)?.observedState, 'idle')
 })
 
 test('missing active rule faults safely and preserves the checkpoint', async () => {
@@ -242,5 +240,11 @@ test('a changed operational row is persisted and checkpointed without model spen
     changedAt: '2026-08-01 00:00:20.000000',
     sourceRowId: '701',
   })
-  assert.equal(control.observations.at(-1)?.processedDelta, 1)
+  assert.equal(
+    control.observations.reduce(
+      (total, item) => total + Number(item.processedDelta ?? 0),
+      0,
+    ),
+    1,
+  )
 })

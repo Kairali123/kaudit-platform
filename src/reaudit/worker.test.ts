@@ -152,3 +152,45 @@ test('an unexpected call processor failure is persisted and later calls continue
   assert.equal(summary.retriesScheduled, 1)
   assert.equal(summary.completed, 1)
 })
+
+test('worker awaits durable progress before claiming the next call', async () => {
+  const events: string[] = []
+  const summary = await runReauditBatch({
+    batchSize: 2,
+    candidates: {
+      async listCandidates() {
+        return [candidate('one'), candidate('two')]
+      },
+    },
+    results: {
+      async markStarted(item) {
+        events.push(`claim:${item.callId}`)
+        return 'acquired'
+      },
+      async persist(_candidate, _result) {
+        return 'completed'
+      },
+    },
+    processor: {
+      async process(item) {
+        return {
+          callId: item.callId,
+          artifactId: item.artifactId,
+          outcome: 'source_missing',
+        }
+      },
+    },
+    async onProgress(progress) {
+      await Promise.resolve()
+      events.push(`progress:${progress.completed}`)
+    },
+  })
+
+  assert.equal(summary.completed, 2)
+  assert.deepEqual(events, [
+    'claim:one',
+    'progress:1',
+    'claim:two',
+    'progress:2',
+  ])
+})

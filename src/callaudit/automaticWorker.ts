@@ -65,16 +65,18 @@ export async function runAutomaticCallAuditCycle(input: {
   let checkpoint = await input.workerControl.getCallCheckpoint()
   if (!checkpoint) {
     if (!input.initialCheckpoint) {
+      checkpoint = {
+        changedAt: naiveUtc((input.now ?? (() => new Date()))()),
+        sourceRowId: '0',
+      }
+      await input.workerControl.initializeCallCheckpoint(checkpoint)
+      checkpoint =
+        (await input.workerControl.getCallCheckpoint()) ?? checkpoint
       await input.workerControl.recordObservation({
         system: 'call',
-        observedState: 'faulted',
-        errorCode: AUTOMATIC_CALL_AUDIT_ERROR_CODES.checkpointRequired,
-        failedDelta: 1,
+        observedState: 'idle',
       })
-      return {
-        outcome: 'faulted',
-        errorCode: AUTOMATIC_CALL_AUDIT_ERROR_CODES.checkpointRequired,
-      }
+      return { outcome: 'idle' }
     }
     let initial
     try {
@@ -233,6 +235,13 @@ export async function runAutomaticCallAuditCycle(input: {
         const result = await processCallAuditCandidate(candidateInput)
         const cursor = cursorByRow.get(candidateInput.candidate.sourceRowId)
         if (cursor) settledCheckpoint = cursor
+        await input.workerControl.recordObservation({
+          system: 'call',
+          observedState: 'running',
+          processedDelta: 1,
+          failedDelta: result.result.processingStatus === 'failed' ? 1 : 0,
+          progressed: true,
+        })
         return result
       },
       persistence: input.persistence,
@@ -261,7 +270,6 @@ export async function runAutomaticCallAuditCycle(input: {
   ) {
     await input.workerControl.advanceCallCheckpoint(settledCheckpoint)
   }
-  const failed = summary.counts.failedTotal
   await input.workerControl.recordObservation({
     system: 'call',
     observedState:
@@ -271,9 +279,6 @@ export async function runAutomaticCallAuditCycle(input: {
           : 'idle'
         : 'running',
     errorCode: summary.failureCode,
-    processedDelta: summary.candidatesProcessed,
-    failedDelta: failed,
-    progressed: summary.candidatesProcessed > 0,
   })
   return { outcome: 'processed', summary }
 }

@@ -120,6 +120,7 @@ async function main(): Promise<void> {
         observedState: 'running',
       })
       let summary
+      let reportedFailures = 0
       try {
         summary = await runReauditBatch({
           candidates,
@@ -137,7 +138,17 @@ async function main(): Promise<void> {
                 allowedHosts,
               }),
           },
-          onProgress: (progress) => {
+          onProgress: async (progress) => {
+            const failures =
+              progress.retriesScheduled + progress.terminalFailures
+            await control.recordObservation({
+              system: 'billing',
+              observedState: 'running',
+              processedDelta: 1,
+              failedDelta: failures - reportedFailures,
+              progressed: true,
+            })
+            reportedFailures = failures
             process.stdout.write(
               `[audit-worker] batch ${progress.completed + progress.retriesScheduled + progress.terminalFailures + progress.alreadyCompleted}/${progress.selected}; completed=${progress.completed}; retry=${progress.retriesScheduled}; terminal=${progress.terminalFailures}; skipped=${progress.alreadyCompleted}\n`,
             )
@@ -154,11 +165,6 @@ async function main(): Promise<void> {
         await wait(pollMs)
         continue
       }
-      const processed =
-        summary.completed +
-        summary.retriesScheduled +
-        summary.terminalFailures +
-        summary.alreadyCompleted
       const desiredAfterBatch = await control.getDesiredState('billing')
       await control.recordObservation({
         system: 'billing',
@@ -167,10 +173,6 @@ async function main(): Promise<void> {
             ? 'paused'
             : 'idle'
           : 'running',
-        processedDelta: processed,
-        failedDelta:
-          summary.retriesScheduled + summary.terminalFailures,
-        progressed: processed > 0,
       })
       completed += summary.completed
       if (summary.stoppedEarly) {

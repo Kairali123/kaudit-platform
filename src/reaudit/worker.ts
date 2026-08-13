@@ -38,7 +38,9 @@ export async function runReauditBatch(options: {
   processor: ReauditProcessor
   batchSize: number
   now?: () => Date
-  onProgress?: (summary: ReauditWorkerSummary) => void
+  onProgress?: (
+    summary: Readonly<ReauditWorkerSummary>,
+  ) => void | Promise<void>
   /** Graceful pause gate, checked before each new call is claimed. */
   shouldContinue?: () => Promise<boolean>
 }): Promise<ReauditWorkerSummary> {
@@ -68,7 +70,7 @@ export async function runReauditBatch(options: {
     )
     if (started === 'already_completed') {
       summary.alreadyCompleted += 1
-      options.onProgress?.(summary)
+      await options.onProgress?.({ ...summary })
       continue
     }
     let result: ReauditItemResult
@@ -93,7 +95,7 @@ export async function runReauditBatch(options: {
     else if (outcome === 'retry_scheduled') summary.retriesScheduled += 1
     else if (outcome === 'terminal_failure') summary.terminalFailures += 1
     else summary.alreadyCompleted += 1
-    options.onProgress?.(summary)
+    await options.onProgress?.({ ...summary })
   }
   return summary
 }

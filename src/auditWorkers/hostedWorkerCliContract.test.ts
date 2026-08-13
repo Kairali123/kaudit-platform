@@ -34,7 +34,16 @@ test('bounded Billing Audit drains batches but cannot also watch forever', () =>
   assert.match(billingWorker, /observedState: 'idle'/)
 })
 
-test('bounded Call Audit exits on idle, pause, or fault instead of polling', () => {
+test('bounded Call Audit polls idle until deadline and exits on pause or fault', () => {
   assert.match(callWorker, /if \(drain\) \{[\s\S]*result\.outcome === 'faulted'/)
-  assert.match(callWorker, /break[\s\S]*await wait\(pollMs\)/)
+  assert.match(callWorker, /result\.outcome === 'paused'\) break/)
+  assert.match(callWorker, /observedState: 'running'/)
+  assert.match(callWorker, /await wait\(pollMs\)[\s\S]*continue/)
+  assert.match(callWorker, /if \(drain && Date\.now\(\) >= deadline\)/)
+})
+
+test('Billing Audit publishes each settled candidate before continuing', () => {
+  assert.match(billingWorker, /onProgress: async/)
+  assert.match(billingWorker, /processedDelta: 1/)
+  assert.match(billingWorker, /await control\.recordObservation/)
 })
