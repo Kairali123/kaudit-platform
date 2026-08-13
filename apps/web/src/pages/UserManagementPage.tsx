@@ -25,6 +25,7 @@ import {
   type UserAdminListPage,
   type UserRole,
 } from '../lib/api'
+import { userPasswordValidationMessage } from '../lib/userAdminValidation'
 
 type DialogMode = 'create' | 'edit' | 'password' | 'tombstone'
 
@@ -65,6 +66,7 @@ export function UserManagementPage() {
   const [password, setPassword] = useState('')
   const [role, setRole] = useState<UserRole>('user')
   const [success, setSuccess] = useState<string | null>(null)
+  const [validationError, setValidationError] = useState<string | null>(null)
 
   const query = useQuery({
     queryKey: ['users', offset],
@@ -89,6 +91,7 @@ export function UserManagementPage() {
     setEmail('')
     setPassword('')
     setRole('user')
+    setValidationError(null)
   }
 
   function closeDialog(): void {
@@ -116,6 +119,18 @@ export function UserManagementPage() {
   function submit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault()
     if (!dialog) return
+    if (dialog.mode === 'create' || dialog.mode === 'password') {
+      const passwordError = userPasswordValidationMessage(password, {
+        username,
+        email,
+      })
+      if (passwordError) {
+        mutation.reset()
+        setValidationError(passwordError)
+        return
+      }
+    }
+    setValidationError(null)
     const userId = dialog.user?.id
     if (dialog.mode === 'create') {
       mutation.mutate({
@@ -312,7 +327,19 @@ export function UserManagementPage() {
               {(dialog.mode === 'create' || dialog.mode === 'password') && (
                 <label className="password-field">
                   {dialog.mode === 'create' ? 'Password' : 'New password'}
-                  <input type="password" value={password} onChange={(event) => setPassword(event.target.value)} minLength={12} maxLength={256} autoComplete="new-password" required />
+                  <input
+                    type="password"
+                    value={password}
+                    onChange={(event) => {
+                      setPassword(event.target.value)
+                      setValidationError(null)
+                    }}
+                    minLength={12}
+                    maxLength={256}
+                    autoComplete="new-password"
+                    aria-invalid={validationError !== null}
+                    required
+                  />
                   <small>12+ characters with uppercase, lowercase, number, and symbol; do not include the username or email name.</small>
                 </label>
               )}
@@ -321,9 +348,9 @@ export function UserManagementPage() {
                   The account will be permanently disabled, its username retired, and all sessions revoked.
                 </Notice>
               )}
-              {mutation.error && (
+              {(validationError || mutation.error) && (
                 <Notice tone="warning" title="Change not completed">
-                  {mutation.error.message}
+                  {validationError ?? mutation.error?.message}
                 </Notice>
               )}
               <footer>
