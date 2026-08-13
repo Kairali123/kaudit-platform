@@ -599,6 +599,39 @@ test('the hosted worker dispatcher passes only with a valid repository and ref',
   assert.deepEqual(report.optionalFeatures, ['auditWorkerDispatch'])
 })
 
+test('persistent workers need no dashboard-held provider credential', () => {
+  const report = evaluate({
+    ...productionEnv(),
+    KAUDIT_AUDIT_WORKER_CONTROL_MODE: 'persistent',
+  })
+  assert.equal(report.ok, true)
+  assert.deepEqual(report.optionalFeatures, ['persistentAuditWorkers'])
+})
+
+test('persistent mode ignores dormant GitHub dispatch configuration', () => {
+  const report = evaluate({
+    ...productionEnv(),
+    KAUDIT_AUDIT_WORKER_CONTROL_MODE: 'persistent',
+    KAUDIT_GITHUB_WORKER_ENABLED: 'true',
+    KAUDIT_GITHUB_WORKER_TOKEN: 'synthetic-dormant-token',
+  })
+  assert.equal(report.ok, true)
+  assert.deepEqual(report.optionalFeatures, ['persistentAuditWorkers'])
+})
+
+test('an unknown worker control mode is rejected by variable name only', () => {
+  const sensitive = 'sensitive-mode-value'
+  const report = evaluate({
+    ...productionEnv(),
+    KAUDIT_AUDIT_WORKER_CONTROL_MODE: sensitive,
+  })
+  assert.deepEqual(codes(report), ['FEATURE_FLAG_INVALID'])
+  assert.deepEqual(variablesFor(report, 'FEATURE_FLAG_INVALID'), [
+    'KAUDIT_AUDIT_WORKER_CONTROL_MODE',
+  ])
+  assert.equal(formatPreflightReport(report).includes(sensitive), false)
+})
+
 test('hosted worker provider configuration cannot sit behind a disabled gate', () => {
   const report = evaluate({
     ...productionEnv(),

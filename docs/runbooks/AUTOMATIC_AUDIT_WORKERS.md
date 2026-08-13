@@ -48,3 +48,66 @@ therefore also requires a persistent worker/import runtime with:
 
 Applying the migration, starting either production worker, and selecting the
 worker host are deployment operations, not build steps.
+
+## Persistent dashboard control
+
+Set `KAUDIT_AUDIT_WORKER_CONTROL_MODE=persistent` on the Vercel dashboard/API.
+In this mode Resume updates `desired_state` in MySQL and performs no workflow
+dispatch or provider request. The already-supervised process notices the state
+on its next poll. Stop uses the same durable row and each worker checks it before
+claiming another candidate.
+
+Leave the variable unset to preserve the existing
+`KAUDIT_GITHUB_WORKER_ENABLED` fallback. `disabled` makes Resume unavailable;
+`github` explicitly selects the hosted workflow dispatcher.
+
+## Host discovery gate
+
+Do not install service files until the host has been inspected. Record these
+facts without copying secret values into a ticket, shell history, or this file:
+
+1. OS and version, init/process manager, and whether containers are already the
+   established deployment pattern.
+2. Unprivileged deployment account, repository or immutable release path, and
+   writable state directories.
+3. Node/npm paths and the exact supported Node major from `package.json`.
+4. Secret delivery mechanism by name only: systemd credentials/environment
+   file, container secret, or the host's existing secret manager.
+5. Outbound access to MySQL, the model provider, and the recording proxy.
+
+The selected supervisor must run Billing Audit and Call Audit as independent
+services, restart on failure with a bounded delay, send SIGTERM for graceful
+stop, cap retained logs, and start only after networking and secret mounts are
+available. Never put an environment value on a command line.
+
+## Release shape
+
+Build and verify an immutable release directory, then repoint the host's
+`current` reference and restart one worker at a time. Keep the previous release
+available for rollback. The worker processes need these fixed commands:
+
+```text
+npm run audit:worker
+npm run callaudit:worker
+```
+
+Billing Audit must receive `KAUDIT_AUDIT_MODE=EXECUTE` and
+`KAUDIT_AUDIT_WATCH=true`. Call Audit must retain the approved
+`KAUDIT_CALL_AUDIT_AUTO_START` boundary for first initialization; once the SQL
+checkpoint exists, changing the environment does not rewrite it.
+
+## Safe smoke checks
+
+After each service starts, verify only process status and the bounded public
+worker state. Do not run `callaudit:batch`, the rule test lab, a sample audit, or
+any command that sends evidence to a paid model. Confirm that:
+
+- both service processes remain active and hold separate advisory locks;
+- heartbeats advance while desired state is `running`;
+- Stop settles after the current candidate and Resume returns to polling;
+- service logs contain only bounded codes and aggregate counters; and
+- a second copy exits without processing because it cannot acquire the lock.
+
+Rollback repoints `current` to the prior verified release and restarts the two
+services separately. Database checkpoints, results, usage events, and permanent
+spend claims are never rolled back or deleted with application code.

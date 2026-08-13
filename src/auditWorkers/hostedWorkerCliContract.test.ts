@@ -20,11 +20,23 @@ test('both hosted workers use the shared verified TLS resolver', () => {
 
 test('both drain modes stop claiming work before the host deadline', () => {
   assert.match(callWorker, /KAUDIT_CALL_AUDIT_DRAIN/)
-  assert.match(callWorker, /shouldContinue: async \(\) => !drain \|\| Date\.now\(\) < deadline/)
+  assert.match(
+    callWorker,
+    /shouldContinue: async \(\) =>[\s\S]{0,100}!shutdownRequested[\s\S]{0,100}!drain \|\| Date\.now\(\) < deadline/,
+  )
   assert.match(billingWorker, /KAUDIT_AUDIT_DRAIN/)
   assert.match(billingWorker, /!drain \|\| Date\.now\(\) < deadline/)
   for (const source of [callWorker, billingWorker]) {
     assert.match(source, /KAUDIT_WORKER_DEADLINE_SECONDS/)
+  }
+})
+
+test('both persistent workers finish the current item on termination', () => {
+  for (const source of [callWorker, billingWorker]) {
+    assert.match(source, /\['SIGINT', 'SIGTERM'\]/)
+    assert.match(source, /shutdownRequested = true/)
+    assert.match(source, /!shutdownRequested/)
+    assert.match(source, /stopped gracefully/)
   }
 })
 

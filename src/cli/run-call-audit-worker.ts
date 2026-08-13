@@ -10,6 +10,13 @@ import { createOpenAiCallAuditModel } from '../adapters/openaiCallAuditClient.ts
 import { runAutomaticCallAuditCycle } from '../callaudit/automaticWorker.ts'
 
 const WORKER_ERROR = 'CALL_AUDIT_AUTO_WORKER_FAILED'
+let shutdownRequested = false
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    shutdownRequested = true
+  })
+}
 
 function required(name: string): string {
   const value = process.env[name]?.trim()
@@ -78,6 +85,14 @@ async function main(): Promise<void> {
 
     process.stdout.write('[call-audit-worker] started\n')
     for (;;) {
+      if (shutdownRequested) {
+        await workerControl.recordObservation({
+          system: 'call',
+          observedState: 'idle',
+        })
+        process.stdout.write('[call-audit-worker] stopped gracefully\n')
+        break
+      }
       if (drain && Date.now() >= deadline) {
         await workerControl.recordObservation({
           system: 'call',
@@ -95,7 +110,8 @@ async function main(): Promise<void> {
         model,
         initialCheckpoint,
         batchSize,
-        shouldContinue: async () => !drain || Date.now() < deadline,
+        shouldContinue: async () =>
+          !shutdownRequested && (!drain || Date.now() < deadline),
       })
       if (result.outcome === 'processed') {
         process.stdout.write(

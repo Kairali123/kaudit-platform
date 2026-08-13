@@ -11,6 +11,14 @@ import { parseRecordingBackedTaskIds } from '../reaudit/scope.ts'
 import { loadRuntimeConfig } from '../config/runtime.ts'
 import { resolveDatabaseTls } from '../runtime/databaseTls.ts'
 
+let shutdownRequested = false
+
+for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+  process.once(signal, () => {
+    shutdownRequested = true
+  })
+}
+
 function required(name: string): string {
   const value = process.env[name]?.trim()
   if (!value) throw new Error(`${name} is required`)
@@ -105,6 +113,14 @@ async function main(): Promise<void> {
       `[audit-worker] started; every already-audited call is skipped; scope=${taskIds ? `${taskIds.length} exact task IDs` : 'all eligible calls'}\n`,
     )
     for (;;) {
+      if (shutdownRequested) {
+        await control.recordObservation({
+          system: 'billing',
+          observedState: 'idle',
+        })
+        process.stdout.write('[audit-worker] stopped gracefully\n')
+        break
+      }
       const desired = await control.getDesiredState('billing')
       if (desired === 'paused') {
         await control.recordObservation({
@@ -127,6 +143,7 @@ async function main(): Promise<void> {
           results,
           batchSize,
           shouldContinue: async () =>
+            !shutdownRequested &&
             (await control.getDesiredState('billing')) === 'running' &&
             (!drain || Date.now() < deadline),
           processor: {
@@ -176,6 +193,14 @@ async function main(): Promise<void> {
       })
       completed += summary.completed
       if (summary.stoppedEarly) {
+        if (shutdownRequested) {
+          await control.recordObservation({
+            system: 'billing',
+            observedState: 'idle',
+          })
+          process.stdout.write('[audit-worker] stopped gracefully\n')
+          break
+        }
         if (!watch || drain) break
         await wait(pollMs)
         continue

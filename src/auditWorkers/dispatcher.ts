@@ -3,6 +3,7 @@ import { parseAuditSystem, type AuditSystem } from './control.ts'
 
 const WORKFLOW_FILE = 'audit-worker.yml'
 const DISPATCH_TIMEOUT_MS = 10_000
+const CONTROL_MODE_VARIABLE = 'KAUDIT_AUDIT_WORKER_CONTROL_MODE'
 
 export interface AuditWorkerDispatcher {
   dispatch(system: AuditSystem): Promise<void>
@@ -27,8 +28,22 @@ function enabled(value: string | undefined): boolean {
   return value?.trim().toLowerCase() === 'true'
 }
 
-function githubConfig(env: NodeJS.ProcessEnv): GitHubDispatcherConfig | null {
-  if (!enabled(env.KAUDIT_GITHUB_WORKER_ENABLED)) return null
+function controlMode(
+  env: NodeJS.ProcessEnv,
+): 'disabled' | 'github' | 'persistent' {
+  const value = env[CONTROL_MODE_VARIABLE]?.trim().toLowerCase()
+  if (!value) {
+    return enabled(env.KAUDIT_GITHUB_WORKER_ENABLED) ? 'github' : 'disabled'
+  }
+  if (value === 'disabled' || value === 'github' || value === 'persistent') {
+    return value
+  }
+  throw new ConfigurationError(
+    'Audit worker control mode must be disabled, github, or persistent',
+  )
+}
+
+function githubConfig(env: NodeJS.ProcessEnv): GitHubDispatcherConfig {
 
   const repository = env.KAUDIT_GITHUB_WORKER_REPOSITORY?.trim() || ''
   const ref = env.KAUDIT_GITHUB_WORKER_REF?.trim() || ''
@@ -49,18 +64,27 @@ function githubConfig(env: NodeJS.ProcessEnv): GitHubDispatcherConfig | null {
 }
 
 /**
- * Creates the dashboard's narrow GitHub Actions edge.
+ * Creates the dashboard's narrow worker-control edge.
  *
- * Provider response bodies are deliberately never read. They can contain
- * repository metadata or provider prose, while the application needs only the
- * accepted/refused status to make its control decision.
+ * Persistent mode is an intentionally empty wake operation: independently
+ * supervised workers are already polling durable MySQL intent. GitHub mode
+ * preserves the bounded workflow-dispatch fallback. Provider response bodies
+ * are deliberately never read.
  */
 export function createGitHubActionsAuditWorkerDispatcher(
   env: NodeJS.ProcessEnv,
   fetcher: typeof fetch = fetch,
 ): AuditWorkerDispatcher | undefined {
+  const mode = controlMode(env)
+  if (mode === 'disabled') return undefined
+  if (mode === 'persistent') {
+    return {
+      async dispatch(system) {
+        parseAuditSystem(system)
+      },
+    }
+  }
   const config = githubConfig(env)
-  if (!config) return undefined
 
   return {
     async dispatch(system) {

@@ -58,6 +58,7 @@ export type OptionalFeatureId =
   | 'recordingProxy'
   | 'oidcBrowserFlow'
   | 'auditWorkerDispatch'
+  | 'persistentAuditWorkers'
 
 export interface PreflightFinding {
   code: PreflightErrorCode
@@ -178,6 +179,7 @@ export const REPORTABLE_VARIABLES: readonly string[] = Object.freeze([
   'KAUDIT_UNPOD_PROXY_BASE',
   'KAUDIT_ALLOWED_RECORDING_HOSTS',
   'OPENAI_API_KEY',
+  'KAUDIT_AUDIT_WORKER_CONTROL_MODE',
   'KAUDIT_GITHUB_WORKER_ENABLED',
   'KAUDIT_GITHUB_WORKER_REPOSITORY',
   'KAUDIT_GITHUB_WORKER_REF',
@@ -389,15 +391,22 @@ export function evaluateVercelReleasePreflight(
   // audit-worker-dispatch — a dashboard-held provider credential, armed only
   // by its dedicated gate. Values are shaped here but never retained or
   // reported; findings carry variable names only.
+  const workerMode =
+    env.KAUDIT_AUDIT_WORKER_CONTROL_MODE?.trim().toLowerCase() || null
   const workerFlag = env.KAUDIT_GITHUB_WORKER_ENABLED?.trim().toLowerCase()
   const workerVariables = [
     'KAUDIT_GITHUB_WORKER_REPOSITORY',
     'KAUDIT_GITHUB_WORKER_REF',
     'KAUDIT_GITHUB_WORKER_TOKEN',
   ] as const
-  if (workerFlag && workerFlag !== 'true' && workerFlag !== 'false') {
+  const validWorkerModes = ['disabled', 'github', 'persistent']
+  if (workerMode && !validWorkerModes.includes(workerMode)) {
+    fail('FEATURE_FLAG_INVALID', 'KAUDIT_AUDIT_WORKER_CONTROL_MODE')
+  } else if (workerMode === 'persistent') {
+    optionalFeatures.push('persistentAuditWorkers')
+  } else if (workerFlag && workerFlag !== 'true' && workerFlag !== 'false') {
     fail('FEATURE_FLAG_INVALID', 'KAUDIT_GITHUB_WORKER_ENABLED')
-  } else if (workerFlag === 'true') {
+  } else if (workerMode === 'github' || (!workerMode && workerFlag === 'true')) {
     const missing = workerVariables.filter((name) => !set(env, name))
     const repository = env.KAUDIT_GITHUB_WORKER_REPOSITORY?.trim() || ''
     const ref = env.KAUDIT_GITHUB_WORKER_REF?.trim() || ''

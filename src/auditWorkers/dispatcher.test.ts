@@ -24,6 +24,50 @@ test('GitHub dispatch is deny-by-default', () => {
   )
 })
 
+test('persistent mode resumes through durable state without provider traffic', async () => {
+  let requests = 0
+  const dispatcher = createGitHubActionsAuditWorkerDispatcher(
+    {
+      ...configured,
+      KAUDIT_AUDIT_WORKER_CONTROL_MODE: 'persistent',
+    },
+    (async () => {
+      requests += 1
+      throw new Error('persistent mode must not call a provider')
+    }) as typeof fetch,
+  )
+
+  await dispatcher?.dispatch('billing')
+  await dispatcher?.dispatch('call')
+  assert.equal(requests, 0)
+})
+
+test('an invalid explicit control mode fails without reading provider values', () => {
+  const sensitive = 'sensitive-value-that-must-not-appear'
+  assert.throws(
+    () =>
+      createGitHubActionsAuditWorkerDispatcher({
+        KAUDIT_AUDIT_WORKER_CONTROL_MODE: sensitive,
+        KAUDIT_GITHUB_WORKER_TOKEN: sensitive,
+      }),
+    (error: Error) => {
+      assert.ok(error instanceof ConfigurationError)
+      assert.equal(error.message.includes(sensitive), false)
+      return true
+    },
+  )
+})
+
+test('explicit github mode validates its complete provider configuration', () => {
+  assert.throws(
+    () =>
+      createGitHubActionsAuditWorkerDispatcher({
+        KAUDIT_AUDIT_WORKER_CONTROL_MODE: 'github',
+      }),
+    ConfigurationError,
+  )
+})
+
 test('dispatch sends only the closed audit system and configured ref', async () => {
   const requests: Array<{ url: string; init?: RequestInit }> = []
   const dispatcher = createGitHubActionsAuditWorkerDispatcher(
