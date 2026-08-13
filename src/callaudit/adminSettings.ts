@@ -54,6 +54,10 @@ import {
 /** Admin-only settings API. Distinct from the sanitized reporting route. */
 export const CALL_AUDIT_SETTINGS_ROUTE = '/api/v1/call-audit/settings'
 
+/** Admin-only lifecycle switch for an existing immutable rule snapshot. */
+export const CALL_AUDIT_RULE_ACTIVATE_ROUTE =
+  '/api/v1/call-audit/settings/activate'
+
 /**
  * Admin-only rule TEST LAB, under the settings module and gated the same way.
  * POST only, and transient: a submission is held for one model call and leaves
@@ -303,8 +307,8 @@ export interface CallAuditSettingsDto {
   recentRuns: CallAuditSettingsRunDto[]
   /**
    * True when no version is active, so the screen can say plainly that a create
-   * may also activate. With a live version present, activation is refused by the
-   * append-only control repository rather than silently rewriting history.
+   * may also activate. When a version is already live, a new snapshot is saved
+   * as draft and may then be selected through Version history.
    */
   activationAvailable: boolean
 }
@@ -466,6 +470,40 @@ export function parseCallAuditSettingsCreate(
     changeReason: optionalReason(record.changeReason),
     activate: activate === true,
     createdBy: optionalActor(actorUserId),
+  }
+}
+
+export interface CallAuditSettingsActivateRequest {
+  ruleVersionId: string
+  activatedBy: string | null
+}
+
+/**
+ * Parses only the selected rule id. The actor always comes from the
+ * authenticated session and can never be supplied or impersonated by the body.
+ */
+export function parseCallAuditSettingsActivate(
+  body: unknown,
+  actorUserId: string | null = null,
+): CallAuditSettingsActivateRequest {
+  if (!body || typeof body !== 'object' || Array.isArray(body)) {
+    throw new CallAuditSettingsRequestError('body', 'must be an object')
+  }
+  const ruleVersionId = (body as Record<string, unknown>).ruleVersionId
+  if (
+    typeof ruleVersionId !== 'string' ||
+    !ruleVersionId.trim() ||
+    ruleVersionId.length > MAX_ID_LENGTH ||
+    !SAFE_ID.test(ruleVersionId)
+  ) {
+    throw new CallAuditSettingsRequestError(
+      'ruleVersionId',
+      'must be a rule version id',
+    )
+  }
+  return {
+    ruleVersionId,
+    activatedBy: optionalActor(actorUserId),
   }
 }
 
@@ -655,6 +693,28 @@ export interface CallAuditSettingsCreateResultDto {
   promptSha256: string
   configSha256: string
   createdAt: string
+}
+
+export interface CallAuditSettingsActivateResultDto {
+  ruleVersionId: string
+  status: 'active'
+  statusLabel: string
+  outcome: 'activated' | 'replayed'
+  activatedAt: string
+}
+
+export function toActivateResultDto(input: {
+  ruleVersionId: string
+  outcome: 'activated' | 'replayed'
+  activatedAt: string
+}): CallAuditSettingsActivateResultDto {
+  return {
+    ruleVersionId: input.ruleVersionId,
+    status: 'active',
+    statusLabel: RULE_VERSION_STATUS_LABELS.active,
+    outcome: input.outcome,
+    activatedAt: input.activatedAt,
+  }
 }
 
 export function toCreateResultDto(input: {

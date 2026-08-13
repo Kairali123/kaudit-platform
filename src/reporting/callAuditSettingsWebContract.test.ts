@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   ADMIN_EDITABLE_FIELDS,
+  CALL_AUDIT_RULE_ACTIVATE_ROUTE,
   CALL_AUDIT_RULE_TEST_ROUTE,
   CALL_AUDIT_SETTINGS_PAGE_ROUTE,
   CALL_AUDIT_SETTINGS_ROUTE,
@@ -21,7 +22,7 @@ import {
  * belongs to the separate Billing Audit module. The project has no browser test
  * runner, so this pins what a render test would otherwise catch: the wiring,
  * the admin-only reachability, the absence of forbidden fields, and the layout
- * rules that keep a twelve-column table from taking the page sideways with it.
+ * rules that keep a dense version table from taking the page sideways with it.
  */
 
 const WEB_ROOT = path.resolve(import.meta.dirname, '../../apps/web/src')
@@ -75,17 +76,34 @@ test('the settings page reads only the admin settings routes', async () => {
     page.includes(CALL_AUDIT_SETTINGS_ROUTE),
     'the page must call the admin settings route',
   )
-  // Exactly two APIs are reachable from this page: the settings surface and
-  // the admin test lab that lives under it. Nothing else, in either order.
+  // Exactly three APIs are reachable from this page: settings, lifecycle
+  // activation, and the transient admin test lab. Nothing else is reachable.
   const routes = page.match(/\/api\/v1\/[a-z0-9/-]+/g) ?? []
   assert.deepEqual(
     [...new Set(routes)].sort(),
-    [CALL_AUDIT_RULE_TEST_ROUTE, CALL_AUDIT_SETTINGS_ROUTE].sort(),
+    [
+      CALL_AUDIT_RULE_ACTIVATE_ROUTE,
+      CALL_AUDIT_RULE_TEST_ROUTE,
+      CALL_AUDIT_SETTINGS_ROUTE,
+    ].sort(),
   )
   // Every field the server treats as administrator-owned has an input.
   for (const field of ADMIN_EDITABLE_FIELDS) {
     assert.ok(page.includes(`'${field}'`), `${field} needs a form field`)
   }
+})
+
+test('version history exposes a guarded administrator activation action', async () => {
+  const page = renderable(await webSource('pages/CallAuditSettingsPage.tsx'))
+  assert.match(
+    page,
+    new RegExp(`const ACTIVATE_ROUTE = '${CALL_AUDIT_RULE_ACTIVATE_ROUTE}'`),
+  )
+  assert.match(page, /postJson<CallAuditRuleVersionActivated>\(ACTIVATE_ROUTE,/)
+  assert.match(page, /confirmHistoryActivate ===\s*version\.ruleVersionId/)
+  assert.match(page, /activate\.mutate\(version\)/)
+  assert.match(page, /!version\.matchesApplicationContract/)
+  assert.match(page, /Stored rule\s*contents were not modified/)
 })
 
 test('the rule test lab posts to the test route and only ever POSTs', async () => {
@@ -500,13 +518,14 @@ test('the settings page is routed and reachable only from admin navigation', asy
   assert.ok(settings.length > 0, 'the settings nav item must be found')
   assert.match(settings, /admin: true/)
 
-  // Sanitized reporting stays visible to every logged-in user.
+  // Sanitized reporting is admin-flagged too: the whole Call Audit group is
+  // administrator-only, and the same filter drops both links for everyone else.
   const report = callAudit.slice(
-    callAudit.indexOf("{ to: '/call-audit',"),
+    callAudit.indexOf("to: '/call-audit',"),
     callAudit.indexOf(`to: '${CALL_AUDIT_SETTINGS_PAGE_ROUTE}'`),
   )
   assert.ok(report.length > 0, 'the report nav item must be found')
-  assert.equal(report.includes('admin'), false)
+  assert.match(report, /admin: true/)
   // Without `end`, the report link would match the settings child route and
   // both nav items would read as active at once.
   assert.match(report, /end: true/)

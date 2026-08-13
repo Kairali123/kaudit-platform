@@ -67,6 +67,13 @@ export const CALL_AUDIT_REPORT_TITLE = 'Kserve Call Audit Report'
 
 export const CALL_AUDIT_REPORT_ROUTE = '/api/v1/call-audit/report'
 
+/**
+ * The browser page that renders the report. Named here beside its API route
+ * because the two carry the SAME administrator-only gate: hiding the nav item
+ * is presentation, and a pasted URL has to be refused by the server as well.
+ */
+export const CALL_AUDIT_PAGE_ROUTE = '/call-audit'
+
 /** Sanitized-reporting boundary, restated to the reader of every report. */
 export const CALL_AUDIT_CONTENT_BOUNDARY =
   'Anonymous Task IDs and sanitized audit results only. Raw transcripts, ' +

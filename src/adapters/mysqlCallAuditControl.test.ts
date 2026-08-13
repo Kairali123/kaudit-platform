@@ -356,21 +356,47 @@ test('every FOR UPDATE lock is taken on a control table only', () => {
   }
 })
 
-test('no statement updates a rule-version row', () => {
-  for (const sql of ALL_SQL) {
-    assert.equal(
-      /UPDATE\s+`kaudit_call_audit_rule_version`/i.test(sql),
-      false,
-      `an activated or retired contract must never be edited: ${sql}`,
-    )
+test('rule-version updates are restricted to lifecycle columns', () => {
+  const lifecycleUpdates = ALL_SQL.filter((sql) =>
+    /UPDATE\s+`kaudit_call_audit_rule_version`/i.test(sql),
+  )
+  assert.equal(lifecycleUpdates.length, 2)
+  for (const sql of lifecycleUpdates) {
+    assert.match(sql, /SET\s+`status`\s*=/i)
+    for (const immutable of [
+      'version_label',
+      'business_prompt',
+      'prompt_sha256',
+      'model_provider',
+      'model_name',
+      'model_version',
+      'temperature',
+      'rule_contract_version',
+      'output_schema_version',
+      'taxonomy_version',
+      'scoring_config_version',
+      'scoring_config_json',
+      'config_sha256',
+      'change_reason',
+      'created_by',
+      'created_at',
+    ]) {
+      assert.equal(
+        new RegExp('SET[\\s\\S]*`' + immutable + '`\\s*=', 'i').test(sql),
+        false,
+        `activation must not edit ${immutable}: ${sql}`,
+      )
+    }
   }
-  // Corrections are new versions, so the writer needs no update path at all.
   const updated = new Set(
     ALL_SQL.flatMap((sql) =>
       [...sql.matchAll(/UPDATE\s+`([a-z0-9_]+)`/gi)].map((match) => match[1]),
     ),
   )
-  assert.deepEqual([...updated], ['kaudit_call_audit_run'])
+  assert.deepEqual(
+    [...updated].sort(),
+    ['kaudit_call_audit_rule_version', 'kaudit_call_audit_run'],
+  )
 })
 
 test('the adapter uses execute, never query', () => {
@@ -760,6 +786,154 @@ test('activating a second version while one is active is refused', async () => {
   assert.ok(guard)
   assert.equal(guard.via, 'connection')
   assert.match(guard.sql, /FROM `kaudit_call_audit_rule_version`/)
+})
+
+test('a stored draft can be activated without changing contract content', async () => {
+  const snapshot = activation()
+  const db = fakePool({
+    rows: [
+      {
+        match: ['WHERE `status` = ?', 'FOR UPDATE'],
+        rows: [],
+      },
+      {
+        match: ['WHERE `id` = ?', 'FOR UPDATE'],
+        rows: [ruleVersionRow(snapshot, DRAFT_LIFECYCLE)],
+      },
+    ],
+  })
+
+  const result = await createMysqlCallAuditControlRepository(
+    db.pool,
+  ).activateRuleVersion({
+    ruleVersionId: buildRuleVersionId(snapshot),
+    activatedBy: 'usr_admin_0002',
+    activatedAt: '2026-09-01 09:00:00.000000',
+    requiredConfigSha256: snapshot.configSha256,
+  })
+
+  assert.deepEqual(result, {
+    id: buildRuleVersionId(snapshot),
+    outcome: 'activated',
+  })
+  assert.deepEqual(db.transaction, ['begin', 'commit'])
+  assert.equal(db.all('SET `status` = ?, `retired_by`').length, 0)
+  const update = db.find('SET `status` = ?,\n       `activated_by`')
+  assert.ok(update)
+  assert.deepEqual(update.parameters, [
+    'active',
+    'usr_admin_0002',
+    '2026-09-01 09:00:00.000000',
+    buildRuleVersionId(snapshot),
+    'draft',
+    'retired',
+  ])
+})
+
+test('activation atomically retires the current version and reactivates history', async () => {
+  const target = activation()
+  const currentId = 'crv_current0000000000000000000000000000'
+  const retired = {
+    status: 'retired',
+    createdBy: 'usr_admin_0001',
+    activatedBy: 'usr_admin_0001',
+    activatedAt: '2026-08-01 09:00:00.000000',
+    retiredBy: 'usr_admin_0001',
+    retiredAt: '2026-08-15 09:00:00.000000',
+  } as const
+  const db = fakePool({
+    rows: [
+      {
+        match: ['WHERE `status` = ?', 'FOR UPDATE'],
+        rows: [{ id: currentId }],
+      },
+      {
+        match: ['WHERE `id` = ?', 'FOR UPDATE'],
+        rows: [ruleVersionRow(target, retired)],
+      },
+    ],
+  })
+
+  const result = await createMysqlCallAuditControlRepository(
+    db.pool,
+  ).activateRuleVersion({
+    ruleVersionId: buildRuleVersionId(target),
+    activatedBy: 'usr_admin_0002',
+    activatedAt: '2026-09-01 09:00:00.000000',
+    requiredConfigSha256: target.configSha256,
+  })
+
+  assert.equal(result.outcome, 'activated')
+  assert.deepEqual(db.transaction, ['begin', 'commit'])
+  const retire = db.find('SET `status` = ?, `retired_by`')
+  assert.ok(retire)
+  assert.deepEqual(retire.parameters, [
+    'retired',
+    'usr_admin_0002',
+    '2026-09-01 09:00:00.000000',
+    currentId,
+    'active',
+  ])
+  assert.equal(db.all('UPDATE `kaudit_call_audit_rule_version`').length, 2)
+})
+
+test('activating the current version replays without a lifecycle write', async () => {
+  const snapshot = activation()
+  const id = buildRuleVersionId(snapshot)
+  const db = fakePool({
+    rows: [
+      {
+        match: ['WHERE `status` = ?', 'FOR UPDATE'],
+        rows: [{ id }],
+      },
+      {
+        match: ['WHERE `id` = ?', 'FOR UPDATE'],
+        rows: [ruleVersionRow(snapshot, ACTIVE_LIFECYCLE)],
+      },
+    ],
+  })
+
+  const result = await createMysqlCallAuditControlRepository(
+    db.pool,
+  ).activateRuleVersion({
+    ruleVersionId: id,
+    activatedBy: 'usr_admin_0002',
+    activatedAt: '2026-09-01 09:00:00.000000',
+    requiredConfigSha256: snapshot.configSha256,
+  })
+
+  assert.equal(result.outcome, 'replayed')
+  assert.deepEqual(db.transaction, ['begin', 'rollback'])
+  assert.equal(db.all('UPDATE `kaudit_call_audit_rule_version`').length, 0)
+})
+
+test('a version from another locked contract cannot be activated', async () => {
+  const snapshot = activation()
+  const db = fakePool({
+    rows: [
+      {
+        match: ['WHERE `status` = ?', 'FOR UPDATE'],
+        rows: [],
+      },
+      {
+        match: ['WHERE `id` = ?', 'FOR UPDATE'],
+        rows: [ruleVersionRow(snapshot, DRAFT_LIFECYCLE)],
+      },
+    ],
+  })
+
+  await assert.rejects(
+    createMysqlCallAuditControlRepository(db.pool).activateRuleVersion({
+      ruleVersionId: buildRuleVersionId(snapshot),
+      activatedAt: '2026-09-01 09:00:00.000000',
+      requiredConfigSha256: 'f'.repeat(64),
+    }),
+    (error: unknown) =>
+      error instanceof CallAuditControlError &&
+      error.field === 'configSha256',
+  )
+  assert.deepEqual(db.transaction, ['begin', 'rollback'])
+  assert.equal(db.all('UPDATE `kaudit_call_audit_rule_version`').length, 0)
 })
 
 test('a draft insert takes no active-version guard', async () => {

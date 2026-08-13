@@ -15,6 +15,12 @@ import {
 } from './resultRecords.ts'
 import { buildSourceRevision } from './sourceRevision.ts'
 import {
+  CALL_AUDIT_SPEND_SKIP_CODES,
+  type CallAuditSpendClaimResult,
+  type CallAuditSpendSkipCode,
+  type ContentAuditSpendClaimInput,
+} from './spendClaim.ts'
+import {
   CALL_AUDIT_SOURCE_TABLE,
   type CallAuditSourceReference,
   type InternalSourceCandidate,
@@ -149,6 +155,7 @@ function syntheticOutput(overrides: Record<string, unknown> = {}) {
 
 type RepositoryCall =
   | { kind: 'sourceRef'; reference: CallAuditSourceReference }
+  | { kind: 'spendClaim'; input: ContentAuditSpendClaimInput }
   | { kind: 'resultBundle'; bundle: CallAuditResultBundle }
   | { kind: 'usageAttempt'; record: CallAuditUsageEventRecord }
 
@@ -169,6 +176,7 @@ const DEFAULT_SOURCE_REF: SourceReferencePersistResult = {
 
 function fakeRepository(
   sourceRef: SourceReferencePersistResult = DEFAULT_SOURCE_REF,
+  claim: CallAuditSpendClaimResult = { outcome: 'claimed' },
 ): FakeRepository {
   const calls: RepositoryCall[] = []
   return {
@@ -176,6 +184,10 @@ function fakeRepository(
     async upsertSourceReference(reference) {
       calls.push({ kind: 'sourceRef', reference })
       return sourceRef
+    },
+    async claimContentAuditSpend(input) {
+      calls.push({ kind: 'spendClaim', input })
+      return claim
     },
     async saveResultBundle(bundle) {
       calls.push({ kind: 'resultBundle', bundle })
@@ -365,6 +377,9 @@ test('a transcript is audited once and persists the result, its metric rows, and
   // source ref id, and the usage event needs the result row to exist.
   assert.deepEqual(kinds(repository), [
     'sourceRef',
+    // The spend claim is taken BEFORE the model, and after the revision it is
+    // keyed by has been persisted.
+    'spendClaim',
     'resultBundle',
     'usageAttempt',
   ])
@@ -455,6 +470,9 @@ test('a refusal persists a failed result and a refused attempt with a safe code 
 
   assert.deepEqual(kinds(repository), [
     'sourceRef',
+    // The spend claim is taken BEFORE the model, and after the revision it is
+    // keyed by has been persisted.
+    'spendClaim',
     'resultBundle',
     'usageAttempt',
   ])
@@ -541,6 +559,9 @@ test('a content model that throws is recorded as a failed attempt with activated
   // A throw does not skip the records: the request may have reached the provider.
   assert.deepEqual(kinds(repository), [
     'sourceRef',
+    // The spend claim is taken BEFORE the model, and after the revision it is
+    // keyed by has been persisted.
+    'spendClaim',
     'resultBundle',
     'usageAttempt',
   ])
@@ -623,6 +644,217 @@ test('a provider outcome is never thrown as an exception', async () => {
     )
     assert.equal(summary.result.processingStatus, 'failed')
   }
+})
+
+// ---------------------------------------------------------------------------
+// Cross-run duplicate-spend protection
+// ---------------------------------------------------------------------------
+
+/** A repository whose spend claim refuses, for the stated bounded reason. */
+function refusingRepository(
+  skipCode: CallAuditSpendSkipCode,
+  sourceRef: SourceReferencePersistResult = DEFAULT_SOURCE_REF,
+): FakeRepository {
+  return fakeRepository(sourceRef, { outcome: 'duplicate', skipCode })
+}
+
+test('a prior result for the exact source revision suppresses the model on a new run key', async () => {
+  // The run id is different from whatever produced the earlier result. Nothing
+  // about this run's identity is a repeat; the evidence is, and the evidence is
+  // what the claim is keyed by.
+  const repository = refusingRepository(CALL_AUDIT_SPEND_SKIP_CODES.priorResult)
+  const model = fakeModel(succeededResult())
+  const summary = await processCallAuditCandidate(
+    processInput({ runId: 'run_synth_second_0002', repository, model }),
+  )
+
+  assert.equal(
+    model.requests.length,
+    0,
+    'a revision another run already audited must not be sent to the model again',
+  )
+  assert.equal(summary.modelAttempted, false)
+  assert.equal(summary.spendSkipCode, CALL_AUDIT_SPEND_SKIP_CODES.priorResult)
+})
+
+test('no usage attempt is written for a suppressed duplicate', async () => {
+  const repository = refusingRepository(CALL_AUDIT_SPEND_SKIP_CODES.priorResult)
+  const summary = await processCallAuditCandidate(
+    processInput({ repository, model: fakeModel(succeededResult()) }),
+  )
+
+  // The usage-attempt record is the record of requests MADE. No request was
+  // made, so a row there would be phantom tokens in reliability and spend
+  // reporting.
+  assert.equal(
+    repository.calls.some((call) => call.kind === 'usageAttempt'),
+    false,
+  )
+  assert.equal(summary.usage, null)
+  assert.deepEqual(kinds(repository), [
+    'sourceRef',
+    'spendClaim',
+    'resultBundle',
+  ])
+})
+
+test('a suppressed duplicate is reported as skipped with a coded reason, never as an audit', async () => {
+  const repository = refusingRepository(CALL_AUDIT_SPEND_SKIP_CODES.priorClaim)
+  const summary = await processCallAuditCandidate(
+    processInput({ repository, model: fakeModel(succeededResult()) }),
+  )
+
+  const bundle = savedBundle(repository)
+  assert.equal(bundle.result.processingStatus, 'skipped')
+  // The transcript was auditable. The claim, not the evidence, is what stopped
+  // this run, and the row says so rather than pretending the call had none.
+  assert.equal(bundle.result.eligibility, 'content_auditable')
+  assert.equal(bundle.result.ineligibilityReason, null)
+  assert.equal(bundle.result.errorCode, CALL_AUDIT_SPEND_SKIP_CODES.priorClaim)
+  // No audit happened, so no audit time, no document, no hash, and no scores.
+  assert.equal(bundle.result.auditedAt, null)
+  assert.equal(bundle.result.resultJson, null)
+  assert.equal(bundle.result.resultSha256, null)
+  assert.equal(bundle.result.overallScore, null)
+  assert.deepEqual(bundle.metricScores, [])
+
+  assert.equal(summary.result.processingStatus, 'skipped')
+  assert.equal(summary.spendSkipCode, CALL_AUDIT_SPEND_SKIP_CODES.priorClaim)
+})
+
+test('the claim is keyed by the persisted revision, and taken before the model', async () => {
+  const persisted: SourceReferencePersistResult = {
+    id: sourceRefId('revisionkeyed'),
+    outcome: 'reused',
+  }
+  const repository = fakeRepository(persisted)
+  await processCallAuditCandidate(processInput({ repository }))
+
+  const claim = repository.calls.find((call) => call.kind === 'spendClaim')
+  assert.ok(claim && claim.kind === 'spendClaim')
+  assert.deepEqual(claim.input, {
+    sourceRefId: persisted.id,
+    runId: RUN_ID,
+    ruleVersionId: RULE_VERSION_ID,
+    claimedAt: RECORDED_AT,
+  })
+  // Only hash-derived ids and a stamp cross the port; nothing identifying.
+  const json = JSON.stringify(claim.input)
+  for (const forbidden of [TRANSCRIPT, LEAD_ID, TASK_ID, 'Saanvi', 'panchakarma']) {
+    assert.equal(json.includes(forbidden), false)
+  }
+})
+
+test('a changed source revision remains eligible for a first audit', async () => {
+  // Same source row, later transcript. `buildSourceRevision` hashes the
+  // transcript into the revision, so this is different immutable evidence with
+  // a different revision hash — and therefore a different claim key, which no
+  // run holds.
+  const revisedTranscript = `${TRANSCRIPT}\nSaanvi: I will send the details today.`
+  const first = buildSourceRevision(syntheticCandidate())
+  const revised = buildSourceRevision(
+    syntheticCandidate({ transcript: revisedTranscript }),
+  )
+  assert.equal(first.reference.sourceRowId, revised.reference.sourceRowId)
+  assert.notEqual(
+    first.reference.sourceRevisionSha256,
+    revised.reference.sourceRevisionSha256,
+    'a changed transcript must be a new revision',
+  )
+  assert.notEqual(
+    first.reference.sourceRefIdempotencyKey,
+    revised.reference.sourceRefIdempotencyKey,
+  )
+
+  const repository = fakeRepository({
+    id: sourceRefId('changedrevision'),
+    outcome: 'inserted',
+  })
+  const model = fakeModel(succeededResult())
+  const summary = await processCallAuditCandidate(
+    processInput({
+      candidate: syntheticCandidate({ transcript: revisedTranscript }),
+      repository,
+      model,
+    }),
+  )
+
+  assert.equal(model.requests.length, 1, 'new evidence is auditable')
+  assert.equal(summary.spendSkipCode, null)
+  assert.equal(summary.result.processingStatus, 'succeeded')
+  assert.equal(savedBundle(repository).result.eligibility, 'content_auditable')
+})
+
+test('a first-time candidate continues through the existing model path unchanged', async () => {
+  const repository = fakeRepository()
+  const model = fakeModel(succeededResult())
+  const summary = await processCallAuditCandidate(
+    processInput({ repository, model }),
+  )
+
+  assert.equal(model.requests.length, 1)
+  assert.equal(model.requests[0].transcript, TRANSCRIPT)
+  assert.equal(summary.spendSkipCode, null)
+  assert.equal(summary.modelAttempted, true)
+  assert.equal(summary.result.processingStatus, 'succeeded')
+  assert.equal(summary.usage?.attemptOutcome, 'succeeded')
+  assert.deepEqual(kinds(repository), [
+    'sourceRef',
+    'spendClaim',
+    'resultBundle',
+    'usageAttempt',
+  ])
+})
+
+test('an operational-only call never consumes a claim', async () => {
+  // A call with no transcript cannot spend, so it takes no claim. The
+  // transcript-bearing revision that arrives later is a different revision with
+  // a claim of its own, so nothing it needs has been used up.
+  const repository = fakeRepository()
+  await processCallAuditCandidate(
+    processInput({
+      candidate: syntheticCandidate({ transcript: null }),
+      repository,
+    }),
+  )
+  assert.equal(
+    repository.calls.some((call) => call.kind === 'spendClaim'),
+    false,
+  )
+})
+
+test('an unrecognised claim answer is refused, never read as permission', async () => {
+  // Default deny is a property of the TEST, not of the answer: anything that is
+  // not exactly `claimed` denies, so a port that grew a third outcome could not
+  // be mistaken for consent.
+  const repository = fakeRepository()
+  repository.claimContentAuditSpend = async () =>
+    ({ outcome: 'unknown_future_outcome' }) as unknown as CallAuditSpendClaimResult
+  const model = fakeModel(succeededResult())
+  const summary = await processCallAuditCandidate(
+    processInput({ repository, model }),
+  )
+
+  assert.equal(model.requests.length, 0)
+  assert.equal(summary.modelAttempted, false)
+  assert.equal(summary.usage, null)
+  assert.equal(summary.result.processingStatus, 'skipped')
+  // Normalised to a code this contract defines, so no unknown token is stored.
+  assert.equal(summary.spendSkipCode, CALL_AUDIT_SPEND_SKIP_CODES.priorClaim)
+})
+
+test('a repository without the claim gate is refused before any write', async () => {
+  const repository = fakeRepository()
+  delete (repository as Partial<FakeRepository>).claimContentAuditSpend
+  const model = fakeModel(succeededResult())
+  await assert.rejects(
+    processCallAuditCandidate(processInput({ repository, model })),
+    (error: unknown) =>
+      error instanceof CallAuditProcessorError &&
+      error.field === 'repository.claimContentAuditSpend',
+  )
+  assert.deepEqual(repository.calls, [])
+  assert.equal(model.requests.length, 0)
 })
 
 // ---------------------------------------------------------------------------
@@ -796,6 +1028,7 @@ test('the summary shape is exactly the small safe set', async () => {
     'modelAttempted',
     'result',
     'sourceRef',
+    'spendSkipCode',
     'usage',
   ])
   assert.deepEqual(Object.keys(summary.sourceRef).sort(), ['id', 'persistOutcome'])

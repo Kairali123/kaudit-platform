@@ -11,6 +11,7 @@ import {
   type RunCallAuditBatchInput,
 } from './batchRunner.ts'
 import type { CallAuditProcessingSummary } from './processor.ts'
+import { CALL_AUDIT_SPEND_SKIP_CODES } from './spendClaim.ts'
 import {
   CALL_AUDIT_SOURCE_TABLE,
   type InternalSourceCandidate,
@@ -136,6 +137,28 @@ function summaryOf(
           persistOutcome: 'inserted',
         }
       : null,
+    spendSkipCode: null,
+  }
+}
+
+/**
+ * A processor summary for a candidate the cross-run spend claim refused: a
+ * coded skip, no model attempt, and no usage attempt at all.
+ */
+function duplicateSummaryOf(marker: string): CallAuditProcessingSummary {
+  return {
+    sourceRef: { id: `cas_${marker}`, persistOutcome: 'reused' },
+    result: {
+      id: `car_${marker}`,
+      processingStatus: 'skipped',
+      // The transcript WAS auditable. What stopped it was the claim, not the
+      // evidence, and the summary must not pretend otherwise.
+      eligibility: 'content_auditable',
+      persistOutcome: 'inserted',
+    },
+    modelAttempted: false,
+    usage: null,
+    spendSkipCode: CALL_AUDIT_SPEND_SKIP_CODES.priorResult,
   }
 }
 
@@ -324,6 +347,7 @@ test('one full page is created, claimed, processed, counted, and completed', asy
       skippedTotal: 0,
       operationalOnlyTotal: 0,
       contentAuditedTotal: 2,
+      duplicateSuppressedTotal: 0,
     },
   })
 
@@ -484,6 +508,7 @@ test('an empty first page completes with zero counters and no counter write', as
     skippedTotal: 0,
     operationalOnlyTotal: 0,
     contentAuditedTotal: 0,
+    duplicateSuppressedTotal: 0,
   })
   assert.deepEqual(
     control.calls.map((call) => call.kind),
@@ -543,6 +568,7 @@ test('operational-only, audited, failed, and skipped outcomes are counted apart'
     operationalOnlyTotal: 2,
     // Only the one content-auditable candidate that actually produced an audit.
     contentAuditedTotal: 1,
+    duplicateSuppressedTotal: 0,
   })
   const finished = control.calls.at(-1)
   assert.ok(finished?.kind === 'completed')
@@ -555,6 +581,67 @@ test('operational-only, audited, failed, and skipped outcomes are counted apart'
     contentAuditableCount: 1,
     operationalOnlyCount: 2,
   })
+})
+
+test('duplicates suppressed by the spend claim count as skipped, never as audits', async () => {
+  const page = [
+    syntheticCandidate('201', '2026-07-30 19:00:00.000000'),
+    syntheticCandidate('202', '2026-07-30 19:05:00.000000'),
+    syntheticCandidate('203', '2026-07-30 19:10:00.000000'),
+  ]
+  const outcomes: Record<string, CallAuditProcessingSummary> = {
+    // First time this exact revision has been seen: a real audit.
+    '201': summaryOf('201', 'succeeded', 'content_auditable'),
+    // Already audited by an earlier run: refused, and not paid for.
+    '202': duplicateSummaryOf('202'),
+    '203': duplicateSummaryOf('203'),
+  }
+  const control = fakeControl()
+  const summary = await runCallAuditBatch(
+    baseInput({
+      control,
+      source: fakeSource([page]),
+      batchSize: 10,
+      processCandidate: async (input) => outcomes[input.candidate.sourceRowId],
+    }),
+  )
+
+  assert.deepEqual(summary.counts, {
+    processedTotal: 3,
+    // Never counted as successes: this run audited one call, not three.
+    succeededTotal: 1,
+    // Nor as failures: nothing was attempted, so nothing went wrong.
+    failedTotal: 0,
+    skippedTotal: 2,
+    operationalOnlyTotal: 0,
+    // Coverage reflects the single audit this run actually produced.
+    contentAuditedTotal: 1,
+    // And the two it deliberately declined to pay for again.
+    duplicateSuppressedTotal: 2,
+  })
+  const finished = control.calls.at(-1)
+  assert.ok(finished?.kind === 'completed')
+  assert.deepEqual(finished.counters, {
+    totalCandidates: 3,
+    processedCount: 3,
+    succeededCount: 1,
+    failedCount: 0,
+    skippedCount: 2,
+    contentAuditableCount: 1,
+    operationalOnlyCount: 0,
+  })
+})
+
+test('the stored counter columns are unchanged by duplicate suppression', () => {
+  // The seven counter columns of `kaudit_call_audit_run` are the whole storable
+  // shape, and duplicate suppression adds none: it is reported in the safe
+  // in-memory summary only, so this feature needs no run-table migration.
+  const source = readFileSync(new URL('./batchRunner.ts', import.meta.url), 'utf8')
+  const counters = source.slice(
+    source.indexOf('function countersOf('),
+    source.indexOf('// The orchestrator'),
+  )
+  assert.equal(counters.includes('duplicateSuppressedTotal'), false)
 })
 
 // ---------------------------------------------------------------------------
@@ -669,6 +756,40 @@ test('omitting the processor requires its two dependencies', async () => {
       error.code === CALL_AUDIT_RUN_ERROR_CODES.invalidInput &&
       error.field === 'persistence',
   )
+})
+
+test('a persistence without the duplicate-spend gate is refused before any run exists', async () => {
+  // Default deny reaches the wiring, not just the candidate. A repository that
+  // cannot answer "may this run spend on this revision?" is a caller mistake,
+  // and it is caught BEFORE createRun, so no run row is left behind and no page
+  // is read on the way to discovering it.
+  const control = fakeControl()
+  const input = baseInput({ control })
+  delete input.processCandidate
+  input.persistence = {
+    async upsertSourceReference() {
+      return { id: 'cas_unused', outcome: 'inserted' }
+    },
+    async saveResultBundle() {
+      return { outcome: 'inserted' }
+    },
+    async recordUsageAttempt() {
+      return { outcome: 'inserted' }
+    },
+    // claimContentAuditSpend deliberately absent.
+  } as unknown as RunCallAuditBatchInput['persistence']
+  input.model = { async auditTranscript() {
+    throw new Error('the model must never be reached')
+  } } as unknown as RunCallAuditBatchInput['model']
+
+  await assert.rejects(
+    runCallAuditBatch(input),
+    (error: unknown) =>
+      error instanceof CallAuditBatchRunError &&
+      error.code === CALL_AUDIT_RUN_ERROR_CODES.invalidInput &&
+      error.field === 'persistence.claimContentAuditSpend',
+  )
+  assert.deepEqual(control.calls, [])
 })
 
 test('the page ceiling is capped at MAX_RUN_PAGES', async () => {

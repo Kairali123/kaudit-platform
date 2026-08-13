@@ -18,6 +18,7 @@ import {
 } from '../callaudit/resultRecords.ts'
 import { validateContentAuditOutput } from '../callaudit/modelOutput.ts'
 import { buildSourceRevision } from '../callaudit/sourceRevision.ts'
+import { CALL_AUDIT_SPEND_SKIP_CODES } from '../callaudit/spendClaim.ts'
 import {
   CALL_AUDIT_SOURCE_TABLE,
   SOURCE_CATEGORICAL_FIELDS,
@@ -367,7 +368,7 @@ test('the module never touches the external source table', () => {
   }
 })
 
-test('only the six call-audit tables are written', () => {
+test('only Call Audit tables are ever named, and no external or billing table', () => {
   const targets = new Set<string>()
   for (const sql of ALL_SQL) {
     for (const match of sql.matchAll(
@@ -382,6 +383,9 @@ test('only the six call-audit tables are written', () => {
       'kaudit_call_audit_metric_score',
       'kaudit_call_audit_result',
       'kaudit_call_audit_source_ref',
+      // The duplicate-spend claim. Written by this adapter, read by nobody
+      // else, and part of the same Call Audit group.
+      'kaudit_call_audit_spend_claim',
       'kaudit_call_audit_usage_event',
     ],
   )
@@ -1383,6 +1387,176 @@ test('a usage attempt after a terminal result is still recorded', async () => {
   const outcome = await repository.recordUsageAttempt(record)
   assert.equal(outcome.outcome, 'inserted')
   assert.ok(db.find('INSERT INTO `kaudit_call_audit_usage_event`'))
+})
+
+// ---------------------------------------------------------------------------
+// Cross-run duplicate-spend claim
+// ---------------------------------------------------------------------------
+
+const CLAIM_INPUT = {
+  sourceRefId: IDENTITY.sourceRefId,
+  runId: IDENTITY.runId,
+  ruleVersionId: IDENTITY.ruleVersionId,
+  claimedAt: RECORDED_AT,
+}
+
+const DUPLICATE_KEY = () =>
+  Object.assign(new Error('duplicate entry'), { code: 'ER_DUP_ENTRY' })
+
+test('a first claim on a revision is granted and inserted with its provenance', async () => {
+  const db = fakePool()
+  const repository = createMysqlCallAuditPersistenceRepository(db.pool)
+  const outcome = await repository.claimContentAuditSpend(CLAIM_INPUT)
+
+  assert.deepEqual(outcome, { outcome: 'claimed' })
+  const insert = db.find('INSERT INTO `kaudit_call_audit_spend_claim`')
+  assert.ok(insert, 'the claim must be inserted, not merely checked')
+  assert.deepEqual(insert.parameters, [
+    IDENTITY.sourceRefId,
+    IDENTITY.runId,
+    IDENTITY.ruleVersionId,
+    RECORDED_AT,
+  ])
+  // The history check runs FIRST, so a revision an earlier run already audited
+  // never reaches the insert at all.
+  assert.ok(
+    db.statements().findIndex((sql) => sql.includes('FROM `kaudit_call_audit_result`')) <
+      db.statements().findIndex((sql) =>
+        sql.includes('INSERT INTO `kaudit_call_audit_spend_claim`'),
+      ),
+  )
+})
+
+test('a prior result from another run refuses the claim and writes nothing', async () => {
+  const db = fakePool({
+    rows: [{ match: 'FROM `kaudit_call_audit_result`', rows: [{ prior: 1 }] }],
+  })
+  const repository = createMysqlCallAuditPersistenceRepository(db.pool)
+  const outcome = await repository.claimContentAuditSpend(CLAIM_INPUT)
+
+  assert.deepEqual(outcome, {
+    outcome: 'duplicate',
+    skipCode: CALL_AUDIT_SPEND_SKIP_CODES.priorResult,
+  })
+  // A run that is not going to spend must not leave a claim saying it did.
+  assert.equal(db.find('INSERT INTO `kaudit_call_audit_spend_claim`'), undefined)
+})
+
+test('the prior-result probe asks only about this revision, and excludes the asking run', async () => {
+  const db = fakePool()
+  const repository = createMysqlCallAuditPersistenceRepository(db.pool)
+  await repository.claimContentAuditSpend(CLAIM_INPUT)
+
+  const probe = db.find('FROM `kaudit_call_audit_result`')
+  assert.ok(probe)
+  assert.match(probe.sql, /`source_ref_id` = \? AND `run_id` <> \?/)
+  assert.match(probe.sql, /LIMIT 1/)
+  assert.deepEqual(probe.parameters, [IDENTITY.sourceRefId, IDENTITY.runId])
+  // Existence is the whole question: no result payload is selected, so nothing
+  // content-bearing is loaded to answer a permission question.
+  assert.equal(/result_json|management_feedback|`intent`/.test(probe.sql), false)
+})
+
+test('two overlapping runs cannot both spend: the loser of the insert race is refused', async () => {
+  // Neither run can see a prior result — that is exactly the window a
+  // results-only check cannot close. The claim table's primary key closes it:
+  // the second INSERT is rejected by the database, not by a re-read.
+  const winner = fakePool()
+  const loser = fakePool({
+    failOn: {
+      match: 'INSERT INTO `kaudit_call_audit_spend_claim`',
+      error: DUPLICATE_KEY(),
+    },
+  })
+
+  const first = await createMysqlCallAuditPersistenceRepository(
+    winner.pool,
+  ).claimContentAuditSpend(CLAIM_INPUT)
+  const second = await createMysqlCallAuditPersistenceRepository(
+    loser.pool,
+  ).claimContentAuditSpend({ ...CLAIM_INPUT, runId: 'run-0002-concurrent' })
+
+  assert.deepEqual(first, { outcome: 'claimed' })
+  assert.deepEqual(second, {
+    outcome: 'duplicate',
+    skipCode: CALL_AUDIT_SPEND_SKIP_CODES.priorClaim,
+  })
+  const granted = [first, second].filter((r) => r.outcome === 'claimed')
+  assert.equal(granted.length, 1, 'exactly one concurrent run may spend')
+})
+
+test('the claim insert never upserts, ignores, or replaces on conflict', async () => {
+  // A silent upsert would report success to a run that did not win the race,
+  // and both runs would then call the model.
+  const sql = CALL_AUDIT_PERSISTENCE_SQL.insertSpendClaim
+  assert.equal(/ON\s+DUPLICATE\s+KEY/i.test(sql), false)
+  assert.equal(/INSERT\s+IGNORE/i.test(sql), false)
+  assert.equal(/REPLACE\s+INTO/i.test(sql), false)
+})
+
+test('a non-duplicate failure on the claim insert is never read as permission', async () => {
+  const db = fakePool({
+    failOn: {
+      match: 'INSERT INTO `kaudit_call_audit_spend_claim`',
+      error: Object.assign(new Error('connection lost'), { code: 'ECONNRESET' }),
+    },
+  })
+  const repository = createMysqlCallAuditPersistenceRepository(db.pool)
+  await assert.rejects(repository.claimContentAuditSpend(CLAIM_INPUT))
+})
+
+test('the claim never updates or deletes a row, and never releases itself', async () => {
+  // A claim that released itself when a run failed would re-open the very
+  // duplicate-spend window it exists to close: the failed run may already have
+  // been billed by the provider.
+  const source = readFileSync(
+    new URL('./mysqlCallAuditPersistence.ts', import.meta.url),
+    'utf8',
+  )
+  const claimStatements = [
+    /UPDATE\s+`kaudit_call_audit_spend_claim`/i,
+    /DELETE\s+FROM\s+`kaudit_call_audit_spend_claim`/i,
+  ]
+  for (const forbidden of claimStatements) {
+    assert.equal(forbidden.test(source), false, `must not contain ${forbidden}`)
+  }
+})
+
+test('the claim path touches the external source table and Billing Audit not at all', async () => {
+  const db = fakePool()
+  const repository = createMysqlCallAuditPersistenceRepository(db.pool)
+  await repository.claimContentAuditSpend(CLAIM_INPUT)
+
+  for (const sql of db.statements()) {
+    assert.equal(sql.includes('ai_voice_leads_received'), false)
+    assert.equal(/kaudit_billing|kaudit_invoice|kaudit_cycle/i.test(sql), false)
+    // Every table the claim path names belongs to Call Audit.
+    for (const [, table] of sql.matchAll(/`(kaudit_[a-z_]+)`/g)) {
+      assert.ok(
+        table.startsWith('kaudit_call_audit_'),
+        `the claim path must not reach ${table}`,
+      )
+    }
+  }
+})
+
+test('no money value or provider fact is bound by the claim path', async () => {
+  const db = fakePool()
+  const repository = createMysqlCallAuditPersistenceRepository(db.pool)
+  await repository.claimContentAuditSpend(CLAIM_INPUT)
+
+  const bound = db.calls
+    .flatMap((call) => call.parameters)
+    .filter((value): value is string => typeof value === 'string')
+  // Ids and one timestamp. Nothing else: no token count, no latency, no cost.
+  assert.deepEqual(bound.sort(), [
+    IDENTITY.runId,
+    IDENTITY.ruleVersionId,
+    IDENTITY.runId,
+    IDENTITY.sourceRefId,
+    IDENTITY.sourceRefId,
+    RECORDED_AT,
+  ].sort())
 })
 
 // ---------------------------------------------------------------------------

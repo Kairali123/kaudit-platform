@@ -744,11 +744,11 @@ dl small { color: var(--muted); font-size: .6rem; }
 }
 .cas-chips li strong { color: var(--ink); font-variant-numeric: tabular-nums; }
 
-/* Twelve audited columns cannot fit any laptop, so the table scrolls inside its
+/* Thirteen audited columns cannot fit any laptop, so the table scrolls inside its
    own box. Without this the widest row pushed the whole document sideways and
    every section on the page scrolled with it. */
 .casettings .cas-history .table-scroll { overflow-x: auto; overflow-y: hidden; }
-.casettings .cas-history table { min-width: 1900px; table-layout: fixed; }
+.casettings .cas-history table { min-width: 2040px; table-layout: fixed; }
 .casettings .cas-history td { vertical-align: top; }
 /* Identifiers and timestamps, not quantities: the shared right-alignment for
    non-first columns is for numeric tables and reads as ragged here. Only the
@@ -771,7 +771,18 @@ dl small { color: var(--muted); font-size: .6rem; }
 .casettings .cas-history .cas-col-digest { width: 132px; }
 .casettings .cas-history .cas-col-actor { width: 205px; }
 .casettings .cas-history .cas-col-open { width: 80px; }
+.casettings .cas-history .cas-col-action { width: 140px; }
 .casettings .cas-history .cas-col-contract .cas-sub { white-space: nowrap; }
+.cas-history-actions { display: flex; align-items: center; gap: 8px; min-height: 30px; }
+.cas-history-activate {
+  display: inline-flex; align-items: center; justify-content: center; gap: 5px;
+  min-width: 92px; min-height: 30px; padding: 5px 9px;
+  color: var(--ca-accent); background: var(--ca-accent-soft);
+  border: 1px solid var(--ca-accent); font-size: .67rem; font-weight: 760;
+  cursor: pointer;
+}
+.cas-history-activate.confirm { color: #fff; background: var(--ca-accent); }
+.cas-history-activate:disabled { opacity: .45; cursor: not-allowed; }
 /* A change reason is prose: show three lines and keep the rest in the title,
    so one long entry cannot set the height of every row in the table. */
 .cas-reason {

@@ -39,6 +39,10 @@ import { CALL_INTENTS } from '../callaudit/types.ts'
 /**
  * HTTP contract of the sanitized Call Audit reporting route.
  *
+ * The route is ADMINISTRATOR-ONLY: it is gated on `audit:inspect`, which the
+ * 'user' role does not hold. The rows it returns stay sanitized regardless —
+ * that boundary is asserted below and is not weakened by the narrower gate.
+ *
  * The route is backed by a SYNTHETIC in-memory repository here: no database, no
  * external source table, and no real transcript, lead, hash, URL, PII, or money
  * anywhere in the fixture.
@@ -78,26 +82,41 @@ const config: RuntimeConfig = {
   },
 }
 
-/** A plain operational user: role 'user', NOT admin, no audit:inspect. */
-const access: AccessRepository = {
-  async findByOidc() {
-    return null
-  },
-  async findByEmail(email) {
-    return email === 'operator@example.test'
-      ? {
-          id: 'user-1',
-          email,
-          status: 'active',
-          maxSensitivityTier: 'K0',
-          roles: ['user'],
-        }
-      : null
-  },
-  async readiness() {
-    return true
-  },
+/**
+ * The one configured local identity, resolved with whichever roles a test asks
+ * for. The session cookie is identical in every case, so the only thing that
+ * differs between the allowed and the denied requests below is the ROLE.
+ */
+function accessFor(roles: readonly string[]): AccessRepository {
+  return {
+    async findByOidc() {
+      return null
+    },
+    async findByEmail(email) {
+      return email === 'operator@example.test'
+        ? {
+            id: 'user-1',
+            email,
+            status: 'active',
+            maxSensitivityTier: 'K0',
+            roles: [...roles],
+          }
+        : null
+    },
+    async readiness() {
+      return true
+    },
+  }
 }
+
+/** An administrator: holds audit:inspect, so the report is readable. */
+const access = accessFor(['admin'])
+
+/** A plain operational user: role 'user', NOT admin, no audit:inspect. */
+const operationalUserAccess = accessFor(['user'])
+
+/** The seed default: no permission at all. */
+const unassignedAccess = accessFor(['unassigned'])
 
 function localCookie(): string {
   if (config.auth.mode !== 'local') {
@@ -341,7 +360,7 @@ function deepKeys(value: unknown, keys = new Set<string>()): Set<string> {
 
 const ROUTE = '/api/v1/call-audit/report'
 
-test('call audit reporting is available to a non-admin logged-in user', async () => {
+test('call audit reporting is readable by an administrator', async () => {
   await withServer(async (baseUrl, state) => {
     const response = await fetch(
       `${baseUrl}${ROUTE}?cadence=monthly&start=2026-07-01&end=2026-08-01&limit=10`,
@@ -493,34 +512,50 @@ test('reporting requires an authenticated session', async () => {
   })
 })
 
-test('a role without aggregate metrics permission is denied', async () => {
+test('an ordinary authenticated user is denied before any data is read', async () => {
   await withServer(
-    async (baseUrl) => {
+    async (baseUrl, state) => {
+      const response = await fetch(
+        `${baseUrl}${ROUTE}?cadence=monthly&limit=10`,
+        { headers: { cookie: localCookie() } },
+      )
+      assert.equal(response.status, 403)
+      const problem = (await response.json()) as Record<string, unknown>
+      assert.equal(problem.code, 'PERMISSION_DENIED')
+      // The gate runs BEFORE the repository: a denied user's request never
+      // reaches a query, so not even a sanitized row is assembled for them.
+      assert.equal(state.calls.length, 0)
+      // And nothing of the report — not a title, not a Task ID — comes back
+      // on the refusal itself.
+      const serialized = JSON.stringify(problem)
+      assert.equal(serialized.includes('TASK-'), false)
+      assert.equal(
+        serialized.includes('Kserve Call Audit Report'),
+        false,
+      )
+      assert.equal(state.events.at(-1)?.outcome, 'denied')
+      assert.equal(state.events.at(-1)?.action, 'call_audit_report.read')
+    },
+    { accessRepository: operationalUserAccess },
+  )
+})
+
+test('a role with no permission at all is denied', async () => {
+  await withServer(
+    async (baseUrl, state) => {
       const response = await fetch(`${baseUrl}${ROUTE}`, {
         headers: { cookie: localCookie() },
       })
       assert.equal(response.status, 403)
       const problem = (await response.json()) as Record<string, unknown>
       assert.equal(problem.code, 'PERMISSION_DENIED')
+      assert.equal(state.calls.length, 0)
     },
-    {
-      accessRepository: {
-        ...access,
-        async findByEmail(email) {
-          return {
-            id: 'user-2',
-            email,
-            status: 'active',
-            maxSensitivityTier: 'K0',
-            roles: ['unassigned'],
-          }
-        },
-      },
-    },
+    { accessRepository: unassignedAccess },
   )
 })
 
-test('the call audit page is served to a normal user, not gated on admin', async () => {
+async function webRoot(): Promise<string> {
   const root = await mkdtemp(
     path.join(os.tmpdir(), 'kaudit-call-audit-'),
   )
@@ -529,6 +564,11 @@ test('the call audit page is served to a normal user, not gated on admin', async
     path.join(root, 'index.html'),
     '<!doctype html><div id="root"></div>',
   )
+  return root
+}
+
+test('the call audit page is served to an administrator', async () => {
+  const root = await webRoot()
   await withServer(
     async (baseUrl) => {
       const page = await fetch(`${baseUrl}/call-audit`, {
@@ -540,13 +580,42 @@ test('the call audit page is served to a normal user, not gated on admin', async
         page.headers.get('content-type') ?? '',
         /text\/html/,
       )
-      // The admin-only monitor stays admin-only for the same user.
-      const admin = await fetch(`${baseUrl}/audits`, {
+      // Call Audit rules stay admin-only alongside it, and Billing Audit
+      // remains its own module rather than being folded into this gate.
+      const rules = await fetch(`${baseUrl}/call-audit/settings`, {
         headers: { cookie: localCookie() },
         redirect: 'manual',
       })
-      assert.equal(admin.status, 403)
+      assert.equal(rules.status, 200)
     },
     { webDistRoot: root },
+  )
+})
+
+test('the call audit page is refused to a non-admin who types the URL', async () => {
+  const root = await webRoot()
+  await withServer(
+    async (baseUrl) => {
+      for (const target of ['/call-audit', '/call-audit/settings']) {
+        const page = await fetch(`${baseUrl}${target}`, {
+          headers: { cookie: localCookie() },
+          redirect: 'manual',
+        })
+        assert.equal(page.status, 403, target)
+        assert.equal(
+          page.headers.get('content-type')?.includes('text/html'),
+          false,
+          `${target} must not return the app shell`,
+        )
+      }
+      // Billing Audit is a separate module and is unaffected by the Call
+      // Audit gate: this same user keeps the pages their role allows.
+      const billing = await fetch(`${baseUrl}/billing`, {
+        headers: { cookie: localCookie() },
+        redirect: 'manual',
+      })
+      assert.equal(billing.status, 200)
+    },
+    { webDistRoot: root, accessRepository: operationalUserAccess },
   )
 })

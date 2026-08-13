@@ -2,6 +2,7 @@ import {
   buildContentAuditResult,
   buildFailedResult,
   buildOperationalOnlyResult,
+  buildSkippedResult,
   buildUsageEventRecord,
   MAX_ATTEMPT_NUMBER,
   validateCallAuditTimestamp,
@@ -10,6 +11,11 @@ import {
   type ProcessingStatus,
   type UsageAttemptOutcome,
 } from './resultRecords.ts'
+import {
+  CALL_AUDIT_SPEND_SKIP_CODES,
+  isCallAuditSpendSkipCode,
+  type CallAuditSpendSkipCode,
+} from './spendClaim.ts'
 import { buildSourceRevision } from './sourceRevision.ts'
 import type {
   CallAuditSourceReference,
@@ -31,11 +37,21 @@ import {
  * candidate.
  *
  * Responsibilities, and nothing else: build the privacy-safe source revision,
- * persist or reuse it, decide eligibility from that revision, call the injected
- * content model at most once when there is a transcript, build the matching
- * result bundle, and record the attempt. Every collaborator is injected, so this
- * module owns no database, HTTP route, scheduler, worker loop, retry policy,
- * batch, lock, clock, or id generator.
+ * persist or reuse it, decide eligibility from that revision, take the
+ * cross-run spend claim before any paid call, call the injected content model
+ * at most once when there is a transcript AND the claim was granted, build the
+ * matching result bundle, and record the attempt. Every collaborator is
+ * injected, so this module owns no database, HTTP route, scheduler, worker
+ * loop, retry policy, batch, lock, clock, or id generator.
+ *
+ * Spend boundary. The model is the only thing here that costs money to call,
+ * and exactly one gate stands in front of it: the spend claim, keyed by the
+ * exact immutable source revision, granted at most once for all time. The
+ * default is deny — only a granted claim reaches the model — and this module
+ * offers no way to ask for an exception. There is no force parameter, no
+ * override flag, and no re-audit mode; a deliberate historical re-audit is an
+ * administrator decision with its own approval path, and adding a bypass here
+ * would quietly repeal the guarantee for every caller at once.
  *
  * Ordering is a contract, not an implementation detail: the source reference is
  * written first because the result identity needs its id, and the usage attempt
@@ -138,6 +154,15 @@ export interface CallAuditProcessingSummary {
   modelAttempted: boolean
   /** Null whenever no attempt was made. */
   usage: CallAuditUsageSummary | null
+  /**
+   * The bounded code for a candidate the spend claim REFUSED, or null when no
+   * refusal happened — including on the operational-only path, on which the
+   * model was never in question and no claim was ever sought.
+   *
+   * Non-null always implies `modelAttempted: false` and `usage: null`: a
+   * refused candidate calls nothing and spends nothing.
+   */
+  spendSkipCode: CallAuditSpendSkipCode | null
 }
 
 // ---------------------------------------------------------------------------
@@ -227,6 +252,14 @@ function requireRepository(value: unknown): CallAuditPersistenceRepository {
     repository.recordUsageAttempt,
     'repository.recordUsageAttempt',
   )
+  // Required, never optional. A repository without a claim gate would leave the
+  // duplicate-spend decision undefined, and the only sane default for an
+  // undefined spend decision is to refuse — so a missing gate is a caller
+  // mistake, raised before anything is written, rather than a quiet allow.
+  requireCallable(
+    repository.claimContentAuditSpend,
+    'repository.claimContentAuditSpend',
+  )
   return repository
 }
 
@@ -273,13 +306,18 @@ function safeCallContext(
 /**
  * Processes exactly one candidate into Call Audit persistence records.
  *
- * The two paths:
+ * The three paths:
  *
  *   * no auditable transcript — the model is NOT called and no usage attempt is
  *     recorded, because no spend occurred; an operational-only result is saved;
- *   * an auditable transcript — the model is called once, the matching result is
- *     saved, and the attempt is recorded afterwards whether it succeeded, was
- *     refused, or failed, so reliability reporting cannot count only successes.
+ *   * an auditable transcript this run is refused permission to spend on — the
+ *     model is NOT called and no usage attempt is recorded, because again no
+ *     spend occurred; a coded SKIPPED result is saved so the run still accounts
+ *     for the call;
+ *   * an auditable transcript this run holds the spend claim for — the model is
+ *     called once, the matching result is saved, and the attempt is recorded
+ *     afterwards whether it succeeded, was refused, or failed, so reliability
+ *     reporting cannot count only successes.
  *
  * Only caller-side input mistakes throw. A model or provider outcome is an
  * expected result of running, and is represented by the persisted result and
@@ -338,7 +376,48 @@ export async function processCallAuditCandidate(
       auditedAt,
     })
     const saved = await repository.saveResultBundle(bundle)
-    return summarize(persistedSourceRef, bundle, saved, false, null)
+    return summarize(persistedSourceRef, bundle, saved, false, null, null)
+  }
+
+  // Cross-run duplicate-spend gate. It sits HERE — after the revision is
+  // settled and persisted, before the model is touched — because the thing it
+  // protects is the model call, and the thing it is keyed by is the persisted
+  // revision id. Asking earlier would have no id to ask about; asking later
+  // would already have paid.
+  //
+  // The claim is asked for once per candidate and only on this path: a call
+  // with no auditable transcript never spends, so it never takes a claim and
+  // never consumes one that a later revision with a real transcript will need.
+  //
+  // Default deny is enforced by the shape of the test: only the exact
+  // `claimed` outcome continues. An unrecognised answer is refused rather than
+  // trusted, so a future port that grew a third outcome could not accidentally
+  // be read as permission.
+  const claim = await repository.claimContentAuditSpend({
+    sourceRefId: persistedSourceRef.id,
+    runId,
+    ruleVersionId,
+    // The attempt time. It is the moment this run would have spent, which is
+    // exactly what the claim records.
+    claimedAt: recordedAt,
+  })
+  if (claim.outcome !== 'claimed') {
+    return await persistSuppressedDuplicate({
+      identity,
+      // The transcript was auditable — that is not in doubt and is not what
+      // changed. What changed is that this run has no business auditing it
+      // again, so the eligibility is reported as it truly stands.
+      skipCode: isCallAuditSpendSkipCode(claim.skipCode)
+        ? claim.skipCode
+        : // A refusal whose code is not one this contract defines is still a
+          // refusal. It is normalised to the general prior-claim code rather
+          // than stored verbatim, so an unrecognised token can never reach the
+          // result row, and never so that the refusal itself is softened.
+          CALL_AUDIT_SPEND_SKIP_CODES.priorClaim,
+      kserveReportedOutcome,
+      repository,
+      persistedSourceRef,
+    })
   }
 
   // The adapter's contract is to RETURN provider outcomes, but a thrown value
@@ -418,12 +497,68 @@ export async function processCallAuditCandidate(
   })
   const recorded = await repository.recordUsageAttempt(usageRecord)
 
-  return summarize(persistedSourceRef, bundle, saved, true, {
-    attemptNumber: usageRecord.attemptNumber,
-    attemptOutcome: usageRecord.attemptOutcome,
-    errorCode: usageRecord.errorCode,
-    persistOutcome: recorded.outcome,
+  return summarize(
+    persistedSourceRef,
+    bundle,
+    saved,
+    true,
+    {
+      attemptNumber: usageRecord.attemptNumber,
+      attemptOutcome: usageRecord.attemptOutcome,
+      errorCode: usageRecord.errorCode,
+      persistOutcome: recorded.outcome,
+    },
+    null,
+  )
+}
+
+interface SuppressedDuplicateInput {
+  identity: CallAuditResultIdentity
+  skipCode: CallAuditSpendSkipCode
+  kserveReportedOutcome: unknown
+  repository: CallAuditPersistenceRepository
+  persistedSourceRef: { id: string; outcome: 'inserted' | 'reused' }
+}
+
+/**
+ * Records a candidate the spend claim refused, and spends nothing doing it.
+ *
+ * The run stays truthfully accountable. A row IS written, because a run that
+ * silently dropped the candidate would report a smaller period than it actually
+ * covered, and the next person to reconcile the two could not tell a suppressed
+ * duplicate from a call the run never saw. What is written is a SKIPPED result
+ * carrying the bounded reason code — never `succeeded`, which would claim an
+ * audit this run did not perform, and never a content-audited row, which would
+ * inflate coverage with somebody else's work.
+ *
+ * No usage attempt is recorded, and that is the point rather than an omission:
+ * the usage-attempt record is a record of REQUESTS MADE, so a row there would
+ * assert a provider call that never happened and would put phantom tokens into
+ * reliability and spend reporting. No request, no attempt, no row.
+ *
+ * The earlier result the duplicate points at is deliberately not read, quoted,
+ * copied, or referenced here. Nothing about it is needed to decide not to
+ * spend, and copying its audit into this run would present another run's
+ * conclusion as this one's.
+ */
+async function persistSuppressedDuplicate(
+  input: SuppressedDuplicateInput,
+): Promise<CallAuditProcessingSummary> {
+  const bundle = buildSkippedResult({
+    identity: input.identity,
+    eligibility: 'content_auditable',
+    skipCode: input.skipCode,
+    kserveReportedOutcome: input.kserveReportedOutcome,
   })
+  const saved = await input.repository.saveResultBundle(bundle)
+  return summarize(
+    input.persistedSourceRef,
+    bundle,
+    saved,
+    false,
+    null,
+    input.skipCode,
+  )
 }
 
 interface ThrownModelFailureInput {
@@ -485,12 +620,19 @@ async function persistThrownModelFailure(
   })
   const recorded = await input.repository.recordUsageAttempt(usageRecord)
 
-  return summarize(input.persistedSourceRef, bundle, saved, true, {
-    attemptNumber: usageRecord.attemptNumber,
-    attemptOutcome: usageRecord.attemptOutcome,
-    errorCode: usageRecord.errorCode,
-    persistOutcome: recorded.outcome,
-  })
+  return summarize(
+    input.persistedSourceRef,
+    bundle,
+    saved,
+    true,
+    {
+      attemptNumber: usageRecord.attemptNumber,
+      attemptOutcome: usageRecord.attemptOutcome,
+      errorCode: usageRecord.errorCode,
+      persistOutcome: recorded.outcome,
+    },
+    null,
+  )
 }
 
 /** Builds the safe summary from records that are already privacy-safe. */
@@ -500,6 +642,7 @@ function summarize(
   saved: { outcome: 'inserted' | 'replayed' },
   modelAttempted: boolean,
   usage: CallAuditUsageSummary | null,
+  spendSkipCode: CallAuditSpendSkipCode | null,
 ): CallAuditProcessingSummary {
   return {
     sourceRef: { id: sourceRef.id, persistOutcome: sourceRef.outcome },
@@ -511,5 +654,6 @@ function summarize(
     },
     modelAttempted,
     usage,
+    spendSkipCode,
   }
 }

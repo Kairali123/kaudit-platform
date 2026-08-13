@@ -747,6 +747,14 @@ export interface CallAuditRuleVersionCreated {
   createdAt: string
 }
 
+export interface CallAuditRuleVersionActivated {
+  ruleVersionId: string
+  status: 'active'
+  statusLabel: string
+  outcome: 'activated' | 'replayed'
+  activatedAt: string
+}
+
 /**
  * Admin rule TEST LAB response types.
  *

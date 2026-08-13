@@ -33,10 +33,10 @@ import {
  *   * an identical payload REPLAYS as a no-op, and the same deterministic key
  *     carrying a different payload is a TYPED CONFLICT — never a silent
  *     overwrite;
- *   * a rule-version row is IMMUTABLE. This module contains no UPDATE against
- *     `kaudit_call_audit_rule_version` at all, so an activated or retired
- *     contract cannot be edited in place even by mistake. A correction is a new
- *     version, exactly as migration 0008 states;
+ *   * rule-version CONTENT is IMMUTABLE. Lifecycle-only UPDATE statements may
+ *     switch which stored snapshot is live, but they never touch the prompt,
+ *     model settings, hashes, taxonomy, rubric, author, or change reason. A
+ *     correction remains a new version, exactly as migration 0008 states;
  *   * a run advances pending -> running -> exactly one terminal state
  *     (completed, failed, or cancelled) and is IMMUTABLE once terminal. Every
  *     transition runs in a transaction over a `FOR UPDATE` read of the run row,
@@ -789,6 +789,13 @@ const SELECT_RULE_VERSION_SQL = `SELECT ${RULE_VERSION_COLUMNS.map(
 const SELECT_RULE_VERSION_FOR_UPDATE_SQL = `${SELECT_RULE_VERSION_SQL}
    FOR UPDATE`
 
+const SELECT_RULE_VERSION_BY_ID_FOR_UPDATE_SQL = `SELECT ${RULE_VERSION_COLUMNS.map(
+  readRuleVersionColumn,
+).join(',\n          ')}
+   FROM \`kaudit_call_audit_rule_version\`
+   WHERE \`id\` = ?
+   FOR UPDATE`
+
 /**
  * Guards the "one active contract" invariant inside the same transaction as the
  * insert, so two administrators activating different versions concurrently
@@ -799,6 +806,28 @@ const SELECT_ACTIVE_RULE_VERSION_SQL = `SELECT \`id\`
    WHERE \`status\` = ? AND \`id\` <> ?
    LIMIT 1
    FOR UPDATE`
+
+/** Locks every live row so an activation switch is serialized. */
+const SELECT_ACTIVE_RULE_VERSIONS_FOR_UPDATE_SQL = `SELECT \`id\`
+   FROM \`kaudit_call_audit_rule_version\`
+   WHERE \`status\` = ?
+   FOR UPDATE`
+
+/**
+ * Lifecycle-only writes. The immutable contract columns are intentionally
+ * absent; tests pin that boundary so an activation can never edit a rule.
+ */
+const RETIRE_ACTIVE_RULE_VERSION_SQL = `UPDATE \`kaudit_call_audit_rule_version\`
+   SET \`status\` = ?, \`retired_by\` = ?, \`retired_at\` = ?
+   WHERE \`id\` = ? AND \`status\` = ?`
+
+const ACTIVATE_RULE_VERSION_SQL = `UPDATE \`kaudit_call_audit_rule_version\`
+   SET \`status\` = ?,
+       \`activated_by\` = ?,
+       \`activated_at\` = ?,
+       \`retired_by\` = NULL,
+       \`retired_at\` = NULL
+   WHERE \`id\` = ? AND \`status\` IN (?, ?)`
 
 interface RuleVersionRow extends RowDataPacket {
   [column: string]: unknown
@@ -1279,6 +1308,19 @@ export interface SaveRuleVersionResult {
   outcome: 'inserted' | 'replayed'
 }
 
+export interface ActivateRuleVersionInput {
+  ruleVersionId: string
+  activatedBy?: string | null
+  activatedAt: string
+  /** Refuses a snapshot compiled under a different locked application contract. */
+  requiredConfigSha256: string
+}
+
+export interface ActivateRuleVersionResult {
+  id: string
+  outcome: 'activated' | 'replayed'
+}
+
 export interface CreateRunResult {
   id: string
   outcome: 'inserted' | 'replayed'
@@ -1321,6 +1363,9 @@ export interface CallAuditControlRepository {
     snapshot: CallAuditRuleActivation,
     lifecycle: CallAuditRuleVersionLifecycle,
   ): Promise<SaveRuleVersionResult>
+  activateRuleVersion(
+    input: ActivateRuleVersionInput,
+  ): Promise<ActivateRuleVersionResult>
   createRun(request: CallAuditRunRequest): Promise<CreateRunResult>
   markRunRunning(input: MarkRunRunningInput): Promise<RunTransitionResult>
   updateRunCounters(
@@ -1399,6 +1444,114 @@ export function createMysqlCallAuditControlRepository(
       )
       await connection.commit()
       return { id, outcome: 'inserted' }
+    } catch (error) {
+      await connection.rollback()
+      throw error
+    } finally {
+      connection.release()
+    }
+  }
+
+  /**
+   * Makes one existing compatible snapshot live and retires the previous one
+   * in the same transaction. Only lifecycle columns are updated; the selected
+   * rule contract remains byte-for-byte the snapshot the administrator chose.
+   */
+  async function switchRuleVersion(
+    input: ActivateRuleVersionInput,
+  ): Promise<ActivateRuleVersionResult> {
+    const ruleVersionId = requireIdentifier(
+      input?.ruleVersionId,
+      RULE_VERSION_ENTITY,
+      'ruleVersionId',
+      MAX_ID_LENGTH,
+    )
+    const activatedBy = optionalIdentifier(
+      input?.activatedBy,
+      RULE_VERSION_ENTITY,
+      'activatedBy',
+      MAX_ACTOR_ID_LENGTH,
+    )
+    const activatedAt = requireNaiveDatetime(
+      input?.activatedAt,
+      RULE_VERSION_ENTITY,
+      'activatedAt',
+    )
+    const requiredConfigSha256 = requireSha256(
+      input?.requiredConfigSha256,
+      RULE_VERSION_ENTITY,
+      'requiredConfigSha256',
+    )
+
+    const connection: PoolConnection = await pool.getConnection()
+    try {
+      await connection.beginTransaction()
+      const [activeRows] = await connection.execute<RuleVersionRow[]>(
+        SELECT_ACTIVE_RULE_VERSIONS_FOR_UPDATE_SQL,
+        ['active'],
+      )
+      if (activeRows.length > 1) {
+        throw new CallAuditControlError(
+          RULE_VERSION_ENTITY,
+          'status',
+          'multiple active versions require operator repair',
+        )
+      }
+
+      const [targetRows] = await connection.execute<RuleVersionRow[]>(
+        SELECT_RULE_VERSION_BY_ID_FOR_UPDATE_SQL,
+        [ruleVersionId],
+      )
+      const target = targetRows[0]
+      if (!target) {
+        throw new CallAuditControlError(
+          RULE_VERSION_ENTITY,
+          'ruleVersionId',
+          'does not exist',
+        )
+      }
+      if (textOrNull(target.config_sha256) !== requiredConfigSha256) {
+        throw new CallAuditControlError(
+          RULE_VERSION_ENTITY,
+          'configSha256',
+          'does not match the locked contract compiled by this build',
+        )
+      }
+
+      const currentId = textOrNull(activeRows[0]?.id)
+      if (currentId === ruleVersionId) {
+        await connection.rollback()
+        return { id: ruleVersionId, outcome: 'replayed' }
+      }
+
+      const targetStatus = textOrNull(target.status)
+      if (targetStatus !== 'draft' && targetStatus !== 'retired') {
+        throw new CallAuditControlError(
+          RULE_VERSION_ENTITY,
+          'status',
+          'must be draft or retired before activation',
+        )
+      }
+
+      if (currentId) {
+        await connection.execute(RETIRE_ACTIVE_RULE_VERSION_SQL, [
+          'retired',
+          activatedBy,
+          activatedAt,
+          currentId,
+          'active',
+        ])
+      }
+      await connection.execute(ACTIVATE_RULE_VERSION_SQL, [
+        'active',
+        activatedBy,
+        activatedAt,
+        ruleVersionId,
+        'draft',
+        'retired',
+      ])
+      await connection.commit()
+      return { id: ruleVersionId, outcome: 'activated' }
     } catch (error) {
       await connection.rollback()
       throw error
@@ -1514,8 +1667,8 @@ export function createMysqlCallAuditControlRepository(
      * the same deterministic id or version label carrying a different prompt,
      * config, model, temperature, or lifecycle payload is a typed conflict.
      *
-     * There is no UPDATE path by design: an activated or retired contract is
-     * immutable, and a correction is a new version.
+     * No content UPDATE exists: prompt, model, schema, taxonomy, rubric, and
+     * hashes remain immutable, and a correction is always a new version.
      */
     async saveRuleVersionSnapshot(snapshot, lifecycle) {
       const validatedSnapshot = validateRuleActivationSnapshot(snapshot)
@@ -1537,6 +1690,10 @@ export function createMysqlCallAuditControlRepository(
         assertRuleVersionMatches(raced, validatedSnapshot, validatedLifecycle)
         return { id, outcome: 'replayed' }
       }
+    },
+
+    async activateRuleVersion(input) {
+      return switchRuleVersion(input)
     },
 
     /**
@@ -1677,7 +1834,11 @@ export const CALL_AUDIT_CONTROL_SQL = {
   insertRuleVersion: INSERT_RULE_VERSION_SQL,
   selectRuleVersion: SELECT_RULE_VERSION_SQL,
   selectRuleVersionForUpdate: SELECT_RULE_VERSION_FOR_UPDATE_SQL,
+  selectRuleVersionByIdForUpdate: SELECT_RULE_VERSION_BY_ID_FOR_UPDATE_SQL,
   selectActiveRuleVersion: SELECT_ACTIVE_RULE_VERSION_SQL,
+  selectActiveRuleVersionsForUpdate: SELECT_ACTIVE_RULE_VERSIONS_FOR_UPDATE_SQL,
+  retireActiveRuleVersion: RETIRE_ACTIVE_RULE_VERSION_SQL,
+  activateRuleVersion: ACTIVATE_RULE_VERSION_SQL,
   insertRun: INSERT_RUN_SQL,
   selectRunByKey: SELECT_RUN_BY_KEY_SQL,
   selectRunById: SELECT_RUN_BY_ID_SQL,

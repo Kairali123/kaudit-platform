@@ -248,6 +248,7 @@ function safeSummaryLine(summary: CallAuditBatchRunSummary): string {
       skippedTotal: summary.counts.skippedTotal,
       operationalOnlyTotal: summary.counts.operationalOnlyTotal,
       contentAuditedTotal: summary.counts.contentAuditedTotal,
+      duplicateSuppressedTotal: summary.counts.duplicateSuppressedTotal,
     },
   })}\n`
 }

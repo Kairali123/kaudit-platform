@@ -95,21 +95,22 @@ test('the call audit UI hard-codes no identity, content, or money field', async 
   }
 })
 
-test('the call audit page is routed and reachable from the app shell', async () => {
+test('the call audit page is routed and reachable from admin navigation', async () => {
   const app = await webSource('App.tsx')
   assert.match(app, /path="call-audit"/)
   assert.match(app, /CallAuditReportPage/)
   const shell = await webSource('components/AppShell.tsx')
-  assert.match(shell, /to: '\/call-audit', label: '[^']+', icon: \w+, end: true/)
-  // The report item carries no `admin` flag: sanitized reporting is aggregate
-  // and anonymous, so it is reachable by every logged-in user. The structural
+  // The report item is admin-flagged: sanitized reporting is still an audit
+  // surface, so the link is rendered only for an administrator. The structural
   // grouping this depends on is pinned in callAuditSettingsWebContract.test.ts.
   const reportItem = shell.slice(
-    shell.indexOf("{ to: '/call-audit',"),
+    shell.indexOf("to: '/call-audit',"),
     shell.indexOf("to: '/call-audit/settings'"),
   )
   assert.ok(reportItem.length > 0, 'the report nav item must be found')
-  assert.equal(reportItem.includes('admin'), false)
+  assert.match(reportItem, /admin: true/)
+  // `end` still keeps the link from lighting up on the rules child route.
+  assert.match(reportItem, /end: true/)
 })
 
 test('the call audit page carries its own scoped styling', async () => {

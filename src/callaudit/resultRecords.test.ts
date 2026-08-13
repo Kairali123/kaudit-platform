@@ -9,6 +9,7 @@ import {
   buildOperationalOnlyResult,
   buildResultId,
   buildResultIdempotencyKey,
+  buildSkippedResult,
   buildUsageEventId,
   buildUsageEventRecord,
   CallAuditRecordError,
@@ -25,6 +26,7 @@ import {
   type CallAuditResultIdentity,
   type FailedResultInput,
 } from './resultRecords.ts'
+import { CALL_AUDIT_SPEND_SKIP_CODES } from './spendClaim.ts'
 import { validateContentAuditOutput } from './modelOutput.ts'
 import { CALL_AUDIT_RUBRIC } from './rubric.ts'
 import { OVERALL_SCORE_METHOD } from './overallScore.ts'
@@ -1064,6 +1066,107 @@ test('a failed result rejects an unapproved eligibility', () => {
     }),
   )
   assert.equal(error.field, 'eligibility')
+})
+
+// ---------------------------------------------------------------------------
+// Skipped result
+// ---------------------------------------------------------------------------
+
+test('a skipped result is neither an audit nor a failure', () => {
+  const { result, metricScores } = buildSkippedResult({
+    identity: IDENTITY,
+    eligibility: 'content_auditable',
+    skipCode: CALL_AUDIT_SPEND_SKIP_CODES.priorResult,
+  })
+  assert.equal(result.processingStatus, 'skipped')
+  // Not `succeeded`: no audit was performed, and claiming one would credit this
+  // run with another run's work.
+  assert.notEqual(result.processingStatus, 'succeeded')
+  // Not `failed` either: nothing was attempted, so nothing went wrong.
+  assert.notEqual(result.processingStatus, 'failed')
+  assert.equal(result.errorCode, CALL_AUDIT_SPEND_SKIP_CODES.priorResult)
+  assert.equal(result.errorDetail, null)
+  assert.deepEqual(metricScores, [])
+})
+
+test('a skipped result invents no audit fact and claims no audit time', () => {
+  const { result } = buildSkippedResult({
+    identity: IDENTITY,
+    eligibility: 'content_auditable',
+    skipCode: CALL_AUDIT_SPEND_SKIP_CODES.priorClaim,
+  })
+  assert.equal(result.auditedAt, null)
+  assert.equal(result.resultJson, null)
+  assert.equal(result.resultSha256, null)
+  assert.equal(result.overallScore, null)
+  assert.equal(result.overallScoreMethod, null)
+  assert.equal(result.issueFlagsJson, null)
+  for (const value of [
+    result.callConnected,
+    result.customerSpoke,
+    result.meaningfulConversation,
+    result.intent,
+    result.detailedOutcome,
+    result.groupedOutcome,
+    result.qualificationLabel,
+    result.nextActionCode,
+    result.managementFeedback,
+    result.kserveFeedback,
+    result.improvementFeedback,
+  ]) {
+    assert.equal(value, null)
+  }
+})
+
+test('a skipped content-auditable result leaves the ineligibility reason NULL', () => {
+  // The schema accepts `missing_transcript` there and nothing else, and the
+  // transcript was not missing — the run simply declined to audit it again.
+  const content = buildSkippedResult({
+    identity: IDENTITY,
+    eligibility: 'content_auditable',
+    skipCode: CALL_AUDIT_SPEND_SKIP_CODES.priorResult,
+  }).result
+  assert.equal(content.eligibility, 'content_auditable')
+  assert.equal(content.ineligibilityReason, null)
+
+  const operational = buildSkippedResult({
+    identity: IDENTITY,
+    eligibility: 'operational_only',
+    skipCode: CALL_AUDIT_SPEND_SKIP_CODES.priorResult,
+  }).result
+  assert.equal(operational.ineligibilityReason, 'missing_transcript')
+})
+
+test('a skipped result shares the one result identity for its run', () => {
+  // Same deterministic key as every other builder, so a run can hold exactly
+  // one result per (run, source ref, rule version) whatever its outcome.
+  const skipped = buildSkippedResult({
+    identity: IDENTITY,
+    eligibility: 'content_auditable',
+    skipCode: CALL_AUDIT_SPEND_SKIP_CODES.priorResult,
+  }).result
+  assert.equal(skipped.id, buildResultId(IDENTITY))
+  assert.equal(skipped.idempotencyKey, buildResultIdempotencyKey(IDENTITY))
+})
+
+test('a skip code must be a safe machine code, never prose', () => {
+  for (const bad of [
+    'the provider already audited this call',
+    'lower_case_code',
+    'CODE WITH SPACES',
+    '',
+  ]) {
+    assert.throws(
+      () =>
+        buildSkippedResult({
+          identity: IDENTITY,
+          eligibility: 'content_auditable',
+          skipCode: bad,
+        }),
+      (error: unknown) =>
+        error instanceof CallAuditRecordError && error.field === 'skipCode',
+    )
+  }
 })
 
 // ---------------------------------------------------------------------------

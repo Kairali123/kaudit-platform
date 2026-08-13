@@ -33,6 +33,7 @@ import {
   type CallAuditRuleTestResponse,
   type CallAuditRuleTestResult,
   type CallAuditRuleVersion,
+  type CallAuditRuleVersionActivated,
   type CallAuditRuleVersionCreated,
   type CallAuditSettingsData,
 } from '../lib/api'
@@ -63,6 +64,7 @@ import {
  */
 
 const ROUTE = '/api/v1/call-audit/settings'
+const ACTIVATE_ROUTE = '/api/v1/call-audit/settings/activate'
 
 /** Admin rule test lab. POST only, transient, and never a stored audit. */
 const TEST_ROUTE = '/api/v1/call-audit/settings/test'
@@ -507,7 +509,13 @@ export function CallAuditSettingsPage() {
   const [draft, setDraft] = useState<DraftFields>(emptyDraft)
   const [created, setCreated] =
     useState<CallAuditRuleVersionCreated | null>(null)
+  const [activated, setActivated] = useState<
+    (CallAuditRuleVersionActivated & { versionLabel: string }) | null
+  >(null)
   const [confirmActivate, setConfirmActivate] = useState(false)
+  const [confirmHistoryActivate, setConfirmHistoryActivate] = useState<
+    string | null
+  >(null)
   const promptRef = useRef<HTMLElement | null>(null)
 
   /**
@@ -549,8 +557,22 @@ export function CallAuditSettingsPage() {
       }),
     onSuccess: (result) => {
       setCreated(result)
+      setActivated(null)
       setDraft(emptyDraft)
       setConfirmActivate(false)
+      void client.invalidateQueries({ queryKey: ['call-audit-settings'] })
+    },
+  })
+
+  const activate = useMutation({
+    mutationFn: (version: CallAuditRuleVersion) =>
+      postJson<CallAuditRuleVersionActivated>(ACTIVATE_ROUTE, {
+        ruleVersionId: version.ruleVersionId,
+      }),
+    onSuccess: (result, version) => {
+      setActivated({ ...result, versionLabel: version.versionLabel })
+      setCreated(null)
+      setConfirmHistoryActivate(null)
       void client.invalidateQueries({ queryKey: ['call-audit-settings'] })
     },
   })
@@ -612,6 +634,7 @@ export function CallAuditSettingsPage() {
       event: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>,
     ) => {
       setCreated(null)
+      setActivated(null)
       setDraft((current) => ({
         ...current,
         [name]: event.target.value,
@@ -725,6 +748,20 @@ export function CallAuditSettingsPage() {
               {shortHash(created.promptSha256)}.
               {created.outcome === 'replayed' &&
                 ' The stored snapshot matched byte for byte, so nothing was rewritten.'}
+            </Notice>
+          )}
+
+          {activated && (
+            <Notice
+              tone="success"
+              title={
+                activated.outcome === 'replayed'
+                  ? 'Rule version was already live'
+                  : 'Active rule version switched'
+              }
+            >
+              {activated.versionLabel} is the active rule version. Stored rule
+              contents were not modified.
             </Notice>
           )}
 
@@ -1148,16 +1185,16 @@ export function CallAuditSettingsPage() {
                   tooltip would hide the reason from every touch device. */}
               <p className="cas-hint cas-wide" role="status">
                 {!data.activationAvailable
-                  ? 'A version is already live, so this form can only add a draft. Activation is refused while another version is active.'
+                  ? 'A version is already live. Save this one as a draft, then activate it from Version history to switch the live rule.'
                   : confirmActivate
                     ? 'Confirm to create this version and make it the live rule contract in one append-only step.'
                     : 'Save as draft to store the snapshot without changing what is live.'}
               </p>
               <p className="cas-note cas-wide">
                 <Lock size={14} aria-hidden />
-                Saving writes an immutable snapshot. Activation is an append-only
-                action, not an edit: it never rewrites an existing version, and
-                it is refused while another version is live.
+                Saving writes an immutable snapshot. Activating from Version
+                history changes lifecycle state only and atomically retires the
+                previously active version; rule contents are never edited.
               </p>
             </form>
           </section>
@@ -1171,6 +1208,12 @@ export function CallAuditSettingsPage() {
                 {count(data.versionCount)} versions
               </span>
             </div>
+            {activate.error && (
+              <p className="ca-invalid" role="alert">
+                <TriangleAlert size={16} aria-hidden />
+                {activate.error.message}
+              </p>
+            )}
             {data.versions.length === 0 ? (
               <p className="ca-none cas-empty-line">
                 No rule version has been created yet.
@@ -1192,6 +1235,7 @@ export function CallAuditSettingsPage() {
                       <th className="cas-col-actor">Retired</th>
                       <th className="cas-reason">Change reason</th>
                       <th className="cas-col-open">Prompt</th>
+                      <th className="cas-col-action">Action</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -1276,6 +1320,64 @@ export function CallAuditSettingsPage() {
                               ? 'Hide'
                               : 'View'}
                           </button>
+                        </td>
+                        <td className="cas-col-action">
+                          {version.isActive ? (
+                            <span className="cas-sub">Current</span>
+                          ) : (
+                            <div className="cas-history-actions">
+                              <button
+                                type="button"
+                                className={
+                                  confirmHistoryActivate ===
+                                  version.ruleVersionId
+                                    ? 'cas-history-activate confirm'
+                                    : 'cas-history-activate'
+                                }
+                                disabled={
+                                  activate.isPending ||
+                                  !version.matchesApplicationContract
+                                }
+                                title={
+                                  version.matchesApplicationContract
+                                    ? undefined
+                                    : 'This version uses an earlier locked contract. Create a compatible version before activation.'
+                                }
+                                onClick={() => {
+                                  if (
+                                    confirmHistoryActivate ===
+                                    version.ruleVersionId
+                                  ) {
+                                    activate.mutate(version)
+                                  } else {
+                                    activate.reset()
+                                    setConfirmHistoryActivate(
+                                      version.ruleVersionId,
+                                    )
+                                  }
+                                }}
+                              >
+                                <BadgeCheck size={14} aria-hidden />
+                                {confirmHistoryActivate ===
+                                version.ruleVersionId
+                                  ? 'Confirm'
+                                  : 'Activate'}
+                              </button>
+                              {confirmHistoryActivate ===
+                                version.ruleVersionId && (
+                                <button
+                                  type="button"
+                                  className="cas-link"
+                                  disabled={activate.isPending}
+                                  onClick={() =>
+                                    setConfirmHistoryActivate(null)
+                                  }
+                                >
+                                  Cancel
+                                </button>
+                              )}
+                            </div>
+                          )}
                         </td>
                       </tr>
                     ))}

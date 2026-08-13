@@ -591,7 +591,7 @@ test('the rule test is POST only', async () => {
   })
 })
 
-test('the sanitized report route stays reachable and unchanged for a user', async () => {
+test('non-admin Call Audit surfaces stay closed and the report rejects writes', async () => {
   await withServer(
     async (baseUrl) => {
       const test = await post(baseUrl, { transcript: TRANSCRIPT })
@@ -600,8 +600,8 @@ test('the sanitized report route stays reachable and unchanged for a user', asyn
         headers: { cookie: localCookie() },
       })
       assert.equal(settings.status, 403)
-      // The reporting route is not gated on the admin boundary the test lab
-      // sits behind, and the test lab did not turn it into a write surface.
+      // The report is administrator-only too, and remains read-only: a POST is
+      // rejected as a method error without becoming a reporting write path.
       const method = await fetch(`${baseUrl}/api/v1/call-audit/report`, {
         method: 'POST',
         headers: { cookie: localCookie() },

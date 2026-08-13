@@ -60,6 +60,14 @@ import type {
  *
  * Billing boundary. Call Audit is a separate concern from Billing Audit:
  * nothing here reads, derives, stores, or reports a chargeable figure.
+ *
+ * Duplicate-spend boundary. This orchestrator does not decide what may be paid
+ * for. The per-candidate processor takes a permanent, default-deny spend claim
+ * on the exact source revision before any model call, so two runs over
+ * overlapping periods — sequential or concurrent — cannot both pay to audit the
+ * same evidence. All that happens here is counting: a suppressed duplicate is
+ * tallied as skipped and as `duplicateSuppressedTotal`, never as an audit.
+ * There is deliberately no run-level flag to relax that.
  */
 
 // ---------------------------------------------------------------------------
@@ -261,6 +269,17 @@ export interface CallAuditRunCounts {
   operationalOnlyTotal: number
   /** Content-auditable candidates that actually produced an audit. */
   contentAuditedTotal: number
+  /**
+   * Candidates the cross-run spend claim refused, so this run called no model
+   * and consumed no tokens for them.
+   *
+   * A SUBSET of `skippedTotal`, reported separately because the two answer
+   * different questions: how much of the period this run declined to audit,
+   * versus how much of it had already been audited and would have been paid for
+   * twice. It has no counter column on the run row — the seven stored counters
+   * are unchanged by this — and lives only in the safe in-memory summary.
+   */
+  duplicateSuppressedTotal: number
 }
 
 /** Why the page loop stopped. */
@@ -444,6 +463,14 @@ function requireProcessor(input: RunCallAuditBatchInput): {
     persistence.recordUsageAttempt,
     'persistence.recordUsageAttempt',
   )
+  // Checked here as well as inside the processor, so a run that has no
+  // duplicate-spend gate is refused BEFORE it is created rather than on its
+  // first content-auditable candidate — by which point the run row exists and
+  // the page has been read.
+  requireCallable(
+    persistence.claimContentAuditSpend,
+    'persistence.claimContentAuditSpend',
+  )
   const model = requireObject<ContentAuditModelAdapter>(input.model, 'model')
   requireCallable(model.auditTranscript, 'model.auditTranscript')
   return { processCandidate: processCallAuditCandidate, persistence, model }
@@ -468,6 +495,7 @@ function emptyTally(): RunTally {
       skippedTotal: 0,
       operationalOnlyTotal: 0,
       contentAuditedTotal: 0,
+      duplicateSuppressedTotal: 0,
     },
   }
 }
@@ -480,6 +508,12 @@ function emptyTally(): RunTally {
  * `failedTotal` and deliberately NOT `contentAuditedTotal`: the transcript was
  * auditable, but no audit came back, and a reliability figure that counted the
  * attempt as an audit would overstate coverage.
+ *
+ * A candidate the spend claim refused lands in `skippedTotal` — never in
+ * `succeeded` and never in `contentAuditedTotal`, because this run neither
+ * audited it nor paid to — and is additionally counted in
+ * `duplicateSuppressedTotal`, so "we deliberately did not audit this" stays
+ * distinguishable from "we audited it".
  */
 function tallySummary(tally: RunTally, summary: CallAuditProcessingSummary) {
   const counts = tally.counts
@@ -488,6 +522,7 @@ function tallySummary(tally: RunTally, summary: CallAuditProcessingSummary) {
   if (status === 'succeeded') counts.succeededTotal += 1
   if (status === 'failed') counts.failedTotal += 1
   if (status === 'skipped') counts.skippedTotal += 1
+  if (summary.spendSkipCode !== null) counts.duplicateSuppressedTotal += 1
   if (summary.result.eligibility === 'operational_only') {
     counts.operationalOnlyTotal += 1
   } else if (status === 'succeeded') {

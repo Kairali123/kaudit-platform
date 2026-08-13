@@ -973,6 +973,91 @@ export function buildFailedResult(
   }
 }
 
+export interface SkippedResultInput {
+  identity: CallAuditResultIdentity
+  /** Eligibility determined from the source revision, before the skip. */
+  eligibility: CallAuditEligibility
+  /** Safe machine code naming WHY nothing was attempted. */
+  skipCode: string
+  kserveReportedOutcome?: unknown
+}
+
+/**
+ * Builds a SKIPPED result: the run reached this call, decided not to attempt
+ * anything for it, and says so.
+ *
+ * Distinct from every other builder on purpose. It is not `succeeded`, because
+ * no audit happened; it is not `failed`, because nothing was attempted and
+ * nothing went wrong; and it is not operational-only, because the transcript
+ * may well have been auditable — the run simply had no business paying to audit
+ * it again. Counting a skip as any of those would misreport either coverage or
+ * reliability.
+ *
+ * Like a failed result it carries no document, no hash, no metric rows, and no
+ * `auditedAt`: an audit time would assert an audit this run never performed.
+ * The bounded `skipCode` is stored in `error_code`, which is the row's only
+ * machine-readable slot for "why is this row not an audit" — it names a
+ * decision, not a fault, and like every code persisted here it is a closed
+ * token rather than prose.
+ *
+ * `ineligibilityReason` follows the same pairing rule the schema enforces:
+ * `missing_transcript` only ever accompanies `operational_only`, so a skipped
+ * content-auditable call leaves it NULL rather than inventing a reason the
+ * column is not allowed to hold.
+ */
+export function buildSkippedResult(
+  input: SkippedResultInput,
+): CallAuditResultBundle {
+  const identity = requireIdentity(input.identity)
+  if (
+    input.eligibility !== 'content_auditable' &&
+    input.eligibility !== 'operational_only'
+  ) {
+    throw new CallAuditRecordError('eligibility', 'is not an approved value')
+  }
+  const skipCode = requireSafeErrorCode(input.skipCode, 'skipCode')
+  const comparison = compareKserveOutcome(null, input.kserveReportedOutcome)
+
+  return {
+    result: {
+      id: resultIdFor(identity),
+      runId: identity.runId,
+      sourceRefId: identity.sourceRefId,
+      ruleVersionId: identity.ruleVersionId,
+      processingStatus: 'skipped',
+      eligibility: input.eligibility,
+      ineligibilityReason:
+        input.eligibility === 'operational_only' ? 'missing_transcript' : null,
+      callConnected: null,
+      customerSpoke: null,
+      meaningfulConversation: null,
+      intent: null,
+      intentConfidence: null,
+      detailedOutcome: null,
+      groupedOutcome: null,
+      qualificationLabel: null,
+      nextActionCode: null,
+      overallScore: null,
+      overallScoreMethod: null,
+      kserveReportedOutcome: comparison.kserveReportedOutcome,
+      kserveComparisonLabel: comparison.kserveComparisonLabel,
+      mismatchSeverity: comparison.mismatchSeverity,
+      managementFeedback: null,
+      kserveFeedback: null,
+      improvementFeedback: null,
+      issueFlagsJson: null,
+      // Nothing was attempted, so there is no result document to hash.
+      resultJson: null,
+      resultSha256: null,
+      errorCode: skipCode,
+      errorDetail: null,
+      idempotencyKey: idempotencyKeyFor(identity),
+      auditedAt: null,
+    },
+    metricScores: [],
+  }
+}
+
 export interface UsageEventInput {
   identity: CallAuditResultIdentity
   attemptNumber: number

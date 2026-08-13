@@ -26,6 +26,7 @@ export function App() {
         <Route path="findings" element={<FindingsPage />} />
         <Route path="billing" element={<BillingPage />} />
         <Route path="reports" element={<ReportsPage />} />
+        {/* Admin-only sanitized reporting; the server gates it on audit:inspect. */}
         <Route path="call-audit" element={<CallAuditReportPage />} />
         {/* Admin-only rule administration; the server gates it on config:manage. */}
         <Route

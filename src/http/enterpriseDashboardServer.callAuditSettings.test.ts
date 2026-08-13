@@ -18,12 +18,14 @@ import {
   CallAuditControlError,
   type CallAuditControlRepository,
   type CallAuditRuleVersionLifecycle,
+  type ActivateRuleVersionInput,
 } from '../adapters/mysqlCallAuditControl.ts'
 import { buildRuleActivation } from '../callaudit/ruleActivation.ts'
 import type { CallAuditRuleActivation } from '../callaudit/ruleActivation.ts'
 import {
   CALL_AUDIT_SETTINGS_PAGE_ROUTE,
   CALL_AUDIT_SETTINGS_ROUTE,
+  CALL_AUDIT_RULE_ACTIVATE_ROUTE,
   type CallAuditRuleVersionDetailRecord,
   type CallAuditRuleVersionRecord,
   type CallAuditRunSummaryRecord,
@@ -213,6 +215,7 @@ interface SavedVersion {
 
 function controlRepository(
   saved: SavedVersion[],
+  activations: ActivateRuleVersionInput[],
   options: { activeAlready?: boolean } = {},
 ): CallAuditControlRepository {
   const unsupported = () => {
@@ -235,6 +238,10 @@ function controlRepository(
       saved.push({ snapshot, lifecycle })
       return { id: buildRuleVersionId(snapshot), outcome: 'inserted' }
     },
+    async activateRuleVersion(input: ActivateRuleVersionInput) {
+      activations.push(input)
+      return { id: input.ruleVersionId, outcome: 'activated' }
+    },
     createRun: unsupported,
     markRunRunning: unsupported,
     updateRunCounters: unsupported,
@@ -248,6 +255,7 @@ interface ServerState {
   events: AuditEvent[]
   reads: RecordedRead[]
   saved: SavedVersion[]
+  activations: ActivateRuleVersionInput[]
 }
 
 async function withServer(
@@ -262,6 +270,7 @@ async function withServer(
   const events: AuditEvent[] = []
   const reads: RecordedRead[] = []
   const saved: SavedVersion[] = []
+  const activations: ActivateRuleVersionInput[] = []
   const audit: AuditSink = {
     async record(event) {
       events.push(event)
@@ -285,7 +294,7 @@ async function withServer(
     audit,
     verifier: null,
     callAuditSettings: readPort(reads, { active: options.active }),
-    callAuditControl: controlRepository(saved, {
+    callAuditControl: controlRepository(saved, activations, {
       activeAlready: options.activeAlready,
     }),
     webDistRoot: options.webDistRoot,
@@ -295,7 +304,12 @@ async function withServer(
   )
   const address = server.address() as AddressInfo
   try {
-    await run(`http://127.0.0.1:${address.port}`, { events, reads, saved })
+    await run(`http://127.0.0.1:${address.port}`, {
+      events,
+      reads,
+      saved,
+      activations,
+    })
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => (error ? reject(error) : resolve())),
@@ -317,6 +331,22 @@ function deepKeys(value: unknown, keys = new Set<string>()): Set<string> {
 
 function post(baseUrl: string, body: unknown, headers = {}): Promise<Response> {
   return fetch(`${baseUrl}${CALL_AUDIT_SETTINGS_ROUTE}`, {
+    method: 'POST',
+    headers: {
+      cookie: localCookie(),
+      'content-type': 'application/json',
+      ...headers,
+    },
+    body: JSON.stringify(body),
+  })
+}
+
+function postActivate(
+  baseUrl: string,
+  body: unknown,
+  headers = {},
+): Promise<Response> {
+  return fetch(`${baseUrl}${CALL_AUDIT_RULE_ACTIVATE_ROUTE}`, {
     method: 'POST',
     headers: {
       cookie: localCookie(),
@@ -419,7 +449,7 @@ test('the settings route requires an authenticated session', async () => {
   })
 })
 
-test('the settings page is admin-only while the report page is not', async () => {
+test('both call audit pages are admin-only', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'kaudit-ca-settings-'))
   await mkdir(path.join(root, 'assets'))
   await writeFile(
@@ -433,25 +463,33 @@ test('the settings page is admin-only while the report page is not', async () =>
         { headers: { cookie: localCookie() }, redirect: 'manual' },
       )
       assert.equal(denied.status, 403)
+      // The report page moved behind the same administrator boundary: rule
+      // administration is gated on config:manage and sanitized reporting on
+      // audit:inspect, and the 'user' role holds neither.
       const report = await fetch(`${baseUrl}/call-audit`, {
         headers: { cookie: localCookie() },
         redirect: 'manual',
       })
-      assert.equal(report.status, 200)
+      assert.equal(report.status, 403)
     },
     { roles: ['user'], webDistRoot: root },
   )
   await withServer(
     async (baseUrl) => {
-      const allowed = await fetch(
-        `${baseUrl}${CALL_AUDIT_SETTINGS_PAGE_ROUTE}`,
-        { headers: { cookie: localCookie() }, redirect: 'manual' },
-      )
-      assert.equal(allowed.status, 200)
-      assert.match(
-        allowed.headers.get('content-type') ?? '',
-        /text\/html/,
-      )
+      for (const target of [
+        CALL_AUDIT_SETTINGS_PAGE_ROUTE,
+        '/call-audit',
+      ]) {
+        const allowed = await fetch(`${baseUrl}${target}`, {
+          headers: { cookie: localCookie() },
+          redirect: 'manual',
+        })
+        assert.equal(allowed.status, 200, target)
+        assert.match(
+          allowed.headers.get('content-type') ?? '',
+          /text\/html/,
+        )
+      }
     },
     { webDistRoot: root },
   )
@@ -601,6 +639,69 @@ test('an explicit activate writes an active snapshot with an activation stamp', 
   )
 })
 
+test('an administrator activates an existing version from history', async () => {
+  await withServer(async (baseUrl, state) => {
+    const ruleVersionId = buildRuleVersionId(snapshotFixture())
+    const response = await postActivate(baseUrl, { ruleVersionId })
+    assert.equal(response.status, 200)
+    const body = (await response.json()) as Record<string, unknown>
+    assert.equal(body.ruleVersionId, ruleVersionId)
+    assert.equal(body.status, 'active')
+    assert.equal(body.statusLabel, 'Active')
+    assert.equal(body.outcome, 'activated')
+
+    const [activation] = state.activations
+    assert.equal(activation?.ruleVersionId, ruleVersionId)
+    assert.equal(activation?.activatedBy, 'usr_admin_0001')
+    assert.equal(
+      activation?.requiredConfigSha256,
+      snapshotFixture().configSha256,
+    )
+    assert.match(
+      String(activation?.activatedAt),
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{6}$/,
+    )
+    assert.equal(
+      state.events.at(-1)?.action,
+      'call_audit_rule_version.activate',
+    )
+  })
+})
+
+test('history activation is admin-only and rejects an unsafe id', async () => {
+  await withServer(
+    async (baseUrl, state) => {
+      const denied = await postActivate(baseUrl, {
+        ruleVersionId: buildRuleVersionId(snapshotFixture()),
+      })
+      assert.equal(denied.status, 403)
+      assert.equal(state.activations.length, 0)
+    },
+    { roles: ['viewer'] },
+  )
+
+  await withServer(async (baseUrl, state) => {
+    const response = await postActivate(baseUrl, {
+      ruleVersionId: 'crv_invalid;select',
+    })
+    assert.equal(response.status, 400)
+    const problem = (await response.json()) as Record<string, unknown>
+    assert.equal(problem.code, 'INVALID_CALL_AUDIT_SETTINGS_REQUEST')
+    assert.equal(String(problem.title).includes('crv_invalid'), false)
+    assert.equal(state.activations.length, 0)
+  })
+})
+
+test('history activation is POST-only', async () => {
+  await withServer(async (baseUrl) => {
+    const response = await fetch(
+      `${baseUrl}${CALL_AUDIT_RULE_ACTIVATE_ROUTE}`,
+      { headers: { cookie: localCookie() } },
+    )
+    assert.equal(response.status, 405)
+  })
+})
+
 test('activating while another version is live is refused, not merged', async () => {
   await withServer(
     async (baseUrl) => {
@@ -666,11 +767,11 @@ test('a non-JSON settings submission is refused before it is parsed', async () =
   })
 })
 
-test('the sanitized report route stays reachable and unchanged for a user', async () => {
+test('non-admin Call Audit settings stay closed and the report rejects writes', async () => {
   await withServer(
     async (baseUrl) => {
-      // The settings route is admin-only; the reporting route is not gated on
-      // it, so the two modules cannot become one permission.
+      // Settings and reporting are both administrator-only but keep distinct
+      // permissions and routes; the report also remains read-only.
       const settings = await fetch(
         `${baseUrl}${CALL_AUDIT_SETTINGS_ROUTE}`,
         { headers: { cookie: localCookie() } },

@@ -11,6 +11,12 @@ import type {
   CallAuditResultRecord,
   CallAuditUsageEventRecord,
 } from '../callaudit/resultRecords.ts'
+import {
+  CALL_AUDIT_SPEND_SKIP_CODES,
+  type CallAuditSpendClaimPort,
+  type CallAuditSpendClaimResult,
+  type ContentAuditSpendClaimInput,
+} from '../callaudit/spendClaim.ts'
 
 /**
  * MySQL persistence for Call Audit source references, results, metric rows, and
@@ -776,6 +782,39 @@ function usageConflictField(
 }
 
 // ---------------------------------------------------------------------------
+// Spend claim — cross-run duplicate-spend protection
+// ---------------------------------------------------------------------------
+
+/**
+ * "Has an EARLIER run already produced a result for this exact revision?"
+ *
+ * `run_id <> ?` is the whole question: a result written by the asking run is
+ * that run's own work, and re-driving the same run is caught a step later by
+ * the claim's primary key instead. Served by
+ * `idx_call_audit_result_history (source_ref_id, created_at)`, and `LIMIT 1`
+ * because existence is all that is being decided — no result payload is read,
+ * so nothing content-bearing is loaded to answer a permission question.
+ */
+const SELECT_PRIOR_RESULT_SQL = `SELECT 1 AS \`prior\`
+   FROM \`kaudit_call_audit_result\`
+   WHERE \`source_ref_id\` = ? AND \`run_id\` <> ?
+   LIMIT 1`
+
+/**
+ * The claim itself. There is no ON DUPLICATE KEY UPDATE and no INSERT IGNORE on
+ * purpose: this statement must FAIL loudly when a claim already exists, because
+ * that failure IS the mutual exclusion. A silent upsert would report success to
+ * a run that did not win, and both runs would spend.
+ */
+const INSERT_SPEND_CLAIM_SQL = `INSERT INTO \`kaudit_call_audit_spend_claim\`
+     (\`source_ref_id\`, \`run_id\`, \`rule_version_id\`, \`claimed_at\`)
+   VALUES (?, ?, ?, ?)`
+
+interface PriorResultRow extends RowDataPacket {
+  [column: string]: unknown
+}
+
+// ---------------------------------------------------------------------------
 // Repository
 // ---------------------------------------------------------------------------
 
@@ -784,7 +823,7 @@ export interface SourceReferencePersistResult {
   outcome: 'inserted' | 'reused'
 }
 
-export interface CallAuditPersistenceRepository {
+export interface CallAuditPersistenceRepository extends CallAuditSpendClaimPort {
   upsertSourceReference(
     reference: CallAuditSourceReference,
   ): Promise<SourceReferencePersistResult>
@@ -877,6 +916,65 @@ export function createMysqlCallAuditPersistenceRepository(
   }
 
   return {
+    /**
+     * Decides, permanently and default-deny, whether this run may call the paid
+     * content model for this exact immutable source revision.
+     *
+     * Two checks, in this order, because they answer different questions:
+     *
+     *   1. HISTORY — did an earlier run already produce a result for this
+     *      revision? This is what catches audits recorded before claims
+     *      existed, and it is a read, so it takes no claim: a run that is not
+     *      going to spend must not leave a record saying it did.
+     *   2. EXCLUSION — insert the claim. The table's primary key is
+     *      `source_ref_id` alone, so exactly one INSERT can ever succeed for a
+     *      revision. Two runs overlapping in time both reach this line having
+     *      seen no prior result; InnoDB then admits one and rejects the other,
+     *      which is the only point in this path where the race is actually
+     *      decided.
+     *
+     * A duplicate-key rejection is the answer, not an error: it means another
+     * run holds the claim, so this one must not spend. It is deliberately NOT
+     * distinguished by holder — knowing who won changes nothing about what this
+     * run may do, and re-reading the row to find out would only add a way to
+     * get the default wrong.
+     *
+     * Any other failure propagates. Denying spend on an unknown database fault
+     * is the safe direction, and a caller that cannot tell a refusal from an
+     * outage would be free to invent permission.
+     */
+    async claimContentAuditSpend(
+      input: ContentAuditSpendClaimInput,
+    ): Promise<CallAuditSpendClaimResult> {
+      const [prior] = await pool.execute<PriorResultRow[]>(
+        SELECT_PRIOR_RESULT_SQL,
+        [input.sourceRefId, input.runId],
+      )
+      if (prior.length > 0) {
+        return {
+          outcome: 'duplicate',
+          skipCode: CALL_AUDIT_SPEND_SKIP_CODES.priorResult,
+        }
+      }
+      try {
+        await pool.execute(INSERT_SPEND_CLAIM_SQL, [
+          input.sourceRefId,
+          input.runId,
+          input.ruleVersionId,
+          input.claimedAt,
+        ])
+        return { outcome: 'claimed' }
+      } catch (error) {
+        if (!isDuplicateEntry(error)) {
+          throw error
+        }
+        return {
+          outcome: 'duplicate',
+          skipCode: CALL_AUDIT_SPEND_SKIP_CODES.priorClaim,
+        }
+      }
+    },
+
     /**
      * Reuses the row for an unchanged revision, or appends a new row for a
      * changed one. Never updates: a source reference is immutable once written.
@@ -993,4 +1091,6 @@ export const CALL_AUDIT_PERSISTENCE_SQL = {
   selectMetricScores: SELECT_METRIC_SCORES_SQL,
   insertUsage: INSERT_USAGE_SQL,
   selectUsage: SELECT_USAGE_SQL,
+  selectPriorResult: SELECT_PRIOR_RESULT_SQL,
+  insertSpendClaim: INSERT_SPEND_CLAIM_SQL,
 } as const

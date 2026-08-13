@@ -84,6 +84,7 @@ import type { CallAuditReportingRepository } from '../adapters/mysqlCallAuditRep
 import {
   buildCallAuditReport,
   parseCallAuditReportQuery,
+  CALL_AUDIT_PAGE_ROUTE,
   CALL_AUDIT_REPORT_ROUTE,
 } from '../reporting/callAuditReport.ts'
 import {
@@ -97,15 +98,20 @@ import {
 } from '../adapters/mysqlCallAuditControl.ts'
 import {
   buildCallAuditSettings,
+  applicationConfigSha256,
   naiveUtcTimestamp,
+  parseCallAuditSettingsActivate,
   parseCallAuditSettingsCreate,
   parseCallAuditSettingsQuery,
+  toActivateResultDto,
   toCreateResultDto,
   isSafeRuleVersionId,
+  CALL_AUDIT_RULE_ACTIVATE_ROUTE,
   CALL_AUDIT_RULE_TEST_ROUTE,
   CALL_AUDIT_SETTINGS_PAGE_ROUTE,
   CALL_AUDIT_SETTINGS_ROUTE,
   type CallAuditRuleVersionDetailRecord,
+  type CallAuditSettingsActivateResultDto,
   type CallAuditSettingsCreateResultDto,
   type CallAuditSettingsReadPort,
 } from '../callaudit/adminSettings.ts'
@@ -171,8 +177,8 @@ interface Dependencies {
    */
   callAuditSettings?: CallAuditSettingsReadPort
   /**
-   * Append-only Call Audit rule-version writes. Defaults to the existing
-   * control repository, which has no UPDATE against a rule-version row.
+   * Immutable Call Audit rule snapshots plus audited lifecycle switches.
+   * Lifecycle writes never modify prompt, model, schema, taxonomy, or hashes.
    */
   callAuditControl?: CallAuditControlRepository
   /**
@@ -195,7 +201,7 @@ const APP_ROUTES = new Set([
   '/operations',
   '/audits',
   '/audits/call',
-  '/call-audit',
+  CALL_AUDIT_PAGE_ROUTE,
   '/users',
   CALL_AUDIT_SETTINGS_PAGE_ROUTE,
   '/imports/new',
@@ -217,6 +223,7 @@ const API_ROUTES = new Set([
   '/api/v1/users',
   CALL_AUDIT_REPORT_ROUTE,
   CALL_AUDIT_SETTINGS_ROUTE,
+  CALL_AUDIT_RULE_ACTIVATE_ROUTE,
   CALL_AUDIT_RULE_TEST_ROUTE,
 ])
 
@@ -224,7 +231,10 @@ const API_ROUTES = new Set([
  * Administrator-authored Call Audit rule settings. POST only; the GET of the
  * same path is the admin read above. Both are gated on `config:manage`.
  */
-const CALL_AUDIT_SETTINGS_WRITE_ROUTES = new Set([CALL_AUDIT_SETTINGS_ROUTE])
+const CALL_AUDIT_SETTINGS_WRITE_ROUTES = new Set([
+  CALL_AUDIT_SETTINGS_ROUTE,
+  CALL_AUDIT_RULE_ACTIVATE_ROUTE,
+])
 
 /**
  * The rule test lab. POST only — there is nothing to GET, because a test is
@@ -911,10 +921,9 @@ function callAuditSettingsFailure(error: unknown): never {
 /**
  * Creates a new immutable rule-version snapshot, optionally activated.
  *
- * Activation is append-only: the control repository has no UPDATE against
- * `kaudit_call_audit_rule_version`, so "activate" means inserting a new active
- * snapshot, never editing an existing row. It therefore succeeds only while no
- * other version is active; the repository refuses the second one.
+ * Create-and-activate inserts a new active snapshot and therefore succeeds only
+ * while no version is live. Switching to a stored version is the distinct
+ * lifecycle route below; neither path edits rule contents.
  */
 async function createCallAuditRuleVersion(
   dependencies: Dependencies,
@@ -944,6 +953,34 @@ async function createCallAuditRuleVersion(
       promptSha256: snapshot.promptSha256,
       configSha256: snapshot.configSha256,
       createdAt,
+    })
+  } catch (error) {
+    callAuditSettingsFailure(error)
+  }
+}
+
+/** Atomically switches the live pointer to one compatible stored snapshot. */
+async function activateCallAuditRuleVersion(
+  dependencies: Dependencies,
+  body: unknown,
+  actorUserId: string | null,
+): Promise<CallAuditSettingsActivateResultDto> {
+  try {
+    const request = parseCallAuditSettingsActivate(body, actorUserId)
+    const activatedAt = naiveUtcTimestamp()
+    const control =
+      dependencies.callAuditControl ??
+      createMysqlCallAuditControlRepository(dependencies.pool)
+    const activated = await control.activateRuleVersion({
+      ruleVersionId: request.ruleVersionId,
+      activatedBy: request.activatedBy,
+      activatedAt,
+      requiredConfigSha256: applicationConfigSha256(),
+    })
+    return toActivateResultDto({
+      ruleVersionId: activated.id,
+      outcome: activated.outcome,
+      activatedAt,
     })
   } catch (error) {
     callAuditSettingsFailure(error)
@@ -1297,8 +1334,12 @@ async function apiResponse(
     return collectAdminCallDetail(dependencies.pool, access)
   }
   if (pathname === CALL_AUDIT_REPORT_ROUTE) {
-    // Sanitized aggregate reporting: available to every logged-in user with
-    // aggregate metrics permission, never gated behind an admin role.
+    // Sanitized aggregate reporting, ADMINISTRATOR-ONLY. The rows stay
+    // sanitized — no transcript, identity, hash, prompt, provider prose or
+    // money ever reaches this DTO — but even the sanitized per-call view is
+    // an audit surface, so the route is gated on `audit:inspect` alongside the
+    // rest of the audit module rather than on the aggregate metrics permission
+    // an ordinary user holds.
     const repository =
       dependencies.callAuditReporting ??
       createMysqlCallAuditReportingRepository(dependencies.pool)
@@ -1378,6 +1419,9 @@ function apiAction(pathname: string): string {
   if (pathname === CALL_AUDIT_SETTINGS_ROUTE) {
     return 'call_audit_settings.read'
   }
+  if (pathname === CALL_AUDIT_RULE_ACTIVATE_ROUTE) {
+    return 'call_audit_rule_version.activate'
+  }
   // Distinct from every settings action: a test runs a model, and an auditor
   // must be able to tell one apart from a configuration read or a save.
   if (pathname === CALL_AUDIT_RULE_TEST_ROUTE) {
@@ -1391,13 +1435,18 @@ function apiPermission(pathname: string): string {
   // reachable with the aggregate metrics permission a normal user holds.
   if (
     pathname === CALL_AUDIT_SETTINGS_ROUTE ||
+    pathname === CALL_AUDIT_RULE_ACTIVATE_ROUTE ||
     pathname === CALL_AUDIT_RULE_TEST_ROUTE
   ) return 'config:manage'
   if (pathname === '/api/v1/users') return 'user:manage'
+  // Audit inspection, including the sanitized Call Audit report: administrator
+  // only. Call Audit reporting shares the gate with the Billing Audit monitor
+  // but stays a separate module with its own route, DTO and page.
   if (
     pathname === '/api/v1/audits' ||
     pathname === '/api/v1/audit-call' ||
-    pathname === '/api/v1/audit-audio'
+    pathname === '/api/v1/audit-audio' ||
+    pathname === CALL_AUDIT_REPORT_ROUTE
   ) return 'audit:inspect'
   if (pathname.startsWith('/api/v1/imports')) return 'import:write'
   return pathname === '/api/v1/reports'
@@ -1534,7 +1583,8 @@ export function createEnterpriseDashboardServer(
       request.method === 'GET' &&
       (IMPORT_WRITE_ROUTES.has(url.pathname) ||
         IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
-        CALL_AUDIT_RULE_TEST_ROUTES.has(url.pathname))
+        CALL_AUDIT_RULE_TEST_ROUTES.has(url.pathname) ||
+        url.pathname === CALL_AUDIT_RULE_ACTIVATE_ROUTE)
     ) {
       problem(
         response,
@@ -2007,18 +2057,27 @@ export function createEnterpriseDashboardServer(
       }
       if (isSettingsPost) {
         requirePermission(context, 'config:manage')
-        const created = await createCallAuditRuleVersion(
-          dependencies,
-          await readJsonBody(request, MAX_SETTINGS_BODY_BYTES),
-          context.user.id,
-        )
+        const input = await readJsonBody(request, MAX_SETTINGS_BODY_BYTES)
+        const created =
+          url.pathname === CALL_AUDIT_RULE_ACTIVATE_ROUTE
+            ? await activateCallAuditRuleVersion(
+                dependencies,
+                input,
+                context.user.id,
+              )
+            : await createCallAuditRuleVersion(
+                dependencies,
+                input,
+                context.user.id,
+              )
         await auditAccess(
           dependencies,
           request,
           context,
           correlation,
           'success',
-          created.activated
+          url.pathname === CALL_AUDIT_RULE_ACTIVATE_ROUTE ||
+            ('activated' in created && created.activated)
             ? 'call_audit_rule_version.activate'
             : 'call_audit_rule_version.create',
           'call_audit_rule_version',
@@ -2304,8 +2363,11 @@ export function createEnterpriseDashboardServer(
       }
       requirePermission(
         context,
+        // CALL_AUDIT_PAGE_ROUTE is matched exactly, so the settings child route
+        // below still takes its own, stricter gate.
         url.pathname === '/audits' ||
-          url.pathname === '/audits/call'
+          url.pathname === '/audits/call' ||
+          url.pathname === CALL_AUDIT_PAGE_ROUTE
           ? 'audit:inspect'
           : url.pathname === '/users'
             ? 'user:manage'
@@ -2361,7 +2423,9 @@ export function createEnterpriseDashboardServer(
           authFailure ? 'denied' : 'failure',
           url.pathname.startsWith('/api/')
             ? isSettingsPost
-              ? 'call_audit_rule_version.create'
+              ? url.pathname === CALL_AUDIT_RULE_ACTIVATE_ROUTE
+                ? 'call_audit_rule_version.activate'
+                : 'call_audit_rule_version.create'
               : apiAction(url.pathname)
             : 'app.read',
         )

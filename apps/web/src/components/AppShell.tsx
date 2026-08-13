@@ -65,9 +65,11 @@ interface NavGroup {
  *
  * Admin-only destinations sit inside the group they administer rather than in
  * a trailing admin block, so the boundary a reader has to hold is the module
- * boundary and not a second, crossing one. Call Audit RULES carry prompts and
- * model settings and are admin-gated; Call Audit REPORTING is anonymous and
- * aggregate, so it is never gated on a role.
+ * boundary and not a second, crossing one. The whole Call Audit group is
+ * administrator-only: RULES carry prompts and model settings, and REPORTING —
+ * though anonymous and sanitized down to Task IDs — is an audit surface, so it
+ * takes the same `audit:inspect` gate the server enforces on its route. The
+ * flag only hides the link; the server refuses a pasted URL either way.
  */
 const NAVIGATION_GROUPS: NavGroup[] = [
   {
@@ -107,7 +109,13 @@ const NAVIGATION_GROUPS: NavGroup[] = [
     label: 'Call Audit',
     items: [
       // `end` keeps the report link from lighting up on the rules child route.
-      { to: '/call-audit', label: 'Call audit report', icon: PhoneCall, end: true },
+      {
+        to: '/call-audit',
+        label: 'Call audit report',
+        icon: PhoneCall,
+        end: true,
+        admin: true,
+      },
       {
         to: '/call-audit/settings',
         label: 'Call audit rules',
