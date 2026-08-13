@@ -115,9 +115,13 @@ export function createMysqlAuditWorkerControl(
                     THEN 'pausing'
                   ELSE 'paused'
                 END,
+                last_heartbeat_at = CASE
+                  WHEN ? = 'running' THEN current_timestamp(6)
+                  ELSE last_heartbeat_at
+                END,
                 last_error_code = NULL
           WHERE audit_system = ?`,
-        [desiredState, desiredState, desiredState, system],
+        [desiredState, desiredState, desiredState, desiredState, system],
       )
       return readOne(system)
     },

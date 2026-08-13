@@ -74,6 +74,9 @@ test('administrators can read, stop, and resume only safe worker state', async (
       const row = rows.find((item) => item.system === input.system)!
       row.desiredState = input.desiredState
       row.observedState = input.desiredState === 'paused' ? 'pausing' : 'running'
+      if (input.desiredState === 'running') {
+        row.lastHeartbeatAt = new Date().toISOString()
+      }
       return row
     },
     async getDesiredState() { return 'running' },

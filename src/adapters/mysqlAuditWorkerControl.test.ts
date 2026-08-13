@@ -50,8 +50,15 @@ test('desired-state revision compares the old state before assigning the new sta
   assert.equal(result.desiredState, 'paused')
   const update = calls[0]
   assert.ok(update.sql.indexOf('state_version =') < update.sql.indexOf('desired_state = ?'))
-  assert.deepEqual(update.parameters, ['paused', 'paused', 'paused', 'call'])
+  assert.deepEqual(update.parameters, [
+    'paused',
+    'paused',
+    'paused',
+    'paused',
+    'call',
+  ])
   assert.match(update.sql, /WHEN \? = 'running' THEN 'running'/)
+  assert.match(update.sql, /last_heartbeat_at = CASE/)
 })
 
 test('a start request becomes active immediately while dispatch is queued', async () => {

@@ -51,3 +51,8 @@ test('workflow configuration is secret-backed and minimally permissioned', () =>
   }
   assert.doesNotMatch(workflow, /write-all|contents: write|pull-requests: write/)
 })
+
+test('disabled database TLS cannot retain dormant CA material', () => {
+  assert.match(workflow, /if \[\[ "\$DB_TLS_MODE" == "disabled" \]\]/)
+  assert.match(workflow, /unset DB_SSL_CA_PEM/)
+})

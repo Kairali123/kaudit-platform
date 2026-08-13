@@ -29,26 +29,39 @@ export interface AuditWorkerPublicState {
 
 export const AUDIT_WORKER_HEARTBEAT_STALE_MS = 5 * 60 * 1000
 
-export function settleStalePausedWorker(
+export function settleStaleWorker(
   state: AuditWorkerPublicState,
   nowMs = Date.now(),
 ): AuditWorkerPublicState {
-  if (
-    state.desiredState !== 'paused' ||
-    (state.observedState !== 'running' && state.observedState !== 'pausing')
-  ) {
-    return state
-  }
   const heartbeatMs = state.lastHeartbeatAt
     ? Date.parse(state.lastHeartbeatAt)
     : Number.NaN
-  if (
+  const heartbeatIsFresh =
     Number.isFinite(heartbeatMs) &&
     nowMs - heartbeatMs <= AUDIT_WORKER_HEARTBEAT_STALE_MS
-  ) {
-    return state
+
+  if (state.desiredState === 'paused') {
+    if (
+      state.observedState === 'paused' ||
+      state.observedState === 'faulted' ||
+      heartbeatIsFresh
+    ) {
+      return state
+    }
+    return { ...state, observedState: 'paused' }
   }
-  return { ...state, observedState: 'paused' }
+
+  if (
+    (state.observedState === 'running' || state.observedState === 'pausing') &&
+    !heartbeatIsFresh
+  ) {
+    return {
+      ...state,
+      observedState: 'faulted',
+      lastErrorCode: 'AUDIT_WORKER_HEARTBEAT_STALE',
+    }
+  }
+  return state
 }
 
 export interface CallAuditCheckpoint {

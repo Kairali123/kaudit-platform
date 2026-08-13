@@ -49,6 +49,9 @@ jobs:
         env:
           AUDIT_SYSTEM: ${{ inputs.system }}
         run: |
+          if [[ "$DB_TLS_MODE" == "disabled" ]]; then
+            unset DB_SSL_CA_PEM
+          fi
           if [[ "$AUDIT_SYSTEM" == "billing" ]]; then
             KAUDIT_AUDIT_MODE=EXECUTE \
             KAUDIT_AUDIT_BATCH=10 \

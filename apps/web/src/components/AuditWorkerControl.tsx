@@ -15,7 +15,10 @@ const LABELS: Record<AuditSystem, string> = {
 }
 
 function stateLabel(state: AuditWorkerState): string {
-  if (state.desiredState === 'paused' && state.observedState !== 'paused') {
+  if (
+    state.desiredState === 'paused' &&
+    (state.observedState === 'running' || state.observedState === 'pausing')
+  ) {
     return 'Stopping'
   }
   return state.observedState.charAt(0).toUpperCase() +
@@ -51,7 +54,8 @@ export function AuditWorkerControl({ system }: { system: AuditSystem }) {
   if (!state) return null
   const dispatchAvailable = query.data?.dispatchAvailable ?? false
   const stopping =
-    state.desiredState === 'paused' && state.observedState !== 'paused'
+    state.desiredState === 'paused' &&
+    (state.observedState === 'running' || state.observedState === 'pausing')
   const active =
     state.observedState === 'running' || state.observedState === 'pausing'
   const stopAction = state.desiredState === 'running' && active

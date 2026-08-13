@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import {
   parseAuditSystem,
   parseDesiredState,
-  settleStalePausedWorker,
+  settleStaleWorker,
   AuditWorkerControlError,
   type AuditWorkerPublicState,
 } from './control.ts'
@@ -33,17 +33,51 @@ test('a paused worker cannot remain stuck in a stale pausing observation', () =>
     failedTotal: 0,
   }
   assert.equal(
-    settleStalePausedWorker(state, Date.parse('2026-08-13T08:06:00.000Z'))
+    settleStaleWorker(state, Date.parse('2026-08-13T08:06:00.000Z'))
       .observedState,
     'paused',
   )
   assert.equal(
-    settleStalePausedWorker(state, Date.parse('2026-08-13T08:01:00.000Z'))
+    settleStaleWorker(state, Date.parse('2026-08-13T08:01:00.000Z'))
       .observedState,
     'pausing',
   )
   assert.equal(
-    settleStalePausedWorker({ ...state, lastHeartbeatAt: null }).observedState,
+    settleStaleWorker({ ...state, lastHeartbeatAt: null }).observedState,
     'paused',
+  )
+  assert.equal(
+    settleStaleWorker({
+      ...state,
+      observedState: 'idle',
+      lastHeartbeatAt: null,
+    }).observedState,
+    'paused',
+  )
+})
+
+test('a running intent with no worker heartbeat becomes retryable', () => {
+  const state: AuditWorkerPublicState = {
+    system: 'billing',
+    desiredState: 'running',
+    observedState: 'running',
+    stateVersion: 2,
+    lastHeartbeatAt: null,
+    lastProgressAt: null,
+    lastErrorCode: null,
+    processedTotal: 0,
+    failedTotal: 0,
+  }
+  assert.deepEqual(settleStaleWorker(state), {
+    ...state,
+    observedState: 'faulted',
+    lastErrorCode: 'AUDIT_WORKER_HEARTBEAT_STALE',
+  })
+  assert.equal(
+    settleStaleWorker({
+      ...state,
+      lastHeartbeatAt: '2026-08-13T08:00:00.000Z',
+    }, Date.parse('2026-08-13T08:01:00.000Z')).observedState,
+    'running',
   )
 })
