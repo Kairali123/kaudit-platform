@@ -247,6 +247,8 @@ export interface RunCallAuditBatchInput {
   persistence?: CallAuditPersistenceRepository
   model?: ContentAuditModelAdapter
   timestamps: CallAuditRunTimestamps
+  /** Graceful administrator pause gate, checked before each next candidate. */
+  shouldContinue?: () => Promise<boolean>
 }
 
 // ---------------------------------------------------------------------------
@@ -287,6 +289,7 @@ export type CallAuditRunStopReason =
   | 'exhausted'
   | 'page_limit'
   | 'candidate_limit'
+  | 'paused'
   | 'failed'
 
 /**
@@ -672,6 +675,13 @@ export async function runCallAuditBatch(
 
       tally.candidatesSelected += page.length
       for (const candidate of page) {
+        if (
+          request.shouldContinue &&
+          !(await request.shouldContinue())
+        ) {
+          stopReason = 'paused'
+          break
+        }
         phase = 'candidate'
         const summary = await processCandidate({
           runId,
@@ -699,6 +709,9 @@ export async function runCallAuditBatch(
       phase = 'progress'
       await control.updateRunCounters(runId, countersOf(tally))
       if (stopReason === 'candidate_limit') {
+        break
+      }
+      if (stopReason === 'paused') {
         break
       }
 

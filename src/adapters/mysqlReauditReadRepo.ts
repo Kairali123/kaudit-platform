@@ -63,6 +63,13 @@ export function createMysqlReauditReadRepo(
           AND ca.is_final = 1
          LEFT JOIN kaudit_provider_cost pc ON pc.call_id = c.id
          WHERE ca.source_url IS NOT NULL
+           AND EXISTS (
+             SELECT 1
+             FROM kaudit_invoice invoice
+             WHERE c.billing_period_date BETWEEN
+                   invoice.period_start AND invoice.period_end
+               AND invoice.status IN ('received','matched','approved')
+           )
            AND ca.audio_attempt_count < 8
            AND (
              ca.audio_next_attempt_at IS NULL

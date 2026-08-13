@@ -26,6 +26,7 @@ import {
   type Tile,
 } from '../lib/api'
 import { useBillingPeriod } from '../lib/billingPeriod'
+import { AuditWorkerControl } from '../components/AuditWorkerControl'
 
 function seconds(value: number | null): string {
   if (value == null) return '—'
@@ -262,6 +263,7 @@ export function AuditMonitorPage() {
         and stuck processing. Open Call is restricted to administrators and
         every content access is logged.
       </Notice>
+      <AuditWorkerControl system="billing" />
       <MetricGrid tiles={tiles} />
 
       <section className="content-section audit-control-bar">

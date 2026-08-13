@@ -5,6 +5,7 @@ import {
   createMysqlCallAuditSourceReader,
   SOURCE_CANDIDATE_SQL,
   SOURCE_CANDIDATE_SQL_AFTER_CURSOR,
+  SOURCE_CHANGED_CANDIDATE_SQL,
 } from './mysqlCallAuditSource.ts'
 import { CallAuditSourceQueryError } from '../callaudit/sourceQuery.ts'
 import {
@@ -16,6 +17,11 @@ const BOTH_QUERIES = [
   ['first page', SOURCE_CANDIDATE_SQL],
   ['after cursor', SOURCE_CANDIDATE_SQL_AFTER_CURSOR],
 ] as const
+
+const ALL_QUERIES = [
+  ...BOTH_QUERIES,
+  ['changed rows', SOURCE_CHANGED_CANDIDATE_SQL] as const,
+]
 
 /** Captures SQL and parameters; no database is ever contacted. */
 function recordingPool(rows: unknown[] = []) {
@@ -72,7 +78,7 @@ const QUERY = {
 // ---------------------------------------------------------------------------
 
 test('the source queries are SELECT only', () => {
-  for (const [label, sql] of BOTH_QUERIES) {
+  for (const [label, sql] of ALL_QUERIES) {
     assert.match(sql.trimStart(), /^SELECT\s/, `${label} must start with SELECT`)
     for (const forbidden of [
       /\bINSERT\b/i,
@@ -135,11 +141,44 @@ test('never uses SELECT star', () => {
 })
 
 test('reads only the external source table', () => {
-  for (const [, sql] of BOTH_QUERIES) {
+  for (const [, sql] of ALL_QUERIES) {
     const tables = [...sql.matchAll(/\bFROM\s+`?(\w+)`?/gi)].map((m) => m[1])
     assert.deepEqual(tables, ['ai_voice_leads_received'])
     assert.equal(/\bJOIN\b/i.test(sql), false)
   }
+})
+
+test('changed-row polling is keyset ordered, bounded, and parameterized', async () => {
+  const { pool, calls } = recordingPool([
+    syntheticRow({ source_change_time: '2026-08-01 09:20:00' }),
+  ])
+  const reader = createMysqlCallAuditSourceReader(pool)
+  const rows = await reader.listChangedCandidates({
+    changedAfter: {
+      changedAt: '2026-08-01 09:19:00',
+      sourceRowId: '0',
+    },
+    changedBeforeExclusive: '2026-08-01 09:21:00',
+    batchSize: 25,
+  })
+
+  assert.equal(calls[0].sql, SOURCE_CHANGED_CANDIDATE_SQL)
+  assert.deepEqual(calls[0].parameters, [
+    '2026-08-01 09:19:00.000000',
+    '2026-08-01 09:19:00.000000',
+    '0',
+    '2026-08-01 09:21:00.000000',
+    25,
+  ])
+  assert.match(
+    SOURCE_CHANGED_CANDIDATE_SQL,
+    /ORDER BY source_change_time ASC, src\.`id` ASC/,
+  )
+  assert.doesNotMatch(SOURCE_CHANGED_CANDIDATE_SQL, /\bOFFSET\b/i)
+  assert.deepEqual(rows[0].cursor, {
+    changedAt: '2026-08-01 09:20:00.000000',
+    sourceRowId: '4021',
+  })
 })
 
 // ---------------------------------------------------------------------------

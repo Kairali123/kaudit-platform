@@ -185,6 +185,50 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .82rem; }
 }
 .status-badge.ready, .status-badge.live, .status-badge.authoritative, .status-badge.calibrated, .status-badge.automated { color: var(--green); background: var(--green-soft); }
 .status-badge.provisional, .status-badge.uncalibrated, .status-badge.audit_pending { color: var(--amber); background: var(--amber-soft); }
+.status-badge.running, .status-badge.idle { color: var(--green); background: var(--green-soft); }
+.status-badge.pausing, .status-badge.paused { color: var(--amber); background: var(--amber-soft); }
+.status-badge.faulted { color: var(--red); background: var(--red-soft); }
+
+.audit-worker-control {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(280px, 1.4fr) auto;
+  align-items: center;
+  gap: 18px;
+  min-height: 78px;
+  margin: 0 0 20px;
+  padding: 14px 16px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--paper);
+}
+.audit-worker-state { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.audit-worker-state > div { display: grid; gap: 2px; min-width: 0; }
+.audit-worker-state strong { overflow-wrap: anywhere; }
+.audit-worker-state .status-badge { margin-left: auto; flex: 0 0 auto; }
+.worker-indicator { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
+.worker-indicator.running, .worker-indicator.idle { background: var(--green); }
+.worker-indicator.pausing, .worker-indicator.paused { background: var(--amber); }
+.worker-indicator.faulted { background: var(--red); }
+.audit-worker-facts { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin: 0; }
+.audit-worker-facts div { min-width: 0; }
+.audit-worker-facts dt { color: var(--muted); font-size: .68rem; font-weight: 700; text-transform: uppercase; }
+.audit-worker-facts dd { margin: 4px 0 0; font-size: .78rem; font-weight: 700; overflow-wrap: anywhere; }
+.audit-worker-control > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 7px;
+  min-width: 132px;
+  min-height: 38px;
+  padding: 8px 12px;
+  border: 1px solid currentColor;
+  border-radius: 6px;
+  font-weight: 750;
+  cursor: pointer;
+}
+.audit-worker-control .button-danger { color: var(--red); background: var(--red-soft); }
+.audit-worker-control .button-primary { color: #fff; background: var(--green); border-color: var(--green); }
+.audit-worker-control > button:disabled { opacity: .55; cursor: not-allowed; }
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 13px; }
 .metric-card {
   min-height: 142px; padding: 17px; background: var(--paper); border: 1px solid var(--line);
@@ -576,6 +620,8 @@ dl small { color: var(--muted); font-size: .6rem; }
 .ca-footnote svg { flex: 0 0 auto; margin-top: 1px; color: var(--ca-accent); }
 
 @media (max-width: 1050px) {
+  .audit-worker-control { grid-template-columns: 1fr auto; }
+  .audit-worker-facts { grid-column: 1 / -1; grid-row: 2; }
   .topbar-right > span, .topbar-right > svg { display: none; }
   .billing-period-filter { min-width: 245px; }
   .metric-grid { grid-template-columns: repeat(2, 1fr); }
@@ -584,6 +630,9 @@ dl small { color: var(--muted); font-size: .6rem; }
   .snapshot-card dl > div { padding: 10px 0 0; border: 0; border-top: 1px solid var(--line); }
 }
 @media (max-width: 760px) {
+  .audit-worker-control { grid-template-columns: 1fr; }
+  .audit-worker-facts { grid-column: auto; grid-row: auto; }
+  .audit-worker-control > button { width: 100%; }
   .login-page { grid-template-columns: 1fr; }
   .login-story { min-height: auto; padding: 30px 24px 34px; }
   .login-story-copy { margin: 70px 0 30px; }

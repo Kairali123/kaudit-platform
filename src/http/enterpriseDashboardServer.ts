@@ -67,6 +67,12 @@ import {
 import { collectMetrics } from '../adapters/mysqlMetrics.ts'
 import { collectOperations } from '../adapters/mysqlOperations.ts'
 import { collectAuditMonitor } from '../adapters/mysqlAuditMonitor.ts'
+import { createMysqlAuditWorkerControl } from '../adapters/mysqlAuditWorkerControl.ts'
+import {
+  parseAuditSystem,
+  parseDesiredState,
+  type AuditWorkerControlPort,
+} from '../auditWorkers/control.ts'
 import { collectBillingMonths } from '../adapters/mysqlBillingMonths.ts'
 import {
   collectReportEmailDeliveryStatus,
@@ -187,6 +193,8 @@ interface Dependencies {
    * rather than reaching for a network or an environment variable.
    */
   callAuditRuleTestModel?: ContentAuditModelAdapter
+  /** Durable administrator intent and privacy-safe worker observations. */
+  auditWorkerControl?: AuditWorkerControlPort
   webDistRoot?: string
 }
 
@@ -217,6 +225,7 @@ const API_ROUTES = new Set([
   '/api/v1/reports',
   '/api/v1/operations',
   '/api/v1/audits',
+  '/api/v1/audit-workers',
   '/api/v1/audit-call',
   '/api/v1/audit-audio',
   '/api/v1/imports',
@@ -242,6 +251,8 @@ const CALL_AUDIT_SETTINGS_WRITE_ROUTES = new Set([
  * boundary as the settings it exercises.
  */
 const CALL_AUDIT_RULE_TEST_ROUTES = new Set([CALL_AUDIT_RULE_TEST_ROUTE])
+const AUDIT_WORKER_CONTROL_ROUTE = '/api/v1/audit-workers/control'
+const AUDIT_WORKER_WRITE_ROUTES = new Set([AUDIT_WORKER_CONTROL_ROUTE])
 
 /** An administrator's settings submission is small; anything larger is a bug. */
 const MAX_SETTINGS_BODY_BYTES = 64 * 1024
@@ -264,6 +275,7 @@ const USER_ADMIN_WRITE_ROUTES = new Set([
   '/api/v1/users/tombstone',
 ])
 const MAX_USER_ADMIN_BODY_BYTES = 16 * 1024
+const MAX_AUDIT_WORKER_BODY_BYTES = 2 * 1024
 
 /**
  * The two public GETs of the authorization-code browser flow.
@@ -1325,6 +1337,15 @@ async function apiResponse(
       periodEnd: period?.end ?? null,
     })
   }
+  if (pathname === '/api/v1/audit-workers') {
+    const control =
+      dependencies.auditWorkerControl ??
+      createMysqlAuditWorkerControl(dependencies.pool)
+    return {
+      generatedAt: new Date().toISOString(),
+      systems: await control.listPublicStates(),
+    }
+  }
   if (pathname === '/api/v1/audit-call') {
     const access = await resolveContentCall(
       url,
@@ -1427,6 +1448,9 @@ function apiAction(pathname: string): string {
   if (pathname === CALL_AUDIT_RULE_TEST_ROUTE) {
     return 'call_audit_rule_test.run'
   }
+  if (pathname === AUDIT_WORKER_CONTROL_ROUTE) {
+    return 'audit_worker.control'
+  }
   return `${pathname.split('/').at(-1)}.read`
 }
 
@@ -1438,6 +1462,10 @@ function apiPermission(pathname: string): string {
     pathname === CALL_AUDIT_RULE_ACTIVATE_ROUTE ||
     pathname === CALL_AUDIT_RULE_TEST_ROUTE
   ) return 'config:manage'
+  if (
+    pathname === '/api/v1/audit-workers' ||
+    pathname === AUDIT_WORKER_CONTROL_ROUTE
+  ) return 'audit:control'
   if (pathname === '/api/v1/users') return 'user:manage'
   // Audit inspection, including the sanitized Call Audit report: administrator
   // only. Call Audit reporting shares the gate with the Billing Audit monitor
@@ -1490,6 +1518,7 @@ function cacheTtlMs(pathname: string): number {
   // Rule administration must read its own writes: a cached version list would
   // hide the snapshot an administrator just created.
   if (pathname === CALL_AUDIT_SETTINGS_ROUTE) return 0
+  if (pathname === '/api/v1/audit-workers') return 0
   if (
     pathname === '/api/v1/audits' ||
     pathname === '/api/v1/imports'
@@ -1579,6 +1608,9 @@ export function createEnterpriseDashboardServer(
     const isUserAdminPost =
       request.method === 'POST' &&
       USER_ADMIN_WRITE_ROUTES.has(url.pathname)
+    const isAuditWorkerPost =
+      request.method === 'POST' &&
+      AUDIT_WORKER_WRITE_ROUTES.has(url.pathname)
     if (
       request.method === 'GET' &&
       (IMPORT_WRITE_ROUTES.has(url.pathname) ||
@@ -1601,7 +1633,8 @@ export function createEnterpriseDashboardServer(
       !isPublicPost &&
       !isSettingsPost &&
       !isRuleTestPost &&
-      !isUserAdminPost
+      !isUserAdminPost &&
+      !isAuditWorkerPost
     ) {
       problem(
         response,
@@ -1686,6 +1719,7 @@ export function createEnterpriseDashboardServer(
       PUBLIC_API_ROUTES.has(url.pathname) ||
       PUBLIC_POST_ROUTES.has(url.pathname) ||
       USER_ADMIN_WRITE_ROUTES.has(url.pathname) ||
+      AUDIT_WORKER_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
       APP_ROUTES.has(url.pathname) ||
@@ -1999,6 +2033,52 @@ export function createEnterpriseDashboardServer(
     let context: AuthContext | null = null
     try {
       context = await authenticate(request, dependencies)
+      if (isAuditWorkerPost) {
+        requirePermission(context, 'audit:control')
+        const body = await readJsonBody(
+          request,
+          MAX_AUDIT_WORKER_BODY_BYTES,
+          'INVALID_AUDIT_WORKER_CONTROL',
+        )
+        const input =
+          body && typeof body === 'object' && !Array.isArray(body)
+            ? body as Record<string, unknown>
+            : {}
+        let system
+        let desiredState
+        try {
+          system = parseAuditSystem(input.system)
+          desiredState = parseDesiredState(input.desiredState)
+        } catch {
+          throw Object.assign(new Error('Audit worker control is invalid'), {
+            code: 'INVALID_AUDIT_WORKER_CONTROL',
+            status: 400,
+          })
+        }
+        const control =
+          dependencies.auditWorkerControl ??
+          createMysqlAuditWorkerControl(dependencies.pool)
+        const state = await control.setDesiredState({
+          system,
+          desiredState,
+        })
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          desiredState === 'paused'
+            ? 'audit_worker.pause'
+            : 'audit_worker.resume',
+          'audit_worker',
+          system,
+          'audit_operations',
+        )
+        apiCache.clear()
+        sendJson(response, correlation, state)
+        return
+      }
       if (isUserAdminPost) {
         requirePermission(context, 'user:manage')
         const administration = dependencies.userAdministration

@@ -22,6 +22,7 @@ import {
   type CallAuditReportSection,
   type CallAuditResultRow,
 } from '../lib/api'
+import { AuditWorkerControl } from '../components/AuditWorkerControl'
 
 /**
  * The Kserve Call Audit Report — sanitized, anonymous, aggregate-first.
@@ -395,6 +396,8 @@ export function CallAuditReportPage() {
           </span>
         }
       />
+
+      <AuditWorkerControl system="call" />
 
       <form
         className="ca-controls"

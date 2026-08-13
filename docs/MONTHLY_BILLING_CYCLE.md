@@ -79,7 +79,9 @@ every call that already has a completed audit. The worker:
 7. writes a final independent calculation only when calibration and the
    published rate card permit it.
 
-Run the persistent worker as a separate supervised process:
+The worker considers a call eligible only after a matching invoice period is
+present. Once both the usage CSV and invoice are committed, the persistent
+worker drains that period automatically:
 
 ```bash
 KAUDIT_AUDIT_MODE=EXECUTE KAUDIT_AUDIT_WATCH=true npm run audit:worker
@@ -88,6 +90,11 @@ KAUDIT_AUDIT_MODE=EXECUTE KAUDIT_AUDIT_WATCH=true npm run audit:worker
 Watch mode continues polling for newly imported/due calls. It skips any call
 already backed by a completed legacy or V2 audit. The dashboard process never
 starts paid OpenAI work merely because a user opens a page.
+
+An administrator can use **Stop audit** on `/audits`; the worker finishes the
+current call and claims no next call. **Resume audit** continues from SQL.
+Unexpected call-level processing failures are stored with bounded codes and
+scheduled under the existing retry policy while later calls continue.
 
 For local operation, one command starts the built dashboard and the continuous
 worker together:
@@ -166,7 +173,7 @@ system-wide page and clearly states that the month selector does not scope it.
 | Report-value withholding before audit completion | Implemented |
 | K2/K3-specific automation barrier | Retired |
 | Monthly CSV upload and normalization writer | Implemented |
-| Resumable continuous full audit worker | Implemented; production execution not launched |
+| Resumable continuous full audit worker | Implemented with durable Stop/Resume; deployment pending |
 | KServe recording manifest/API feed | Missing when the monthly CSV lacks Recording URL |
 | Global bill-month filter | Implemented across aggregate business pages |
 | Cycle-close accepted-as-billed fallback writer | Implemented with dry-run/execute safety switch and deterministic trace |

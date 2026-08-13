@@ -143,7 +143,8 @@ gitignored `KAUDIT_IMPORT_ROOT` and normalized into the shared `kaudit_*`
 tables. A usage row may include an optional `Recording URL`; without a
 recording URL the call is retained but cannot enter audio audit.
 
-Run the audit worker as its own supervised process:
+Run the Billing Audit worker as its own supervised process. Once the usage CSV
+and matching invoice are committed, it drains eligible calls automatically:
 
 ```bash
 KAUDIT_AUDIT_MODE=EXECUTE KAUDIT_AUDIT_WATCH=true npm run audit:worker
@@ -160,8 +161,22 @@ together:
 npm run app:operate
 ```
 
-This is a convenience wrapper around two separate processes. Production still
-requires independently supervised API and worker services.
+This is a convenience wrapper around separate API, audit, and report
+processes. Production still requires independently supervised API and worker
+services.
+
+## Automatic Call Audit
+
+`npm run callaudit:worker` continuously reads the external Call Audit source
+with `SELECT`-only keyset polling, audits new or changed immutable revisions,
+and persists results before reports can display them. Migration
+`0012_automatic_audit_workers.sql` supplies the durable checkpoint and the
+administrator Stop/Resume state shared by both workers.
+
+The automatic worker needs `KAUDIT_CALL_AUDIT_AUTO_START` only when its durable
+checkpoint has never been initialized. It polls every 60 seconds by default and
+continues from SQL after process restarts. A persistent supervisor, not Vercel,
+must keep both workers running.
 
 ## Call Audit batch
 
@@ -169,6 +184,5 @@ requires independently supervised API and worker services.
 operator-supplied period and exits. It is not a scheduler, and it refuses to
 write or spend unless `KAUDIT_CALL_AUDIT_BATCH_MODE` is exactly `EXECUTE`.
 
-Migration `0008_call_audit_foundation.sql` is not production-applied. Use
-staging under approved supervision and follow
-`docs/runbooks/CALL_AUDIT_BATCH.md`.
+The one-shot command remains available for supervised backfills and bounded
+reconciliation. Follow `docs/runbooks/CALL_AUDIT_BATCH.md`.

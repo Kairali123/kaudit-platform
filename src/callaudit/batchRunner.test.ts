@@ -492,6 +492,39 @@ test('maxCandidates stops mid-page and still completes with absolute counters', 
   assert.equal(finished.counters.processedCount, 2)
 })
 
+test('administrator pause finishes the current call and claims no next call', async () => {
+  const processed: string[] = []
+  let checks = 0
+  const summary = await runCallAuditBatch(
+    baseInput({
+      source: fakeSource([
+        [
+          syntheticCandidate('101', '2026-07-30 19:00:00.000000'),
+          syntheticCandidate('102', '2026-07-30 19:05:00.000000'),
+        ],
+      ]),
+      processCandidate: async (input) => {
+        processed.push(input.candidate.sourceRowId)
+        return summaryOf(
+          input.candidate.sourceRowId,
+          'succeeded',
+          'content_auditable',
+        )
+      },
+      async shouldContinue() {
+        checks += 1
+        return checks === 1
+      },
+    }),
+  )
+
+  assert.deepEqual(processed, ['101'])
+  assert.equal(summary.stopReason, 'paused')
+  assert.equal(summary.candidatesSelected, 2)
+  assert.equal(summary.candidatesProcessed, 1)
+  assert.equal(summary.terminalStatus, 'completed')
+})
+
 test('an empty first page completes with zero counters and no counter write', async () => {
   const control = fakeControl()
   const source = fakeSource([[]])

@@ -1,13 +1,15 @@
-import { randomUUID } from 'node:crypto'
+import fs from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import mysql, { type RowDataPacket } from 'mysql2/promise'
 import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.ts'
 import { createMysqlReauditReadRepo } from '../adapters/mysqlReauditReadRepo.ts'
 import { createMysqlReauditWriteRepo } from '../adapters/mysqlReauditWriteRepo.ts'
 import { createOpenAiReaudit } from '../adapters/openaiReaudit.ts'
+import { createMysqlAuditWorkerControl } from '../adapters/mysqlAuditWorkerControl.ts'
 import { auditOneCall } from '../reaudit/core.ts'
 import { runReauditBatch } from '../reaudit/worker.ts'
 import { parseRecordingBackedTaskIds } from '../reaudit/scope.ts'
+import { loadRuntimeConfig } from '../config/runtime.ts'
 
 function required(name: string): string {
   const value = process.env[name]?.trim()
@@ -58,17 +60,31 @@ async function main(): Promise<void> {
     .split(',')
     .map((value) => value.trim())
     .filter(Boolean)
+  const config = loadRuntimeConfig(process.env)
+  if (
+    config.database.tlsMode === 'required' &&
+    !config.database.sslCaFile
+  ) {
+    throw new Error('BILLING_AUDIT_WORKER_FAILED')
+  }
+  const ssl = config.database.sslCaFile
+    ? {
+        ca: fs.readFileSync(config.database.sslCaFile, 'utf8'),
+        rejectUnauthorized: true as const,
+        verifyIdentity: true as const,
+      }
+    : undefined
   const pool = mysql.createPool({
-    host: required('DB_HOST'),
-    port: Number(process.env.DB_PORT || 3306),
-    database: required('DB_NAME'),
-    user: required('DB_USER'),
-    password: required('DB_PASSWORD'),
+    host: config.database.host,
+    port: config.database.port,
+    database: config.database.name,
+    user: config.database.user,
+    password: config.database.password,
+    ...(ssl ? { ssl } : {}),
     connectionLimit: 4,
     connectTimeout: 30_000,
   })
   const lockConnection = await pool.getConnection()
-  const owner = `audit-worker-${randomUUID()}`
   try {
     const [lockRows] = await lockConnection.query<RowDataPacket[]>(
       `SELECT GET_LOCK('kaudit-independent-reaudit-v2', 0) AS acquired`,
@@ -80,35 +96,83 @@ async function main(): Promise<void> {
       externalTaskIds: taskIds ?? undefined,
     })
     const results = createMysqlReauditWriteRepo(pool)
+    const control = createMysqlAuditWorkerControl(pool)
     const fetcher = createProxyResolvingFetcher(
       required('KAUDIT_UNPOD_PROXY_BASE'),
     )
     const ai = createOpenAiReaudit(required('OPENAI_API_KEY'))
     let completed = 0
     process.stdout.write(
-      `[audit-worker] started owner=${owner}; every already-audited call is skipped; scope=${taskIds ? `${taskIds.length} exact task IDs` : 'all eligible calls'}\n`,
+      `[audit-worker] started; every already-audited call is skipped; scope=${taskIds ? `${taskIds.length} exact task IDs` : 'all eligible calls'}\n`,
     )
     for (;;) {
-      const summary = await runReauditBatch({
-        candidates,
-        results,
-        batchSize,
-        processor: {
-          process: (candidate) =>
-            auditOneCall({
-              candidate,
-              fetcher,
-              ai,
-              allowedHosts,
-            }),
-        },
-        onProgress: (progress) => {
-          process.stdout.write(
-            `[audit-worker] batch ${progress.completed + progress.retriesScheduled + progress.terminalFailures + progress.alreadyCompleted}/${progress.selected}; completed=${progress.completed}; retry=${progress.retriesScheduled}; terminal=${progress.terminalFailures}; skipped=${progress.alreadyCompleted}\n`,
-          )
-        },
+      const desired = await control.getDesiredState('billing')
+      if (desired === 'paused') {
+        await control.recordObservation({
+          system: 'billing',
+          observedState: 'paused',
+        })
+        if (!watch) break
+        await wait(pollMs)
+        continue
+      }
+      await control.recordObservation({
+        system: 'billing',
+        observedState: 'running',
+      })
+      let summary
+      try {
+        summary = await runReauditBatch({
+          candidates,
+          results,
+          batchSize,
+          shouldContinue: async () =>
+            (await control.getDesiredState('billing')) === 'running',
+          processor: {
+            process: (candidate) =>
+              auditOneCall({
+                candidate,
+                fetcher,
+                ai,
+                allowedHosts,
+              }),
+          },
+          onProgress: (progress) => {
+            process.stdout.write(
+              `[audit-worker] batch ${progress.completed + progress.retriesScheduled + progress.terminalFailures + progress.alreadyCompleted}/${progress.selected}; completed=${progress.completed}; retry=${progress.retriesScheduled}; terminal=${progress.terminalFailures}; skipped=${progress.alreadyCompleted}\n`,
+            )
+          },
+        })
+      } catch {
+        await control.recordObservation({
+          system: 'billing',
+          observedState: 'faulted',
+          errorCode: 'BILLING_AUDIT_BATCH_FAILED',
+          failedDelta: 1,
+        })
+        if (!watch) throw new Error('BILLING_AUDIT_BATCH_FAILED')
+        await wait(pollMs)
+        continue
+      }
+      const processed =
+        summary.completed +
+        summary.retriesScheduled +
+        summary.terminalFailures +
+        summary.alreadyCompleted
+      await control.recordObservation({
+        system: 'billing',
+        observedState: summary.stoppedEarly ? 'paused' : 'running',
+        processedDelta: processed,
+        failedDelta:
+          summary.retriesScheduled + summary.terminalFailures,
+        progressed: processed > 0,
       })
       completed += summary.completed
+      if (summary.stoppedEarly) {
+        if (!watch) break
+        await wait(pollMs)
+        continue
+      }
       if (!watch) {
         process.stdout.write(
           `[audit-worker] single batch finished; selected=${summary.selected}; newly completed=${completed}\n`,
@@ -139,9 +203,9 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch((error) => {
+main().catch(() => {
   process.stderr.write(
-    `[audit-worker] stopped: ${String((error as Error)?.message || error).slice(0, 500)}\n`,
+    '[audit-worker] stopped: BILLING_AUDIT_WORKER_FAILED\n',
   )
   process.exitCode = 1
 })

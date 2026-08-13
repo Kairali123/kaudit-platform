@@ -189,6 +189,32 @@ export interface OperationsData {
   auditChainConfigured: boolean | null
 }
 
+export type AuditSystem = 'billing' | 'call'
+export type AuditWorkerDesiredState = 'running' | 'paused'
+export type AuditWorkerObservedState =
+  | 'idle'
+  | 'running'
+  | 'pausing'
+  | 'paused'
+  | 'faulted'
+
+export interface AuditWorkerState {
+  system: AuditSystem
+  desiredState: AuditWorkerDesiredState
+  observedState: AuditWorkerObservedState
+  stateVersion: number
+  lastHeartbeatAt: string | null
+  lastProgressAt: string | null
+  lastErrorCode: string | null
+  processedTotal: number
+  failedTotal: number
+}
+
+export interface AuditWorkerControlData {
+  generatedAt: string
+  systems: AuditWorkerState[]
+}
+
 export interface AuditMonitorRow {
   callReference: string
   billingPeriodDate: string | null

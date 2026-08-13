@@ -1,6 +1,9 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
 import {
+  validateSourceChangeQuery,
   validateSourceCandidateQuery,
+  type SourceChangeCursor,
+  type SourceChangeQuery,
   type SourceCandidateQuery,
 } from '../callaudit/sourceQuery.ts'
 import { normalizeSourceRowId } from '../callaudit/sourceRowId.ts'
@@ -36,6 +39,9 @@ import {
 const EFFECTIVE_CALL_TIME =
   'COALESCE(src.`call_start_time`, src.`date_time`, src.`timestamp`)'
 
+const SOURCE_CHANGE_TIME =
+  `COALESCE(src.\`updated_at\`, ${EFFECTIVE_CALL_TIME})`
+
 const SELECT_LIST = `
     CAST(src.\`id\` AS CHAR) AS source_row_id,
     src.\`lead_id\` AS lead_id,
@@ -62,6 +68,9 @@ const SELECT_LIST = `
     src.\`final_lead_outcome\` AS final_lead_outcome,
     src.\`calculated_qualification_status\` AS calculated_qualification_status,
     src.\`followup_required\` AS followup_required`
+
+const CHANGE_SELECT_LIST = `${SELECT_LIST},
+    ${SOURCE_CHANGE_TIME} AS source_change_time`
 
 /**
  * Half-open period predicate: start inclusive, end exclusive. Every call in the
@@ -100,6 +109,16 @@ export const SOURCE_CANDIDATE_SQL_AFTER_CURSOR = `SELECT${SELECT_LIST}
      ${CURSOR_PREDICATE}
    ${ORDER_AND_LIMIT}`
 
+export const SOURCE_CHANGED_CANDIDATE_SQL = `SELECT${CHANGE_SELECT_LIST}
+   FROM \`${CALL_AUDIT_SOURCE_TABLE}\` src
+   WHERE (
+       ${SOURCE_CHANGE_TIME} > ?
+       OR (${SOURCE_CHANGE_TIME} = ? AND src.\`id\` > ?)
+     )
+     AND ${SOURCE_CHANGE_TIME} < ?
+   ORDER BY source_change_time ASC, src.\`id\` ASC
+   LIMIT ?`
+
 interface SourceCandidateRow extends RowDataPacket {
   /** Always CHAR: the SELECT casts the BIGINT so mysql2 cannot round it. */
   source_row_id: string | number
@@ -127,6 +146,12 @@ interface SourceCandidateRow extends RowDataPacket {
   final_lead_outcome: string | null
   calculated_qualification_status: string | null
   followup_required: string | null
+  source_change_time?: Date | string | null
+}
+
+export interface ChangedCallAuditCandidate {
+  candidate: InternalSourceCandidate
+  cursor: SourceChangeCursor
 }
 
 function pad(value: number, width: number): string {
@@ -242,6 +267,40 @@ export function createMysqlCallAuditSourceReader(pool: Pool) {
             validated.batchSize,
           ])
       return rows.map(mapRow)
+    },
+
+    /**
+     * Reads source rows that changed after a durable scheduler checkpoint.
+     * The external table remains SELECT-only; the checkpoint itself lives in
+     * a Kaudit-owned table and is never returned by a browser route.
+     */
+    async listChangedCandidates(
+      query: SourceChangeQuery,
+    ): Promise<ChangedCallAuditCandidate[]> {
+      const validated = validateSourceChangeQuery(query)
+      const [rows] = await pool.execute<SourceCandidateRow[]>(
+        SOURCE_CHANGED_CANDIDATE_SQL,
+        [
+          validated.changedAfter.changedAt,
+          validated.changedAfter.changedAt,
+          validated.changedAfter.sourceRowId,
+          validated.changedBeforeExclusive,
+          validated.batchSize,
+        ],
+      )
+      return rows.map((row) => {
+        const candidate = mapRow(row)
+        const changedAt = naiveDatetime(row.source_change_time ?? null)
+        if (!changedAt) {
+          throw new CallAuditSourceRowError(
+            'Source row has no valid change time',
+          )
+        }
+        return {
+          candidate,
+          cursor: { changedAt, sourceRowId: candidate.sourceRowId },
+        }
+      })
     },
   }
 }

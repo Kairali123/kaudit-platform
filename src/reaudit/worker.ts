@@ -29,6 +29,7 @@ export interface ReauditWorkerSummary {
   retriesScheduled: number
   terminalFailures: number
   alreadyCompleted: number
+  stoppedEarly: boolean
 }
 
 export async function runReauditBatch(options: {
@@ -38,6 +39,8 @@ export async function runReauditBatch(options: {
   batchSize: number
   now?: () => Date
   onProgress?: (summary: ReauditWorkerSummary) => void
+  /** Graceful pause gate, checked before each new call is claimed. */
+  shouldContinue?: () => Promise<boolean>
 }): Promise<ReauditWorkerSummary> {
   if (!Number.isInteger(options.batchSize) || options.batchSize < 1 || options.batchSize > 100) {
     throw new RangeError('batchSize must be from 1 to 100')
@@ -52,8 +55,13 @@ export async function runReauditBatch(options: {
     retriesScheduled: 0,
     terminalFailures: 0,
     alreadyCompleted: 0,
+    stoppedEarly: false,
   }
   for (const candidate of rows) {
+    if (options.shouldContinue && !(await options.shouldContinue())) {
+      summary.stoppedEarly = true
+      break
+    }
     const started = await options.results.markStarted(
       candidate,
       (options.now ?? (() => new Date()))(),
@@ -63,7 +71,19 @@ export async function runReauditBatch(options: {
       options.onProgress?.(summary)
       continue
     }
-    const result = await options.processor.process(candidate)
+    let result: ReauditItemResult
+    try {
+      result = await options.processor.process(candidate)
+    } catch {
+      // A provider/fetch/parser throw belongs to this call, not the whole
+      // queue. Persist only a bounded code and let the retry policy decide.
+      result = {
+        callId: candidate.callId,
+        artifactId: candidate.artifactId,
+        outcome: 'classification_failed',
+        errorCode: 'AUDIT_PROCESSOR_FAILED',
+      }
+    }
     const outcome = await options.results.persist(
       candidate,
       result,

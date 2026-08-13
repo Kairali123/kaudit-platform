@@ -18,7 +18,8 @@ supervised operator process, exactly as it is today:
 | --- | --- |
 | Monthly billing cycle close | `npm run billing:cycle-close` |
 | Continuous re-audit worker | `npm run audit:worker` |
-| Call Audit batch processing | `npm run callaudit:batch`, `docs/runbooks/CALL_AUDIT_BATCH.md` |
+| Continuous Call Audit worker | `npm run callaudit:worker` |
+| Call Audit backfill/batch processing | `npm run callaudit:batch`, `docs/runbooks/CALL_AUDIT_BATCH.md` |
 | Automated report email worker | `npm run report:email-worker`, `docs/runbooks/AUTOMATED_REPORT_EMAIL.md` |
 | Automated validation pass | `npm run automation:validate` |
 | Database migrations | Supervised, approved operations only |
@@ -26,6 +27,10 @@ supervised operator process, exactly as it is today:
 
 There are **no Cron entries** in `vercel.json` and no scheduler in the function. This
 is enforced by `src/vercel/deploymentContract.test.ts`, not only by convention.
+
+Vercel does expose the authenticated administrator Stop/Resume API. It writes
+only durable desired state in MySQL; it never executes a model call. The two
+persistent workers observe that state before claiming each next call.
 
 ### Imports are disabled on Vercel, deliberately
 

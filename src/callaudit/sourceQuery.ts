@@ -43,6 +43,24 @@ export interface ValidatedSourceCandidateQuery {
   cursor: SourceCandidateCursor | null
 }
 
+export interface SourceChangeCursor {
+  changedAt: string
+  /** Zero is accepted only as the tie-breaker for an initial timestamp. */
+  sourceRowId: string
+}
+
+export interface SourceChangeQuery {
+  changedAfter: SourceChangeCursor
+  changedBeforeExclusive: string
+  batchSize: number
+}
+
+export interface ValidatedSourceChangeQuery {
+  changedAfter: SourceChangeCursor
+  changedBeforeExclusive: string
+  batchSize: number
+}
+
 function isLeapYear(year: number): boolean {
   return (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0
 }
@@ -104,6 +122,57 @@ function normalizeDatetime(value: unknown, label: string): string {
     `${yearText}-${monthText}-${dayText} ` +
     `${hourText}:${minuteText}:${secondText}.${fraction.padEnd(6, '0')}`
   )
+}
+
+function normalizeChangeSourceRowId(value: unknown): string {
+  if (value === '0' || value === 0 || value === 0n) return '0'
+  const normalized = normalizeSourceRowId(value)
+  if (normalized === null) {
+    throw new CallAuditSourceQueryError(
+      'changedAfter.sourceRowId must be zero or a canonical positive BIGINT decimal',
+    )
+  }
+  return normalized
+}
+
+export function validateSourceChangeQuery(
+  query: SourceChangeQuery,
+): ValidatedSourceChangeQuery {
+  if (!query.changedAfter || typeof query.changedAfter !== 'object') {
+    throw new CallAuditSourceQueryError('changedAfter must be a cursor')
+  }
+  const changedAt = normalizeDatetime(
+    query.changedAfter.changedAt,
+    'changedAfter.changedAt',
+  )
+  const changedBeforeExclusive = normalizeDatetime(
+    query.changedBeforeExclusive,
+    'changedBeforeExclusive',
+  )
+  if (changedBeforeExclusive <= changedAt) {
+    throw new CallAuditSourceQueryError(
+      'changedBeforeExclusive must be after changedAfter.changedAt',
+    )
+  }
+  if (
+    !Number.isSafeInteger(query.batchSize) ||
+    query.batchSize < 1 ||
+    query.batchSize > MAX_SOURCE_BATCH_SIZE
+  ) {
+    throw new CallAuditSourceQueryError(
+      `batchSize must be an integer between 1 and ${MAX_SOURCE_BATCH_SIZE}`,
+    )
+  }
+  return {
+    changedAfter: {
+      changedAt,
+      sourceRowId: normalizeChangeSourceRowId(
+        query.changedAfter.sourceRowId,
+      ),
+    },
+    changedBeforeExclusive,
+    batchSize: query.batchSize,
+  }
 }
 
 /**
