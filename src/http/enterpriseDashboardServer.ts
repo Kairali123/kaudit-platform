@@ -73,6 +73,10 @@ import {
   parseDesiredState,
   type AuditWorkerControlPort,
 } from '../auditWorkers/control.ts'
+import {
+  AuditWorkerDispatchError,
+  type AuditWorkerDispatcher,
+} from '../auditWorkers/dispatcher.ts'
 import { collectBillingMonths } from '../adapters/mysqlBillingMonths.ts'
 import {
   collectReportEmailDeliveryStatus,
@@ -195,6 +199,8 @@ interface Dependencies {
   callAuditRuleTestModel?: ContentAuditModelAdapter
   /** Durable administrator intent and privacy-safe worker observations. */
   auditWorkerControl?: AuditWorkerControlPort
+  /** Starts a bounded external worker without exposing its provider details. */
+  auditWorkerDispatcher?: AuditWorkerDispatcher
   webDistRoot?: string
 }
 
@@ -1343,6 +1349,7 @@ async function apiResponse(
       createMysqlAuditWorkerControl(dependencies.pool)
     return {
       generatedAt: new Date().toISOString(),
+      dispatchAvailable: Boolean(dependencies.auditWorkerDispatcher),
       systems: await control.listPublicStates(),
     }
   }
@@ -1413,6 +1420,10 @@ const BOUNDED_UNAVAILABLE_TITLES: Readonly<Record<string, string>> = {
     'Import analysis is not configured on this server',
   USER_ADMIN_UNAVAILABLE:
     'User administration is not available on this server',
+  AUDIT_WORKER_DISPATCH_NOT_CONFIGURED:
+    'Audit worker start is not configured on this server',
+  AUDIT_WORKER_DISPATCH_FAILED:
+    'Audit worker could not be started',
 }
 
 /**
@@ -2058,10 +2069,43 @@ export function createEnterpriseDashboardServer(
         const control =
           dependencies.auditWorkerControl ??
           createMysqlAuditWorkerControl(dependencies.pool)
+        if (
+          desiredState === 'running' &&
+          !dependencies.auditWorkerDispatcher
+        ) {
+          throw Object.assign(
+            new Error('Audit worker start is not configured'),
+            {
+              code: 'AUDIT_WORKER_DISPATCH_NOT_CONFIGURED',
+              status: 503,
+            },
+          )
+        }
+        const previousState =
+          (await control.listPublicStates()).find(
+            (item) => item.system === system,
+          ) ?? null
+        const shouldDispatch =
+          desiredState === 'running' &&
+          previousState?.observedState !== 'running' &&
+          previousState?.observedState !== 'pausing'
         const state = await control.setDesiredState({
           system,
           desiredState,
         })
+        if (shouldDispatch) {
+          try {
+            await dependencies.auditWorkerDispatcher?.dispatch(system)
+          } catch {
+            await control.recordObservation({
+              system,
+              observedState: 'faulted',
+              errorCode: 'AUDIT_WORKER_DISPATCH_FAILED',
+              failedDelta: 1,
+            })
+            throw new AuditWorkerDispatchError()
+          }
+        }
         await auditAccess(
           dependencies,
           request,

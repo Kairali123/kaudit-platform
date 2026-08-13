@@ -65,6 +65,7 @@ function state(
 test('administrators can read, stop, and resume only safe worker state', async () => {
   const rows = [state('billing'), state('call')]
   const writes: Array<{ system: string; desiredState: string }> = []
+  const dispatched: string[] = []
   const events: AuditEvent[] = []
   const control: AuditWorkerControlPort = {
     async listPublicStates() { return rows },
@@ -72,7 +73,7 @@ test('administrators can read, stop, and resume only safe worker state', async (
       writes.push(input)
       const row = rows.find((item) => item.system === input.system)!
       row.desiredState = input.desiredState
-      row.observedState = input.desiredState === 'paused' ? 'pausing' : 'idle'
+      row.observedState = input.desiredState === 'paused' ? 'pausing' : 'running'
       return row
     },
     async getDesiredState() { return 'running' },
@@ -107,6 +108,9 @@ test('administrators can read, stop, and resume only safe worker state', async (
     },
     verifier: null,
     auditWorkerControl: control,
+    auditWorkerDispatcher: {
+      async dispatch(system) { dispatched.push(system) },
+    },
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address() as AddressInfo
@@ -123,6 +127,7 @@ test('administrators can read, stop, and resume only safe worker state', async (
     )
     assert.equal(JSON.stringify(body).includes('checkpoint'), false)
     assert.equal(JSON.stringify(body).includes('sourceRowId'), false)
+    assert.equal(body.dispatchAvailable, true)
 
     const stop = await fetch(`${base}/api/v1/audit-workers/control`, {
       method: 'POST',
@@ -133,6 +138,30 @@ test('administrators can read, stop, and resume only safe worker state', async (
     assert.deepEqual(writes, [{ system: 'call', desiredState: 'paused' }])
     assert.equal(events.at(-1)?.action, 'audit_worker.pause')
     assert.equal(events.at(-1)?.resourceId, 'call')
+    assert.deepEqual(dispatched, [])
+
+    rows.find((item) => item.system === 'call')!.observedState = 'paused'
+
+    const resume = await fetch(`${base}/api/v1/audit-workers/control`, {
+      method: 'POST',
+      headers: { cookie: cookie(), 'content-type': 'application/json' },
+      body: JSON.stringify({ system: 'call', desiredState: 'running' }),
+    })
+    assert.equal(resume.status, 200)
+    assert.deepEqual(writes, [
+      { system: 'call', desiredState: 'paused' },
+      { system: 'call', desiredState: 'running' },
+    ])
+    assert.deepEqual(dispatched, ['call'])
+    assert.equal(events.at(-1)?.action, 'audit_worker.resume')
+
+    const repeated = await fetch(`${base}/api/v1/audit-workers/control`, {
+      method: 'POST',
+      headers: { cookie: cookie(), 'content-type': 'application/json' },
+      body: JSON.stringify({ system: 'call', desiredState: 'running' }),
+    })
+    assert.equal(repeated.status, 200)
+    assert.deepEqual(dispatched, ['call'])
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => error ? reject(error) : resolve()),

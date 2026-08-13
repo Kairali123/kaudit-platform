@@ -51,6 +51,43 @@ test('desired-state revision compares the old state before assigning the new sta
   const update = calls[0]
   assert.ok(update.sql.indexOf('state_version =') < update.sql.indexOf('desired_state = ?'))
   assert.deepEqual(update.parameters, ['paused', 'paused', 'paused', 'call'])
+  assert.match(update.sql, /WHEN \? = 'running' THEN 'running'/)
+})
+
+test('a start request becomes active immediately while dispatch is queued', async () => {
+  const calls: Array<{ sql: string; parameters: unknown[] }> = []
+  const pool = {
+    async execute(sql: string, parameters: unknown[]) {
+      calls.push({ sql, parameters })
+      if (/^SELECT/.test(sql)) {
+        return [[row({ observed_state: 'running' })]]
+      }
+      return [{ affectedRows: 1 }]
+    },
+  } as unknown as Pool
+  const result = await createMysqlAuditWorkerControl(pool).setDesiredState({
+    system: 'call',
+    desiredState: 'running',
+  })
+
+  assert.equal(result.observedState, 'running')
+  assert.match(calls[0]?.sql ?? '', /WHEN \? = 'running' THEN 'running'/)
+})
+
+test('a repeated stop preserves pausing until the active item settles', async () => {
+  const pool = {
+    async execute(sql: string) {
+      if (/^SELECT/.test(sql)) {
+        return [[row({ desired_state: 'paused', observed_state: 'pausing' })]]
+      }
+      return [{ affectedRows: 1 }]
+    },
+  } as unknown as Pool
+  const result = await createMysqlAuditWorkerControl(pool).setDesiredState({
+    system: 'call',
+    desiredState: 'paused',
+  })
+  assert.equal(result.observedState, 'pausing')
 })
 
 test('Call Audit checkpoint preserves MySQL naive wall-clock digits', async () => {

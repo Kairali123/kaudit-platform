@@ -15,7 +15,7 @@ const LABELS: Record<AuditSystem, string> = {
 }
 
 function stateLabel(state: AuditWorkerState): string {
-  if (state.desiredState === 'paused' && state.observedState === 'running') {
+  if (state.desiredState === 'paused' && state.observedState !== 'paused') {
     return 'Stopping'
   }
   return state.observedState.charAt(0).toUpperCase() +
@@ -49,9 +49,13 @@ export function AuditWorkerControl({ system }: { system: AuditSystem }) {
   }
   const state = query.data?.systems.find((item) => item.system === system)
   if (!state) return null
+  const dispatchAvailable = query.data?.dispatchAvailable ?? false
   const stopping =
     state.desiredState === 'paused' && state.observedState !== 'paused'
-  const running = state.desiredState === 'running'
+  const active =
+    state.observedState === 'running' || state.observedState === 'pausing'
+  const stopAction = state.desiredState === 'running' && active
+  const startLabel = state.desiredState === 'paused' ? 'Resume audit' : 'Run audit'
 
   return (
     <section className="audit-worker-control" aria-label={`${LABELS[system]} control`}>
@@ -83,13 +87,23 @@ export function AuditWorkerControl({ system }: { system: AuditSystem }) {
       </dl>
       <button
         type="button"
-        className={running ? 'button-danger' : 'button-primary'}
-        disabled={mutation.isPending || stopping}
-        title={running ? 'Stop after the current call' : 'Resume automatic auditing'}
-        onClick={() => mutation.mutate(running ? 'paused' : 'running')}
+        className={stopAction ? 'button-danger' : 'button-primary'}
+        disabled={
+          mutation.isPending ||
+          stopping ||
+          (!dispatchAvailable && !stopAction)
+        }
+        title={
+          stopAction
+            ? 'Stop after the current item'
+            : dispatchAvailable
+              ? startLabel
+              : 'Audit worker start unavailable'
+        }
+        onClick={() => mutation.mutate(stopAction ? 'paused' : 'running')}
       >
-        {running ? <Pause size={16} aria-hidden /> : <Play size={16} aria-hidden />}
-        {running ? 'Stop audit' : 'Resume audit'}
+        {stopAction ? <Pause size={16} aria-hidden /> : <Play size={16} aria-hidden />}
+        {stopAction ? 'Stop audit' : startLabel}
       </button>
     </section>
   )

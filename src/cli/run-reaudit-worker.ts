@@ -1,4 +1,3 @@
-import fs from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import mysql, { type RowDataPacket } from 'mysql2/promise'
 import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.ts'
@@ -10,6 +9,7 @@ import { auditOneCall } from '../reaudit/core.ts'
 import { runReauditBatch } from '../reaudit/worker.ts'
 import { parseRecordingBackedTaskIds } from '../reaudit/scope.ts'
 import { loadRuntimeConfig } from '../config/runtime.ts'
+import { resolveDatabaseTls } from '../runtime/databaseTls.ts'
 
 function required(name: string): string {
   const value = process.env[name]?.trim()
@@ -47,6 +47,17 @@ async function main(): Promise<void> {
   const batchSize = integer('KAUDIT_AUDIT_BATCH', 10, 1, 100)
   const pollMs = integer('KAUDIT_AUDIT_POLL_MS', 15_000, 1_000, 60_000)
   const watch = enabled('KAUDIT_AUDIT_WATCH')
+  const drain = enabled('KAUDIT_AUDIT_DRAIN')
+  if (watch && drain) {
+    throw new Error('KAUDIT_AUDIT_WATCH and KAUDIT_AUDIT_DRAIN are exclusive')
+  }
+  const deadlineSeconds = integer(
+    'KAUDIT_WORKER_DEADLINE_SECONDS',
+    19_200,
+    300,
+    21_000,
+  )
+  const deadline = Date.now() + deadlineSeconds * 1000
   const scopeFile = process.env.KAUDIT_AUDIT_SCOPE_FILE?.trim() || null
   const taskIds = scopeFile
     ? parseRecordingBackedTaskIds(await readFile(scopeFile, 'utf8'))
@@ -61,19 +72,7 @@ async function main(): Promise<void> {
     .map((value) => value.trim())
     .filter(Boolean)
   const config = loadRuntimeConfig(process.env)
-  if (
-    config.database.tlsMode === 'required' &&
-    !config.database.sslCaFile
-  ) {
-    throw new Error('BILLING_AUDIT_WORKER_FAILED')
-  }
-  const ssl = config.database.sslCaFile
-    ? {
-        ca: fs.readFileSync(config.database.sslCaFile, 'utf8'),
-        rejectUnauthorized: true as const,
-        verifyIdentity: true as const,
-      }
-    : undefined
+  const ssl = resolveDatabaseTls(config, process.env)
   const pool = mysql.createPool({
     host: config.database.host,
     port: config.database.port,
@@ -127,7 +126,8 @@ async function main(): Promise<void> {
           results,
           batchSize,
           shouldContinue: async () =>
-            (await control.getDesiredState('billing')) === 'running',
+            (await control.getDesiredState('billing')) === 'running' &&
+            (!drain || Date.now() < deadline),
           processor: {
             process: (candidate) =>
               auditOneCall({
@@ -159,9 +159,14 @@ async function main(): Promise<void> {
         summary.retriesScheduled +
         summary.terminalFailures +
         summary.alreadyCompleted
+      const desiredAfterBatch = await control.getDesiredState('billing')
       await control.recordObservation({
         system: 'billing',
-        observedState: summary.stoppedEarly ? 'paused' : 'running',
+        observedState: summary.stoppedEarly
+          ? desiredAfterBatch === 'paused'
+            ? 'paused'
+            : 'idle'
+          : 'running',
         processedDelta: processed,
         failedDelta:
           summary.retriesScheduled + summary.terminalFailures,
@@ -169,9 +174,20 @@ async function main(): Promise<void> {
       })
       completed += summary.completed
       if (summary.stoppedEarly) {
-        if (!watch) break
+        if (!watch || drain) break
         await wait(pollMs)
         continue
+      }
+      if (drain) {
+        if (summary.selected > 0 && Date.now() < deadline) continue
+        await control.recordObservation({
+          system: 'billing',
+          observedState: 'idle',
+        })
+        process.stdout.write(
+          `[audit-worker] drain finished; newly completed=${completed}\n`,
+        )
+        break
       }
       if (!watch) {
         process.stdout.write(

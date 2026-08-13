@@ -57,6 +57,7 @@ export type OptionalFeatureId =
   | 'callAuditRuleTest'
   | 'recordingProxy'
   | 'oidcBrowserFlow'
+  | 'auditWorkerDispatch'
 
 export interface PreflightFinding {
   code: PreflightErrorCode
@@ -99,6 +100,7 @@ export const PREFLIGHT_CHECKS = [
   'local-auth-variables-absent',
   'call-audit-rule-test',
   'recording-proxy',
+  'audit-worker-dispatch',
   'runtime-config',
 ] as const
 
@@ -176,6 +178,10 @@ export const REPORTABLE_VARIABLES: readonly string[] = Object.freeze([
   'KAUDIT_UNPOD_PROXY_BASE',
   'KAUDIT_ALLOWED_RECORDING_HOSTS',
   'OPENAI_API_KEY',
+  'KAUDIT_GITHUB_WORKER_ENABLED',
+  'KAUDIT_GITHUB_WORKER_REPOSITORY',
+  'KAUDIT_GITHUB_WORKER_REF',
+  'KAUDIT_GITHUB_WORKER_TOKEN',
 ])
 
 /** Present and non-blank. Whitespace-only is treated as unset, as elsewhere. */
@@ -377,6 +383,47 @@ export function evaluateVercelReleasePreflight(
       optionalFeatures.push('recordingProxy')
     } else {
       fail('FEATURE_CONFIG_INCOMPLETE', 'KAUDIT_ALLOWED_RECORDING_HOSTS')
+    }
+  }
+
+  // audit-worker-dispatch — a dashboard-held provider credential, armed only
+  // by its dedicated gate. Values are shaped here but never retained or
+  // reported; findings carry variable names only.
+  const workerFlag = env.KAUDIT_GITHUB_WORKER_ENABLED?.trim().toLowerCase()
+  const workerVariables = [
+    'KAUDIT_GITHUB_WORKER_REPOSITORY',
+    'KAUDIT_GITHUB_WORKER_REF',
+    'KAUDIT_GITHUB_WORKER_TOKEN',
+  ] as const
+  if (workerFlag && workerFlag !== 'true' && workerFlag !== 'false') {
+    fail('FEATURE_FLAG_INVALID', 'KAUDIT_GITHUB_WORKER_ENABLED')
+  } else if (workerFlag === 'true') {
+    const missing = workerVariables.filter((name) => !set(env, name))
+    const repository = env.KAUDIT_GITHUB_WORKER_REPOSITORY?.trim() || ''
+    const ref = env.KAUDIT_GITHUB_WORKER_REF?.trim() || ''
+    const token = env.KAUDIT_GITHUB_WORKER_TOKEN?.trim() || ''
+    if (missing.length > 0) {
+      fail('FEATURE_CONFIG_INCOMPLETE', ...missing)
+    } else if (!/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(repository)) {
+      fail('FEATURE_CONFIG_INCOMPLETE', 'KAUDIT_GITHUB_WORKER_REPOSITORY')
+    } else if (
+      !/^[A-Za-z0-9._\/-]{1,200}$/.test(ref) ||
+      ref.includes('..')
+    ) {
+      fail('FEATURE_CONFIG_INCOMPLETE', 'KAUDIT_GITHUB_WORKER_REF')
+    } else if (token.length > 1024 || /\s/.test(token)) {
+      fail('FEATURE_CONFIG_INCOMPLETE', 'KAUDIT_GITHUB_WORKER_TOKEN')
+    } else {
+      optionalFeatures.push('auditWorkerDispatch')
+    }
+  } else {
+    const stray = workerVariables.filter((name) => set(env, name))
+    if (stray.length > 0) {
+      fail(
+        'FEATURE_CONFIG_INCOMPLETE',
+        'KAUDIT_GITHUB_WORKER_ENABLED',
+        ...stray,
+      )
     }
   }
 

@@ -1,0 +1,64 @@
+name: Kaudit audit worker
+
+on:
+  workflow_dispatch:
+    inputs:
+      system:
+        description: Audit system
+        required: true
+        type: choice
+        options:
+          - billing
+          - call
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaudit-audit-worker-${{ inputs.system }}
+  cancel-in-progress: false
+
+jobs:
+  drain:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    env:
+      NODE_ENV: production
+      KAUDIT_AUTH_MODE: database
+      KAUDIT_DATABASE_SESSION_SECRET: ${{ secrets.KAUDIT_DATABASE_SESSION_SECRET }}
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_TLS_MODE: ${{ secrets.DB_TLS_MODE }}
+      DB_SSL_CA_PEM: ${{ secrets.DB_SSL_CA_PEM }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      KAUDIT_ALLOWED_RECORDING_HOSTS: ${{ secrets.KAUDIT_ALLOWED_RECORDING_HOSTS }}
+      KAUDIT_UNPOD_PROXY_BASE: ${{ secrets.KAUDIT_UNPOD_PROXY_BASE }}
+      KAUDIT_CALL_AUDIT_AUTO_START: ${{ secrets.KAUDIT_CALL_AUDIT_AUTO_START }}
+      KAUDIT_WORKER_DEADLINE_SECONDS: "19200"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Drain selected audit queue
+        env:
+          AUDIT_SYSTEM: ${{ inputs.system }}
+        run: |
+          if [[ "$AUDIT_SYSTEM" == "billing" ]]; then
+            KAUDIT_AUDIT_MODE=EXECUTE \
+            KAUDIT_AUDIT_BATCH=10 \
+            KAUDIT_AUDIT_WATCH=false \
+            KAUDIT_AUDIT_DRAIN=true \
+            npm run audit:worker
+          elif [[ "$AUDIT_SYSTEM" == "call" ]]; then
+            KAUDIT_CALL_AUDIT_DRAIN=true \
+            KAUDIT_CALL_AUDIT_BATCH_SIZE=25 \
+            npm run callaudit:worker
+          else
+            exit 2
+          fi

@@ -15,6 +15,7 @@ import { createImportAnalysisService } from '../imports/analysis.ts'
 import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.ts'
 import { createOpenAiCallAuditModel } from '../adapters/openaiCallAuditClient.ts'
 import { resolveDatabaseTls, type CaFileReader } from './databaseTls.ts'
+import { createGitHubActionsAuditWorkerDispatcher } from '../auditWorkers/dispatcher.ts'
 
 /**
  * How the runtime holds MySQL connections.
@@ -191,6 +192,8 @@ export function createDashboardRuntime(
     callAuditRuleTestEnabled && callAuditRuleTestApiKey
       ? createOpenAiCallAuditModel(callAuditRuleTestApiKey)
       : undefined
+  const auditWorkerDispatcher =
+    createGitHubActionsAuditWorkerDispatcher(env)
   const verifier =
     config.auth.mode === 'oidc'
       ? createOidcVerifier({
@@ -233,6 +236,7 @@ export function createDashboardRuntime(
     recordingFetcher,
     allowedRecordingHosts,
     callAuditRuleTestModel,
+    auditWorkerDispatcher,
     verifier,
     credentials,
     loginService,

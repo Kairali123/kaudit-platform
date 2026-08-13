@@ -103,7 +103,7 @@ test('database auth may retain dormant OIDC settings for one-variable rollback',
 test('success output is a small fixed JSON object', () => {
   assert.equal(
     formatPreflightReport(evaluate(productionEnv())),
-    '{"preflight":"vercel-release","result":"pass","checks":13,"optionalFeatures":[]}',
+    '{"preflight":"vercel-release","result":"pass","checks":14,"optionalFeatures":[]}',
   )
 })
 
@@ -572,6 +572,57 @@ test('the recording proxy with an allow-list passes and is reported', () => {
   })
   assert.equal(report.ok, true)
   assert.deepEqual(report.optionalFeatures, ['recordingProxy'])
+})
+
+test('the hosted worker dispatcher requires its complete closed configuration', () => {
+  const report = evaluate({
+    ...productionEnv(),
+    KAUDIT_GITHUB_WORKER_ENABLED: 'true',
+    KAUDIT_GITHUB_WORKER_REPOSITORY: 'synthetic-owner/synthetic-repository',
+  })
+  assert.deepEqual(codes(report), ['FEATURE_CONFIG_INCOMPLETE'])
+  assert.deepEqual(variablesFor(report, 'FEATURE_CONFIG_INCOMPLETE'), [
+    'KAUDIT_GITHUB_WORKER_REF',
+    'KAUDIT_GITHUB_WORKER_TOKEN',
+  ])
+})
+
+test('the hosted worker dispatcher passes only with a valid repository and ref', () => {
+  const report = evaluate({
+    ...productionEnv(),
+    KAUDIT_GITHUB_WORKER_ENABLED: 'true',
+    KAUDIT_GITHUB_WORKER_REPOSITORY: 'synthetic-owner/synthetic-repository',
+    KAUDIT_GITHUB_WORKER_REF: 'main',
+    KAUDIT_GITHUB_WORKER_TOKEN: 'synthetic-worker-token',
+  })
+  assert.equal(report.ok, true)
+  assert.deepEqual(report.optionalFeatures, ['auditWorkerDispatch'])
+})
+
+test('hosted worker provider configuration cannot sit behind a disabled gate', () => {
+  const report = evaluate({
+    ...productionEnv(),
+    KAUDIT_GITHUB_WORKER_ENABLED: 'false',
+    KAUDIT_GITHUB_WORKER_TOKEN: 'synthetic-worker-token',
+  })
+  assert.deepEqual(codes(report), ['FEATURE_CONFIG_INCOMPLETE'])
+  assert.deepEqual(variablesFor(report, 'FEATURE_CONFIG_INCOMPLETE'), [
+    'KAUDIT_GITHUB_WORKER_ENABLED',
+    'KAUDIT_GITHUB_WORKER_TOKEN',
+  ])
+})
+
+test('the hosted worker token value never reaches preflight output', () => {
+  const secret = 'synthetic-worker-token-must-not-be-printed'
+  const report = evaluate({
+    ...productionEnv(),
+    KAUDIT_GITHUB_WORKER_ENABLED: 'true',
+    KAUDIT_GITHUB_WORKER_REPOSITORY: 'synthetic-owner/synthetic-repository',
+    KAUDIT_GITHUB_WORKER_REF: 'main',
+    KAUDIT_GITHUB_WORKER_TOKEN: secret,
+  })
+  assert.equal(formatPreflightReport(report).includes(secret), false)
+  assert.equal(JSON.stringify(report).includes(secret), false)
 })
 
 // ---------------------------------------------------------------------------

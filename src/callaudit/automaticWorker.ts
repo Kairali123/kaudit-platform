@@ -51,6 +51,8 @@ export async function runAutomaticCallAuditCycle(input: {
   initialCheckpoint: string | null
   batchSize: number
   now?: () => Date
+  /** Optional host budget, checked only between candidates. */
+  shouldContinue?: () => Promise<boolean>
 }): Promise<AutomaticCallAuditCycleResult> {
   if ((await input.workerControl.getDesiredState('call')) === 'paused') {
     await input.workerControl.recordObservation({
@@ -237,7 +239,8 @@ export async function runAutomaticCallAuditCycle(input: {
       model: input.model,
       timestamps: { now: () => naiveUtc((input.now ?? (() => new Date()))()) },
       shouldContinue: async () =>
-        (await input.workerControl.getDesiredState('call')) === 'running',
+        (await input.workerControl.getDesiredState('call')) === 'running' &&
+        (input.shouldContinue ? await input.shouldContinue() : true),
     })
   } catch {
     await input.workerControl.recordObservation({
@@ -261,7 +264,12 @@ export async function runAutomaticCallAuditCycle(input: {
   const failed = summary.counts.failedTotal
   await input.workerControl.recordObservation({
     system: 'call',
-    observedState: summary.stopReason === 'paused' ? 'paused' : 'running',
+    observedState:
+      summary.stopReason === 'paused'
+        ? (await input.workerControl.getDesiredState('call')) === 'paused'
+          ? 'paused'
+          : 'idle'
+        : 'running',
     errorCode: summary.failureCode,
     processedDelta: summary.candidatesProcessed,
     failedDelta: failed,

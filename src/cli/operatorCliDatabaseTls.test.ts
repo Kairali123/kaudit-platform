@@ -83,7 +83,7 @@ function tlsConstructions(source: string): string[] {
 }
 
 /**
- * The eight operator entry points that still assemble the driver's TLS options
+ * The operator entry points that still assemble the driver's TLS options
  * themselves. Listing them by name is deliberate: the sweep at the bottom of
  * this file proves the list is complete, so a seventh cannot appear unnoticed.
  */
@@ -94,8 +94,6 @@ const INLINE_TLS_CLIS = [
   'run-cycle-preview.ts',
   'run-admin-grant.ts',
   'run-call-audit-batch.ts',
-  'run-call-audit-worker.ts',
-  'run-reaudit-worker.ts',
 ] as const
 
 for (const fileName of INLINE_TLS_CLIS) {
@@ -227,7 +225,7 @@ test('every mysql2 caller in src pairs the two flags', () => {
     }
   }
   assert.deepEqual(offenders, [], 'these mysql2 TLS options skip the host check')
-  // And the eight named above are exactly the inline constructions that exist.
+  // And the named files above are exactly the inline constructions that exist.
   assert.deepEqual(
     seen.sort(),
     INLINE_TLS_CLIS.map((name) => path.join('cli', name)).sort(),

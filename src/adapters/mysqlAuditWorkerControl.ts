@@ -110,9 +110,10 @@ export function createMysqlAuditWorkerControl(
                   IF(desired_state = ?, 0, 1),
                 desired_state = ?,
                 observed_state = CASE
-                  WHEN ? = 'paused' AND observed_state = 'running'
+                  WHEN ? = 'running' THEN 'running'
+                  WHEN observed_state IN ('running', 'pausing')
                     THEN 'pausing'
-                  ELSE observed_state
+                  ELSE 'paused'
                 END,
                 last_error_code = NULL
           WHERE audit_system = ?`,

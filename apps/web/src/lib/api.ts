@@ -212,6 +212,7 @@ export interface AuditWorkerState {
 
 export interface AuditWorkerControlData {
   generatedAt: string
+  dispatchAvailable: boolean
   systems: AuditWorkerState[]
 }
 

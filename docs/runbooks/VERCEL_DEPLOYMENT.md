@@ -173,6 +173,21 @@ leaves the endpoint reporting itself unavailable before it reads a body. `OPENAI
 is needed **only** if the rule TEST LAB is deliberately enabled — import analysis, its
 other consumer, is not constructed on Vercel at all. Leave both unset otherwise.
 
+**Optional dashboard-triggered audit workers**
+
+```
+KAUDIT_GITHUB_WORKER_ENABLED
+KAUDIT_GITHUB_WORKER_REPOSITORY
+KAUDIT_GITHUB_WORKER_REF
+KAUDIT_GITHUB_WORKER_TOKEN
+```
+
+This capability is deny-by-default. When enabled, all four variables are required
+and the token must be a fine-grained repository credential limited to Actions:
+write. The workflow and its separate worker secrets are described in
+`docs/runbooks/GITHUB_ACTIONS_AUDIT_WORKER.md`. Provider responses and token values
+are never returned or logged.
+
 Do **not** set `KAUDIT_IMPORT_ROOT`, `KAUDIT_SECURE_PORT`, `KAUDIT_DEV_USER_EMAIL`,
 `KAUDIT_LOCAL_PASSWORD_HASH`, or `KAUDIT_LOCAL_SESSION_SECRET` on Vercel. The function
 binds no port and production rejects local password mode.
@@ -193,8 +208,8 @@ involved. No value, path, URL, issuer, CA text, key, or thrown-error text is eve
 printed, so the output is safe to keep in a CI log.
 
 ```
-{"preflight":"vercel-release","result":"pass","checks":13,"optionalFeatures":[]}
-{"preflight":"vercel-release","result":"fail","checks":13,"errors":[{"code":"DB_CA_SOURCE_AMBIGUOUS","variables":["DB_SSL_CA_FILE","DB_SSL_CA_PEM"]}]}
+{"preflight":"vercel-release","result":"pass","checks":14,"optionalFeatures":[]}
+{"preflight":"vercel-release","result":"fail","checks":14,"errors":[{"code":"DB_CA_SOURCE_AMBIGUOUS","variables":["DB_SSL_CA_FILE","DB_SSL_CA_PEM"]}]}
 ```
 
 If the command cannot get as far as a verdict — the repository manifest is unreadable

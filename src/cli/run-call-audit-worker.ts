@@ -1,6 +1,6 @@
-import fs from 'node:fs'
 import mysql, { type RowDataPacket } from 'mysql2/promise'
 import { loadRuntimeConfig } from '../config/runtime.ts'
+import { resolveDatabaseTls } from '../runtime/databaseTls.ts'
 import { createMysqlAuditWorkerControl } from '../adapters/mysqlAuditWorkerControl.ts'
 import { createMysqlCallAuditControlRepository } from '../adapters/mysqlCallAuditControl.ts'
 import { createMysqlCallAuditPersistenceRepository } from '../adapters/mysqlCallAuditPersistence.ts'
@@ -25,6 +25,10 @@ function integer(name: string, fallback: number, min: number, max: number) {
   return value
 }
 
+function enabled(name: string): boolean {
+  return process.env[name]?.trim().toLowerCase() === 'true'
+}
+
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -35,20 +39,16 @@ async function main(): Promise<void> {
     process.env.KAUDIT_CALL_AUDIT_AUTO_START?.trim() || null
   const pollMs = integer('KAUDIT_CALL_AUDIT_POLL_MS', 60_000, 5_000, 300_000)
   const batchSize = integer('KAUDIT_CALL_AUDIT_BATCH_SIZE', 25, 1, 1000)
+  const drain = enabled('KAUDIT_CALL_AUDIT_DRAIN')
+  const deadlineSeconds = integer(
+    'KAUDIT_WORKER_DEADLINE_SECONDS',
+    19_200,
+    300,
+    21_000,
+  )
+  const deadline = Date.now() + deadlineSeconds * 1000
   const apiKey = required('OPENAI_API_KEY')
-  if (
-    config.database.tlsMode === 'required' &&
-    !config.database.sslCaFile
-  ) {
-    throw new Error(WORKER_ERROR)
-  }
-  const ssl = config.database.sslCaFile
-    ? {
-        ca: fs.readFileSync(config.database.sslCaFile, 'utf8'),
-        rejectUnauthorized: true as const,
-        verifyIdentity: true as const,
-      }
-    : undefined
+  const ssl = resolveDatabaseTls(config, process.env)
   const pool = mysql.createPool({
     host: config.database.host,
     port: config.database.port,
@@ -78,6 +78,14 @@ async function main(): Promise<void> {
 
     process.stdout.write('[call-audit-worker] started\n')
     for (;;) {
+      if (drain && Date.now() >= deadline) {
+        await workerControl.recordObservation({
+          system: 'call',
+          observedState: 'idle',
+        })
+        process.stdout.write('[call-audit-worker] deadline reached\n')
+        break
+      }
       const result = await runAutomaticCallAuditCycle({
         workerControl,
         runControl,
@@ -87,6 +95,7 @@ async function main(): Promise<void> {
         model,
         initialCheckpoint,
         batchSize,
+        shouldContinue: async () => !drain || Date.now() < deadline,
       })
       if (result.outcome === 'processed') {
         process.stdout.write(
@@ -100,6 +109,10 @@ async function main(): Promise<void> {
               : ''
           }\n`,
         )
+        if (drain) {
+          if (result.outcome === 'faulted') throw new Error(WORKER_ERROR)
+          break
+        }
         await wait(pollMs)
       }
     }
