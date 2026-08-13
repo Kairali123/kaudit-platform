@@ -284,7 +284,17 @@ export function UserManagementPage() {
                 <div className="user-form-grid">
                   <label>
                     Username
-                    <input value={username} onChange={(event) => setUsername(event.target.value)} minLength={3} maxLength={64} pattern="[a-z0-9](?:[a-z0-9._-]*[a-z0-9])" autoComplete="off" required />
+                    <input
+                      value={username}
+                      onChange={(event) => setUsername(event.target.value.toLowerCase())}
+                      minLength={3}
+                      maxLength={64}
+                      pattern="[a-z0-9](?:(?:[a-z0-9._]|-)*[a-z0-9])?"
+                      autoCapitalize="none"
+                      autoComplete="off"
+                      spellCheck={false}
+                      required
+                    />
                   </label>
                   <label>
                     Email
