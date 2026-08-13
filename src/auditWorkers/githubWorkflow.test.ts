@@ -45,11 +45,21 @@ test('workflow configuration is secret-backed and minimally permissioned', () =>
     'OPENAI_API_KEY',
     'KAUDIT_ALLOWED_RECORDING_HOSTS',
     'KAUDIT_UNPOD_PROXY_BASE',
-    'KAUDIT_CALL_AUDIT_AUTO_START',
   ]) {
     assert.match(workflow, new RegExp(`${name}: \\$\\{\\{ secrets\\.${name} \\}\\}`))
   }
   assert.doesNotMatch(workflow, /write-all|contents: write|pull-requests: write/)
+})
+
+test('Call Audit starts at the approved July 2026 UTC boundary', () => {
+  assert.match(
+    workflow,
+    /KAUDIT_CALL_AUDIT_AUTO_START: "2026-07-01 00:00:00\.000000"/,
+  )
+  assert.doesNotMatch(
+    workflow,
+    /secrets\.KAUDIT_CALL_AUDIT_AUTO_START/,
+  )
 })
 
 test('disabled database TLS cannot retain dormant CA material', () => {
