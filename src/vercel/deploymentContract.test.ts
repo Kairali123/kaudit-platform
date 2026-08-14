@@ -253,13 +253,13 @@ test('the function duplicates no security decision of its own', () => {
   }
 })
 
-test('the function constructs no cycle import service', () => {
+test('the function uses Google Drive-backed cycle imports', () => {
   assert.equal(/createMysqlCycleImportService/.test(FUNCTION_CODE), false)
   assert.equal(/createImportAnalysisService/.test(FUNCTION_CODE), false)
   assert.equal(/KAUDIT_IMPORT_ROOT/.test(FUNCTION_CODE), false)
-  // Declared unavailable rather than pointed at a temporary directory: a
-  // function's disk is neither shared between instances nor durable.
-  assert.match(FUNCTION_CODE, /cycleImports:\s*'unavailable'/)
+  // The shared factory constructs the Drive object store; the function only
+  // selects the reviewed serverless import mode.
+  assert.match(FUNCTION_CODE, /cycleImports:\s*'google-drive'/)
   assert.equal(/\/tmp/.test(FUNCTION_CODE), false)
   assert.equal(/blob|s3/i.test(FUNCTION_CODE), false)
 })

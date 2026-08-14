@@ -1,6 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, open } from 'node:fs/promises'
-import path from 'node:path'
 import type {
   Pool,
   PoolConnection,
@@ -14,7 +12,8 @@ import type {
   InvoiceImportRequest,
   UsageImportRequest,
 } from '../imports/types.ts'
-import { sha256Hex } from '../lib/hash.ts'
+import type { ImportObjectStore } from '../imports/objectStore.ts'
+import { safeImportFilename } from '../imports/objectStore.ts'
 import { canonicalJson } from '../messaging/canonicalJson.ts'
 import { createMysqlOutboxWriter } from './mysqlOutbox.ts'
 
@@ -54,7 +53,7 @@ interface InvoiceRow extends RowDataPacket {
 }
 
 export interface CycleImportConfig {
-  root: string
+  objectStore: ImportObjectStore
   sourceConnectionId: string | null
   allowedRecordingHosts: string[]
 }
@@ -96,45 +95,6 @@ function sqlDateTime(value: string, name: string): string | null {
   throw new ImportInputError(
     `${name} must be YYYY-MM-DD HH:mm:ss or DD/MM/YYYY HH:mm:ss`,
   )
-}
-
-function safeFilename(filename: string): string {
-  return path.basename(filename).replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120)
-}
-
-async function preserveUpload(
-  root: string,
-  bytes: Buffer,
-  filename: string,
-): Promise<{ sha256: string; objectKey: string }> {
-  const sha256 = sha256Hex(bytes)
-  const extension = path.extname(safeFilename(filename)).toLowerCase().slice(0, 10)
-  const directory = path.resolve(root, sha256.slice(0, 2))
-  await mkdir(directory, { recursive: true, mode: 0o700 })
-  const objectKey = `${sha256.slice(0, 2)}/${sha256}${extension}`
-  const target = path.resolve(root, objectKey)
-  if (!target.startsWith(`${path.resolve(root)}${path.sep}`)) {
-    throw new Error('Upload storage path escaped its configured root')
-  }
-  try {
-    const file = await open(target, 'wx', 0o600)
-    try {
-      await file.writeFile(bytes)
-      await file.sync()
-    } finally {
-      await file.close()
-    }
-  } catch (error) {
-    if (
-      !error ||
-      typeof error !== 'object' ||
-      !('code' in error) ||
-      error.code !== 'EEXIST'
-    ) {
-      throw error
-    }
-  }
-  return { sha256, objectKey }
 }
 
 async function resolveSource(
@@ -215,8 +175,7 @@ export function createMysqlCycleImportService(
       ])
       return {
         enabled,
-        storageBoundary:
-          'Uploads are stored under the Kaudit-owned private import root and indexed in SQL. KCRM files are never read.',
+        storageBoundary: config.objectStore.storageBoundary,
         recentBatches: batchRows[0].map((row) => ({
           id: row.id,
           type: row.batch_type,
@@ -247,11 +206,11 @@ export function createMysqlCycleImportService(
       const periodStart = dateOnly(request.periodStart, 'periodStart')
       const periodEnd = dateOnly(request.periodEnd, 'periodEnd')
       const rows = parseUsageCsv(request.bytes)
-      const preserved = await preserveUpload(
-        config.root,
-        request.bytes,
-        request.filename,
-      )
+      const preserved = await config.objectStore.preserve({
+        bytes: request.bytes,
+        filename: request.filename,
+        mediaType: 'text/csv',
+      })
       const source = await resolveSource(pool, config.sourceConnectionId)
       const idempotencyKey = `usage-file:${preserved.sha256}`
       const connection = await pool.getConnection()
@@ -290,17 +249,18 @@ export function createMysqlCycleImportService(
               object_bucket, object_key, sha256, size_bytes,
               declared_media_type, detected_media_type, source_uri_redacted,
               source_event_id, malware_status, retention_class, status)
-           VALUES (?, ?, ?, 'call_export', 'kaudit-imports-local', ?, ?, ?,
+           VALUES (?, ?, ?, 'call_export', ?, ?, ?, ?,
                    'text/csv', 'text/csv', ?, ?, 'not_scanned',
                    'vendor_billing_evidence', 'active')`,
           [
             evidenceId,
             batchId,
             source.id,
+            preserved.objectBucket,
             preserved.objectKey,
             preserved.sha256,
             request.bytes.byteLength,
-            safeFilename(request.filename),
+            safeImportFilename(request.filename),
             preserved.sha256,
           ],
         )
@@ -512,11 +472,11 @@ export function createMysqlCycleImportService(
       const subtotal = money(request.subtotalAmount, 'subtotalAmount')
       const tax = money(request.taxAmount, 'taxAmount')
       const total = money(request.totalAmount, 'totalAmount')
-      const preserved = await preserveUpload(
-        config.root,
-        request.bytes,
-        request.filename,
-      )
+      const preserved = await config.objectStore.preserve({
+        bytes: request.bytes,
+        filename: request.filename,
+        mediaType: 'application/pdf',
+      })
       const source = await resolveSource(pool, config.sourceConnectionId)
       const idempotencyKey = `invoice-file:${preserved.sha256}`
       const connection = await pool.getConnection()
@@ -547,16 +507,17 @@ export function createMysqlCycleImportService(
               object_key, sha256, size_bytes, declared_media_type,
               detected_media_type, source_uri_redacted, source_event_id,
               malware_status, retention_class, status)
-           VALUES (?, ?, 'invoice', 'kaudit-imports-local', ?, ?, ?,
+           VALUES (?, ?, 'invoice', ?, ?, ?, ?,
                    'application/pdf', 'application/pdf', ?, ?,
                    'not_scanned', 'finance_record', 'active')`,
           [
             evidenceId,
             source.id,
+            preserved.objectBucket,
             preserved.objectKey,
             preserved.sha256,
             request.bytes.byteLength,
-            safeFilename(request.filename),
+            safeImportFilename(request.filename),
             request.invoiceNumber,
           ],
         )

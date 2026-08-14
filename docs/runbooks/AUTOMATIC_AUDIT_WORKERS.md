@@ -37,12 +37,13 @@ existing checkpoint is never inferred from the environment.
 ## Deployment boundary
 
 Vercel hosts the authenticated web/API application and the Stop/Resume command.
-It runs neither worker and accepts no durable imports. A production deployment
-therefore also requires a persistent worker/import runtime with:
+It runs neither worker. Durable imports on Vercel require the configured Kaudit
+Google Shared Drive storage; worker execution still requires a persistent worker
+runtime with:
 
 - restart supervision and one instance of each worker;
 - the same least-privilege database and model configuration;
-- durable private `KAUDIT_IMPORT_ROOT` storage;
+- durable import storage available before imports are submitted;
 - centralized bounded-code logs and heartbeat monitoring; and
 - migration `0012_automatic_audit_workers.sql` applied before worker startup.
 

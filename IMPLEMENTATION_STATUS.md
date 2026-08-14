@@ -19,8 +19,8 @@
 
 - ✅ Added admin-only `/imports/new` for monthly KServe usage CSV and invoice
   PDF.
-- ✅ Uploads are content-addressed under Kaudit's own private
-  `KAUDIT_IMPORT_ROOT`; no runtime path reads KCRM.
+- ✅ Uploads are content-addressed under Kaudit's configured durable import
+  store; no runtime path reads KCRM.
 - ✅ Usage imports validate the locked column contract, deduplicate by file
   hash and task ID, normalize calls/timing/vendor duration claims into SQL, and
   enqueue audit requests for rows carrying an approved recording URL.

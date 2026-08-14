@@ -39,6 +39,10 @@ function productionEnv(): NodeJS.ProcessEnv {
     KAUDIT_OIDC_ISSUER: 'https://identity.invalid.test/',
     KAUDIT_OIDC_AUDIENCE: 'kaudit-web',
     KAUDIT_OIDC_JWKS_URI: 'https://identity.invalid.test/.well-known/jwks.json',
+    KAUDIT_GOOGLE_DRIVE_CLIENT_ID: 'synthetic-client-id',
+    KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET: 'synthetic-client-secret',
+    KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN: 'synthetic-refresh-token',
+    KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID: 'shared_drive_0123456789',
   }
 }
 
@@ -103,7 +107,7 @@ test('database auth may retain dormant OIDC settings for one-variable rollback',
 test('success output is a small fixed JSON object', () => {
   assert.equal(
     formatPreflightReport(evaluate(productionEnv())),
-    '{"preflight":"vercel-release","result":"pass","checks":14,"optionalFeatures":[]}',
+    '{"preflight":"vercel-release","result":"pass","checks":15,"optionalFeatures":[]}',
   )
 })
 
@@ -118,6 +122,7 @@ test('optional variables the runtime treats as optional are not required', () =>
   delete env.KAUDIT_OIDC_LOGIN_URL
   delete env.KAUDIT_OIDC_LOGOUT_URL
   delete env.KAUDIT_OIDC_TOKEN_COOKIE
+  delete env.KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID
   delete env.DB_PORT
   assert.equal(evaluate(env).ok, true)
 })
@@ -471,6 +476,43 @@ test('local password credentials must not exist on a web deployment', () => {
   ])
 })
 
+test('Google Drive import storage requires its complete Shared Drive configuration', () => {
+  const env = productionEnv()
+  delete env.KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN
+  delete env.KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID
+  const report = evaluate(env)
+  assert.ok(codes(report).includes('REQUIRED_VARIABLE_MISSING'))
+  assert.deepEqual(variablesFor(report, 'REQUIRED_VARIABLE_MISSING'), [
+    'KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN',
+    'KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID',
+  ])
+})
+
+test('Google Drive import storage accepts an optional root folder boundary', () => {
+  const report = evaluate({
+    ...productionEnv(),
+    KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID: 'folder_0123456789',
+  })
+  assert.equal(report.ok, true)
+})
+
+test('Google Drive IDs are shaped without echoing their values', () => {
+  const invalidSharedDriveId = 'shared drive id with spaces'
+  const invalidRootFolderId = 'folder id with spaces'
+  const report = evaluate({
+    ...productionEnv(),
+    KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID: invalidSharedDriveId,
+    KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID: invalidRootFolderId,
+  })
+  assert.ok(codes(report).includes('FEATURE_CONFIG_INCOMPLETE'))
+  assert.deepEqual(variablesFor(report, 'FEATURE_CONFIG_INCOMPLETE'), [
+    'KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID',
+    'KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID',
+  ])
+  assert.equal(formatPreflightReport(report).includes(invalidSharedDriveId), false)
+  assert.equal(formatPreflightReport(report).includes(invalidRootFolderId), false)
+})
+
 // ---------------------------------------------------------------------------
 // Optional feature gating
 // ---------------------------------------------------------------------------
@@ -713,6 +755,11 @@ test('no configured value appears in the output of a thoroughly broken env', () 
     KAUDIT_LOCAL_SESSION_SECRET: 'short',
     KAUDIT_DEV_USER_EMAIL: 'person@example.test',
     KAUDIT_IMPORT_ROOT: '/srv/secret-imports',
+    KAUDIT_GOOGLE_DRIVE_CLIENT_ID: 'secret-client-id',
+    KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET: 'secret-client-secret',
+    KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN: 'secret-refresh-token',
+    KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID: 'secret shared drive id',
+    KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID: 'secret root folder id',
     KAUDIT_CALL_AUDIT_RULE_TEST_ENABLED: 'sure',
     OPENAI_API_KEY: 'sk' + '-synthetic-secret-key',
     KAUDIT_UNPOD_PROXY_BASE: 'https://proxy-secret.invalid.test/',

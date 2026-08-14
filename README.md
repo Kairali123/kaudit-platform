@@ -138,9 +138,10 @@ An administrator uploads the KServe usage CSV and invoice PDF at
 columns/period/recording coverage are validated deterministically across every
 row, and OpenAI suggests editable invoice metadata from the PDF using a strict
 schema. Separate `Submit usage` and `Submit invoice` actions are required
-before anything is written. Original bytes are then content-addressed under the private,
-gitignored `KAUDIT_IMPORT_ROOT` and normalized into the shared `kaudit_*`
-tables. A usage row may include an optional `Recording URL`; without a
+before anything is written. Original bytes are then content-addressed under the
+configured durable import store — `KAUDIT_IMPORT_ROOT` for the persistent local
+runtime, or the Kaudit Google Shared Drive boundary for Vercel — and normalized
+into the shared `kaudit_*` tables. A usage row may include an optional `Recording URL`; without a
 recording URL the call is retained but cannot enter audio audit.
 
 Run the Billing Audit worker as its own supervised process. Once the usage CSV

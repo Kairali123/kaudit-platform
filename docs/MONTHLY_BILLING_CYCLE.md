@@ -55,10 +55,11 @@ The implemented CSV import path is:
    not contain recording URLs, so those calls remain explicitly without
    recording evidence until a separate manifest/API feed supplies one.
 
-Original files are content-addressed under `KAUDIT_IMPORT_ROOT` (default
-`.data/imports`, gitignored) and indexed by SHA-256. The application never reads
-KCRM source code or KCRM's local evidence folders. SQL is the processing gate
-after import.
+Original files are content-addressed under the configured durable import store:
+`KAUDIT_IMPORT_ROOT` for the persistent local runtime, or the Kaudit Google
+Shared Drive boundary for Vercel. They are indexed by SHA-256. The application
+never reads KCRM source code or KCRM's local evidence folders. SQL is the
+processing gate after import.
 
 ## Automatic audit
 

@@ -75,7 +75,7 @@ function boot(
   env: NodeJS.ProcessEnv,
   overrides: {
     poolProfile?: 'persistent' | 'serverless'
-    cycleImports?: 'local-disk' | 'unavailable'
+    cycleImports?: 'local-disk' | 'google-drive' | 'unavailable'
     readCaFile?: (filePath: string) => string
   } = {},
 ) {
@@ -360,6 +360,40 @@ test('a runtime with local disk constructs the import services', () => {
   )
   assert.equal(runtime.capabilities.cycleImports, true)
   assert.equal(runtime.capabilities.importAnalysis, true)
+})
+
+test('a serverless runtime with Google Drive constructs the import services', () => {
+  const { runtime } = boot(
+    {
+      ...productionOidc(),
+      DB_SSL_CA_PEM: SYNTHETIC_CA_PEM,
+      KAUDIT_GOOGLE_DRIVE_CLIENT_ID: 'synthetic-client-id',
+      KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET: 'synthetic-client-secret',
+      KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN: 'synthetic-refresh-token',
+      KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID: 'shared_drive_0123456789',
+      KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID: 'folder_0123456789',
+    },
+    { poolProfile: 'serverless', cycleImports: 'google-drive' },
+  )
+  assert.equal(runtime.capabilities.cycleImports, true)
+  assert.equal(runtime.capabilities.importAnalysis, true)
+})
+
+test('Google Drive imports are all-or-nothing at runtime', () => {
+  assert.throws(
+    () =>
+      boot(
+        {
+          ...productionOidc(),
+          DB_SSL_CA_PEM: SYNTHETIC_CA_PEM,
+          KAUDIT_GOOGLE_DRIVE_CLIENT_ID: 'synthetic-client-id',
+          KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET: 'synthetic-client-secret',
+          KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN: 'synthetic-refresh-token',
+        },
+        { cycleImports: 'google-drive' },
+      ),
+    /Import storage is unavailable/,
+  )
 })
 
 test('the Call Audit rule test lab stays off without its dedicated flag', () => {

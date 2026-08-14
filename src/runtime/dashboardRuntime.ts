@@ -11,6 +11,8 @@ import { createOidcAuthorizationClient } from '../auth/oidcAuthorizationClient.t
 import { loadRuntimeConfig, type RuntimeConfig } from '../config/runtime.ts'
 import { createEnterpriseDashboardServer } from '../http/enterpriseDashboardServer.ts'
 import { createMysqlCycleImportService } from '../adapters/mysqlCycleImport.ts'
+import { createLocalImportObjectStore } from '../adapters/localImportObjectStore.ts'
+import { createGoogleDriveImportObjectStore } from '../adapters/googleDriveImportObjectStore.ts'
 import { createImportAnalysisService } from '../imports/analysis.ts'
 import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.ts'
 import { createOpenAiCallAuditModel } from '../adapters/openaiCallAuditClient.ts'
@@ -34,14 +36,17 @@ export type DashboardPoolProfile = 'persistent' | 'serverless'
 /**
  * Whether the monthly cycle import service is constructed.
  *
- * `local-disk` is the only implementation that exists: it content-addresses the
- * uploaded bytes under `KAUDIT_IMPORT_ROOT` on the local filesystem.
+ * `local-disk` content-addresses uploaded bytes under `KAUDIT_IMPORT_ROOT` on
+ * the local filesystem.
+ *
+ * `google-drive` content-addresses uploaded bytes inside the configured Kaudit
+ * Google Shared Drive boundary.
  *
  * `unavailable` is for a runtime with no durable filesystem. It is not a
  * degraded mode — the dependency is simply absent, which is what makes the
  * import endpoints report themselves unavailable before they read a body.
  */
-export type CycleImportMode = 'local-disk' | 'unavailable'
+export type CycleImportMode = 'local-disk' | 'google-drive' | 'unavailable'
 
 export interface DashboardRuntimeOptions {
   poolProfile: DashboardPoolProfile
@@ -152,12 +157,26 @@ export function createDashboardRuntime(
       ? createMysqlUserAdministration(pool)
       : undefined
   const allowedRecordingHosts = hostList(env)
-  const imports =
+  const importObjectStore =
     options.cycleImports === 'local-disk'
+      ? createLocalImportObjectStore(
+          path.resolve(env.KAUDIT_IMPORT_ROOT?.trim() || '.data/imports'),
+        )
+      : options.cycleImports === 'google-drive'
+        ? createGoogleDriveImportObjectStore({
+            clientId: env.KAUDIT_GOOGLE_DRIVE_CLIENT_ID?.trim() || '',
+            clientSecret: env.KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET?.trim() || '',
+            refreshToken: env.KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN?.trim() || '',
+            sharedDriveId:
+              env.KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID?.trim() || '',
+            rootFolderId:
+              env.KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID?.trim() || null,
+          })
+        : undefined
+  const imports =
+    importObjectStore
       ? createMysqlCycleImportService(pool, {
-          root: path.resolve(
-            env.KAUDIT_IMPORT_ROOT?.trim() || '.data/imports',
-          ),
+          objectStore: importObjectStore,
           sourceConnectionId:
             env.KAUDIT_KSERVE_SOURCE_CONNECTION_ID?.trim() || null,
           allowedRecordingHosts,
@@ -168,7 +187,7 @@ export function createDashboardRuntime(
   // endpoints report themselves unavailable too rather than spending a paid
   // model on a file that cannot be stored.
   const importAnalysis =
-    options.cycleImports === 'local-disk'
+    imports
       ? createImportAnalysisService(env.OPENAI_API_KEY?.trim() || null)
       : undefined
   const recordingFetcher = env.KAUDIT_UNPOD_PROXY_BASE?.trim()

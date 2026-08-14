@@ -53,6 +53,10 @@ function productionEnv(): NodeJS.ProcessEnv {
     KAUDIT_OIDC_ISSUER: 'https://identity.invalid.test/',
     KAUDIT_OIDC_AUDIENCE: 'kaudit-web',
     KAUDIT_OIDC_JWKS_URI: 'https://identity.invalid.test/.well-known/jwks.json',
+    KAUDIT_GOOGLE_DRIVE_CLIENT_ID: 'synthetic-client-id',
+    KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET: 'synthetic-client-secret',
+    KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN: 'synthetic-refresh-token',
+    KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID: 'shared_drive_0123456789',
   }
 }
 
@@ -97,7 +101,7 @@ test('a passing environment writes the pass line and exits zero', () => {
   const result = run()
   assert.equal(result.status, 0)
   assert.deepEqual(result.lines, [
-    '{"preflight":"vercel-release","result":"pass","checks":14,"optionalFeatures":[]}\n',
+    '{"preflight":"vercel-release","result":"pass","checks":15,"optionalFeatures":[]}\n',
   ])
 })
 
@@ -113,7 +117,7 @@ test('a failing environment writes the evaluator report and exits nonzero', () =
     errors: Array<{ code: string }>
   }
   assert.equal(parsed.result, 'fail')
-  assert.equal(parsed.checks, 14)
+  assert.equal(parsed.checks, 15)
   // The evaluator's own verdict, forwarded whole: the missing CA, and the
   // accepted parser refusing the same environment for the same reason.
   assert.deepEqual(

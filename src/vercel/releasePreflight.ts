@@ -99,6 +99,7 @@ export const PREFLIGHT_CHECKS = [
   'oidc-settings',
   'oidc-browser-flow',
   'local-auth-variables-absent',
+  'google-drive-import-storage',
   'call-audit-rule-test',
   'recording-proxy',
   'audit-worker-dispatch',
@@ -175,6 +176,11 @@ export const REPORTABLE_VARIABLES: readonly string[] = Object.freeze([
   'KAUDIT_AUTOMATED_VALIDATION_APPROVED',
   'KAUDIT_REPORTING_APPROVED',
   'KAUDIT_IMPORT_ROOT',
+  'KAUDIT_GOOGLE_DRIVE_CLIENT_ID',
+  'KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET',
+  'KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN',
+  'KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID',
+  'KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID',
   'KAUDIT_CALL_AUDIT_RULE_TEST_ENABLED',
   'KAUDIT_UNPOD_PROXY_BASE',
   'KAUDIT_ALLOWED_RECORDING_HOSTS',
@@ -199,6 +205,10 @@ function majorOf(version: string): number | null {
 function requiredMajorOf(range: string): number | null {
   const match = /(\d+)/.exec(range.trim())
   return match ? Number(match[1]) : null
+}
+
+function safeGoogleDriveId(value: string): boolean {
+  return /^[A-Za-z0-9_-]{10,200}$/.test(value.trim())
 }
 
 /** Names this error mentions, and nothing else it says. */
@@ -360,6 +370,48 @@ export function evaluateVercelReleasePreflight(
   const unsupported = UNSUPPORTED_VARIABLES.filter((name) => set(env, name))
   if (unsupported.length > 0) {
     fail('UNSUPPORTED_VARIABLE_SET', ...unsupported)
+  }
+
+  // google-drive-import-storage — Vercel has no durable local filesystem, so
+  // imports are backed by one explicit Shared Drive boundary. The OAuth
+  // credential values are checked for presence and coarse shape only; only
+  // variable names can reach the report.
+  const googleDriveVariables = [
+    'KAUDIT_GOOGLE_DRIVE_CLIENT_ID',
+    'KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET',
+    'KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN',
+    'KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID',
+  ] as const
+  const missingGoogleDrive = googleDriveVariables.filter((name) => !set(env, name))
+  if (missingGoogleDrive.length > 0) {
+    fail('REQUIRED_VARIABLE_MISSING', ...missingGoogleDrive)
+  } else {
+    const invalidGoogleDrive: string[] = []
+    const clientId = env.KAUDIT_GOOGLE_DRIVE_CLIENT_ID?.trim() || ''
+    const clientSecret = env.KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET?.trim() || ''
+    const refreshToken = env.KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN?.trim() || ''
+    const sharedDriveId =
+      env.KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID?.trim() || ''
+    const rootFolderId =
+      env.KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID?.trim() || ''
+    if (clientId.length > 512 || /\s/.test(clientId)) {
+      invalidGoogleDrive.push('KAUDIT_GOOGLE_DRIVE_CLIENT_ID')
+    }
+    if (clientSecret.length > 4096 || /\s/.test(clientSecret)) {
+      invalidGoogleDrive.push('KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET')
+    }
+    if (refreshToken.length > 4096 || /\s/.test(refreshToken)) {
+      invalidGoogleDrive.push('KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN')
+    }
+    if (!safeGoogleDriveId(sharedDriveId)) {
+      invalidGoogleDrive.push('KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID')
+    }
+    if (rootFolderId && !safeGoogleDriveId(rootFolderId)) {
+      invalidGoogleDrive.push('KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID')
+    }
+    if (invalidGoogleDrive.length > 0) {
+      fail('FEATURE_CONFIG_INCOMPLETE', ...invalidGoogleDrive)
+    }
   }
 
   // call-audit-rule-test — an optional feature, deny by default. Its key is

@@ -42,6 +42,10 @@ function productionEnv(): NodeJS.ProcessEnv {
     KAUDIT_OIDC_ISSUER: 'https://identity.invalid.test/',
     KAUDIT_OIDC_AUDIENCE: 'kaudit-web',
     KAUDIT_OIDC_JWKS_URI: 'https://identity.invalid.test/.well-known/jwks.json',
+    KAUDIT_GOOGLE_DRIVE_CLIENT_ID: 'synthetic-drive-client-id',
+    KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET: 'synthetic-drive-client-secret',
+    KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN: 'synthetic-drive-refresh-token',
+    KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID: 'shared_drive_0123456789',
   }
 }
 

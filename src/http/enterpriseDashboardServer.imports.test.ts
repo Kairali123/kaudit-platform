@@ -14,12 +14,11 @@ import { createEnterpriseDashboardServer } from './enterpriseDashboardServer.ts'
 /**
  * Import endpoints on a runtime that has no cycle import service.
  *
- * That is the Vercel Function's shape: the only import implementation writes the
- * uploaded bytes under `KAUDIT_IMPORT_ROOT`, and a function has no durable
- * filesystem, so the dependency is simply absent. What must follow is a bounded
- * refusal that happens BEFORE the upload is read — accepting up to 25 MB of an
- * operator's usage CSV or invoice PDF only to discard it is work this deployment
- * has no reason to do, and bytes it has no reason to hold.
+ * This remains a supported fail-closed shape for deployments with no durable
+ * import store. What must follow is a bounded refusal that happens BEFORE the
+ * upload is read — accepting up to 25 MB of an operator's usage CSV or invoice
+ * PDF only to discard it is work that deployment has no reason to do, and bytes
+ * it has no reason to hold.
  *
  * Every dependency here is synthetic: no database, no network, no model.
  */
@@ -105,7 +104,7 @@ async function withServer(
       return [[{ one: 1 }], []]
     },
   } as unknown as Pool
-  // No `imports`, no `importAnalysis`: exactly what the Vercel bootstrap builds.
+  // No `imports`, no `importAnalysis`: the fail-closed bootstrap shape.
   const server = createEnterpriseDashboardServer({
     config,
     pool,

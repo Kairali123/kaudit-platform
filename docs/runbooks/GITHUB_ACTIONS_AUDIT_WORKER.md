@@ -84,9 +84,10 @@ An idle job has completed the currently eligible queue, not all future work. A
 faulted job requires the bounded error code to be resolved before Run is tried
 again.
 
-## Billing import limitation on Vercel
+## Billing imports on Vercel
 
 This worker audits data already present in the database. It does not make the
-Vercel upload endpoint durable: invoice PDFs and usage CSVs still require the
-existing persistent import runtime with its private Kaudit-owned import root.
-Never route upload bytes through GitHub workflow inputs or artifacts.
+Vercel upload endpoint durable by itself: invoice PDFs and usage CSVs are durable
+only when the Vercel web/API runtime is configured with the Kaudit Google Shared
+Drive import-storage variables. Never route upload bytes through GitHub workflow
+inputs or artifacts.

@@ -23,7 +23,7 @@ supervised operator process, exactly as it is today:
 | Automated report email worker | `npm run report:email-worker`, `docs/runbooks/AUTOMATED_REPORT_EMAIL.md` |
 | Automated validation pass | `npm run automation:validate` |
 | Database migrations | Supervised, approved operations only |
-| Monthly usage/invoice imports | Persistent server with a durable `KAUDIT_IMPORT_ROOT` |
+| Monthly usage/invoice imports | Vercel web/API with configured Google Shared Drive storage, or persistent server with `KAUDIT_IMPORT_ROOT` |
 
 There are **no Cron entries** in `vercel.json` and no scheduler in the function. This
 is enforced by `src/vercel/deploymentContract.test.ts`, not only by convention.
@@ -32,24 +32,23 @@ Vercel does expose the authenticated administrator Stop/Resume API. It writes
 only durable desired state in MySQL; it never executes a model call. The two
 persistent workers observe that state before claiming each next call.
 
-### Imports are disabled on Vercel, deliberately
+### Imports on Vercel use a Shared Drive boundary
 
-The cycle import service content-addresses the uploaded bytes under
-`KAUDIT_IMPORT_ROOT` on the local filesystem. A Function's disk is not shared between
-instances and does not survive a freeze, so the service is **not constructed** in the
-Vercel runtime. `/tmp` is not used as a stand-in, and no object store was added in this
-slice.
+The Vercel runtime constructs the cycle import service only with the Google Drive
+object store. Uploaded bytes are content-addressed by SHA-256, deduplicated within
+the configured parent, uploaded to the configured Kaudit Google Shared Drive
+boundary, and then indexed in SQL. A Function's disk is not shared between instances
+and does not survive a freeze, so `KAUDIT_IMPORT_ROOT` is still never used on
+Vercel, and `/tmp` is not used as a stand-in.
 
-The effect is a bounded refusal *before the upload is read*:
+Google Drive configuration is all-or-nothing. If any required value is missing or an
+ID is malformed, the runtime fails closed at bootstrap and the function returns the
+bounded runtime-unavailable response; it does not fall back to local disk.
 
-- `POST /api/v1/imports/usage` and `/api/v1/imports/invoice` → `503 IMPORT_NOT_AVAILABLE`
-- `POST /api/v1/imports/analyze-usage` and `/api/v1/imports/analyze-invoice` →
-  `503 IMPORT_ANALYSIS_NOT_CONFIGURED`
-- `GET /api/v1/imports` → `503 IMPORT_NOT_AVAILABLE` (never a 200 claiming imports work)
-
-The refusal happens after authorization and before the request body, so an
-unauthenticated caller learns nothing, and no uploaded byte is buffered, stored, or
-echoed back. Monthly imports continue to run against the persistent server, unchanged.
+The Drive file ID is kept as internal evidence indexing only. Browser responses and
+logs must not expose Drive IDs, source URLs, filenames beyond bounded validation,
+provider prose, uploaded content, invoice text, money values, credentials, or
+unknown thrown-error details.
 
 ## Routing contract
 
@@ -153,6 +152,24 @@ KAUDIT_REPORTING_APPROVED
 KAUDIT_WEB_DIST_ROOT          optional; only if the built web root is not under the function's working directory
 ```
 
+**Google Shared Drive import storage**
+
+```
+KAUDIT_GOOGLE_DRIVE_CLIENT_ID
+KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET
+KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN
+KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID
+KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID   optional
+```
+
+Use the existing Google Cloud external web app with Drive read/create/delete scope.
+Set the client ID, client secret, refresh token, and Shared Drive ID directly in
+Vercel environment settings. Do not paste those values into chat, `.env.example`,
+tickets, logs, or release notes. `KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID` is optional:
+blank means the Shared Drive root; set it only when imports must live under a
+specific folder within the Shared Drive. The preflight validates presence and ID
+shape only; it never calls Google and never prints the configured values.
+
 **Recording references (only if admin call review is used)**
 
 ```
@@ -171,7 +188,9 @@ Deny-by-default and unchanged by this deployment path. Both are required togethe
 the flag is the consent, the key is only the means. Anything but the exact word `true`
 leaves the endpoint reporting itself unavailable before it reads a body. `OPENAI_API_KEY`
 is needed **only** if the rule TEST LAB is deliberately enabled — import analysis, its
-other consumer, is not constructed on Vercel at all. Leave both unset otherwise.
+other consumer, uses the same key only when an admin explicitly invokes invoice
+analysis. Leave both unset otherwise unless one of those features is deliberately
+enabled.
 
 **Optional dashboard-triggered audit workers**
 
@@ -208,8 +227,8 @@ involved. No value, path, URL, issuer, CA text, key, or thrown-error text is eve
 printed, so the output is safe to keep in a CI log.
 
 ```
-{"preflight":"vercel-release","result":"pass","checks":14,"optionalFeatures":[]}
-{"preflight":"vercel-release","result":"fail","checks":14,"errors":[{"code":"DB_CA_SOURCE_AMBIGUOUS","variables":["DB_SSL_CA_FILE","DB_SSL_CA_PEM"]}]}
+{"preflight":"vercel-release","result":"pass","checks":15,"optionalFeatures":[]}
+{"preflight":"vercel-release","result":"fail","checks":15,"errors":[{"code":"DB_CA_SOURCE_AMBIGUOUS","variables":["DB_SSL_CA_FILE","DB_SSL_CA_PEM"]}]}
 ```
 
 If the command cannot get as far as a verdict — the repository manifest is unreadable
@@ -233,7 +252,10 @@ plaintext posture — while the same environment *without* the mode still fails 
 `DB_CA_SOURCE_MISSING`. It also checks OIDC identity
 and its approved signing algorithms, the absence of the local-password and import
 variables that do not belong on a function, and that an explicitly enabled optional
-feature has its own configuration — `KAUDIT_CALL_AUDIT_RULE_TEST_ENABLED=true`
+feature has its own configuration. Google Drive import storage is required and
+all-or-nothing: client ID, client secret, refresh token, and Shared Drive ID must be
+present, and the Shared Drive/root-folder IDs must be shaped like Drive IDs.
+`KAUDIT_CALL_AUDIT_RULE_TEST_ENABLED=true`
 requires `OPENAI_API_KEY` (presence only; the key is not read while the flag is
 off), and `KAUDIT_UNPOD_PROXY_BASE` requires `KAUDIT_ALLOWED_RECORDING_HOSTS`.
 
@@ -283,9 +305,11 @@ promotion is discussed.
    network responses.
 7. **Admin settings** — an administrator reaches `/call-audit/settings`; a **non-admin**
    receives a permission error on both the page and `GET /api/v1/call-audit/settings`.
-8. **Imports disabled** — as an administrator, `GET /api/v1/imports` returns
-   `503 IMPORT_NOT_AVAILABLE`, and a `POST` to each import route returns a bounded 503
-   that echoes no filename, no invoice metadata, and no uploaded content.
+8. **Imports storage** — as an administrator, `GET /api/v1/imports` returns `200`
+   with the Shared Drive storage-boundary text and no Drive IDs. Upload a synthetic
+   usage CSV to a non-production database and confirm success, SQL evidence indexing,
+   and no Drive ID, filename path, source URL, invoice text, money value, or uploaded
+   content in the response or logs.
 9. **No raw-content leakage** — spot-check function logs for the session: no transcript,
    prompt, provider prose, SQL, connection string, CA content, or secret. Startup
    failures must appear only as `vercel_runtime_bootstrap_failed` with no detail, and

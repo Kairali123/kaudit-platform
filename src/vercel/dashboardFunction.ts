@@ -26,19 +26,16 @@ type RuntimeGlobal = typeof globalThis & {
 /**
  * Vercel Function options, fixed by what the platform is and is not.
  *
- * `serverless` bounds the pool. `unavailable` withholds the cycle import
- * service: its only implementation writes the uploaded bytes under
- * `KAUDIT_IMPORT_ROOT`, and a function's filesystem is neither shared between
- * instances nor kept after one freezes. Constructing it here would accept an
- * upload, report success, and lose the source file — so it is not constructed,
- * and the import endpoints refuse before reading a body.
+ * `serverless` bounds the pool. `google-drive` gives imports durable object
+ * storage in the configured Kaudit Google Shared Drive boundary; a function's
+ * local filesystem is still never used for uploads.
  *
  * Nothing else differs from the persistent server: the same factory applies the
  * same authentication, permission, release-gate and Call Audit rule-test rules.
  */
 const VERCEL_RUNTIME_OPTIONS: DashboardRuntimeOptions = {
   poolProfile: 'serverless',
-  cycleImports: 'unavailable',
+  cycleImports: 'google-drive',
 }
 
 export function warmDashboardRuntime(
