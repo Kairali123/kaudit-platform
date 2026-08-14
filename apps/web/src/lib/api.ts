@@ -172,6 +172,13 @@ export interface ReportsData {
     sentAt: string | null
     lastErrorCode: string | null
   } | null
+  /**
+   * Monthly only. Null ONLY when the report is not scoped to one bill month; a
+   * month with no recorded settlement still arrives with status 'pending' and
+   * null amounts, never as a zero payment, and a month whose settlement could
+   * not be read arrives with status 'unavailable' and no amounts at all.
+   */
+  settlement: KserveSettlementSummary | null
 }
 
 export interface StatusCount {
@@ -400,6 +407,83 @@ export interface BillingCategoryAnalysisData {
   totals: BillingCategoryKpi & { basis: 'entire_selected_scope' }
   pagination: AuditPagination
   authority: 'automated'
+}
+
+/**
+ * MONTHLY KSERVE SETTLEMENT — "Finally paid" and "Savings" for one bill month.
+ *
+ * Every amount is fixed-precision decimal TEXT computed on the server. The
+ * browser formats these strings and NEVER subtracts: savings arrives already
+ * calculated, because a figure a page derived for itself is a figure nobody
+ * can audit.
+ *
+ * Absent is not zero. `finalPaidAmountInr` and `savings.amountInr` are null
+ * when nothing has been recorded, and the page must say pending or unavailable
+ * rather than render 0.
+ *
+ * Nothing here identifies WHO recorded a version, which row holds it, or which
+ * retry key produced it — the API does not return those fields at all.
+ */
+export interface KserveSettlementVersion {
+  versionNo: number
+  finalPaidAmountInr: string
+  currency: string
+  recordedAt: string
+  status: 'current' | 'superseded'
+}
+
+export interface KserveSettlementSavings {
+  available: boolean
+  /** Signed: a negative amount means the payment exceeded the billed charge. */
+  amountInr: string | null
+  direction: 'saved' | 'overpaid' | 'level' | 'unavailable'
+  basis: string
+}
+
+export interface KserveSettlementData {
+  generatedAt: string
+  title: string
+  contentBoundary: string
+  month: string
+  monthLabel: string
+  currency: string
+  status: 'recorded' | 'pending'
+  vendorBilled: {
+    chargeInr: string | null
+    billedCalls: number
+    available: boolean
+  }
+  current: KserveSettlementVersion | null
+  savings: KserveSettlementSavings
+  history: KserveSettlementVersion[]
+  historyTruncated: boolean
+  maxHistory: number
+}
+
+/** The save response repeats the whole read, plus what the retry did. */
+export interface KserveSettlementSaved extends KserveSettlementData {
+  outcome: 'recorded' | 'replayed'
+}
+
+/**
+ * The compact settlement block the monthly report carries.
+ *
+ * `pending` means the server READ the month and found no settlement.
+ * `unavailable` means the read itself failed, so nothing is known about the
+ * month — the page must say so and must never present it as "not recorded".
+ */
+export interface KserveSettlementSummary {
+  month: string
+  currency: string
+  status: 'recorded' | 'pending' | 'unavailable'
+  finallyPaidInr: string | null
+  finallyPaidVersion: number | null
+  finallyPaidRecordedAt: string | null
+  vendorBilledChargeInr: string | null
+  savingsInr: string | null
+  savingsAvailable: boolean
+  savingsDirection: 'saved' | 'overpaid' | 'level' | 'unavailable'
+  basis: string
 }
 
 export interface AdminCallDetailData {

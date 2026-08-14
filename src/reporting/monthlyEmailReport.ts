@@ -22,12 +22,66 @@ export interface MonthlyReportRow extends MonthlyReportInputRow {
   variance: string
 }
 
+/**
+ * What the month's KServe settlement contributes to the report.
+ *
+ * It is a SEPARATE block from `summary`, not another variance line, because it
+ * answers a different question. Verified revenue and variance are what the
+ * audit calculated; this is what was actually paid after negotiation, and the
+ * savings beside it is that payment subtracted from the vendor's own billed
+ * charge for the complete month.
+ *
+ * Every amount may be null, and null means UNAVAILABLE. A month with no
+ * recorded settlement — every period that closed before settlements existed —
+ * reports `pending` with null amounts rather than a zero payment and total
+ * savings, which would read as a triumph that never happened.
+ *
+ * `unavailable` is a THIRD state and never a synonym for `pending`. It means
+ * the settlement could not be read at all, so the report knows nothing about
+ * the month; `pending` means the read succeeded and the month genuinely has no
+ * settlement. A failed read published as "not recorded" would state a fact
+ * about the business that nobody established.
+ */
+export interface MonthlyReportSettlement {
+  status: 'recorded' | 'pending' | 'unavailable'
+  finallyPaidAmount: string | null
+  /** Which version of the month's history is current. Never a row id. */
+  finallyPaidVersion: number | null
+  vendorBilledChargeAmount: string | null
+  savingsAmount: string | null
+  savingsAvailable: boolean
+  /** Negative savings means the payment exceeded the vendor's billed charge. */
+  savingsDirection: 'saved' | 'overpaid' | 'level' | 'unavailable'
+  currency: string
+}
+
+/**
+ * What a collector emits when its settlement read FAILED.
+ *
+ * No amount, no version and no direction: a failure produces no figure at all,
+ * and nothing here varies with what was thrown, so no driver message, table
+ * name, value or identity can ride along into an artifact.
+ */
+export const UNAVAILABLE_MONTHLY_SETTLEMENT: MonthlyReportSettlement =
+  Object.freeze({
+    status: 'unavailable',
+    finallyPaidAmount: null,
+    finallyPaidVersion: null,
+    vendorBilledChargeAmount: null,
+    savingsAmount: null,
+    savingsAvailable: false,
+    savingsDirection: 'unavailable',
+    currency: 'INR',
+  })
+
 export interface MonthlyEmailReport {
   schemaVersion: '1'
   reportVersion: 'monthly-revenue/1.0.0'
   authority: 'authoritative'
   period: BillingMonthScope
   generatedAt: string
+  /** Null when the caller had no settlement read for the period at all. */
+  settlement: MonthlyReportSettlement | null
   summary: {
     totalCalls: number
     independentlyAuditedCalls: number
@@ -68,11 +122,50 @@ function vendorAmount(minutes: string): string {
   )
 }
 
+/**
+ * Re-cuts a settlement amount into the report's own decimal presentation.
+ *
+ * The settlement store returns eight-place text and this report trims trailing
+ * zeros, so both sides pass through the SAME scaled-integer helpers used for
+ * every other amount here. Null stays null: an absent figure is never
+ * normalized into '0'.
+ */
+function settlementAmount(value: string | null, name: string): string | null {
+  return value == null ? null : fromScaled(requiredScaled(value, name))
+}
+
+function toReportSettlement(
+  settlement: MonthlyReportSettlement | null,
+): MonthlyReportSettlement | null {
+  if (settlement == null) return null
+  return {
+    status: settlement.status,
+    finallyPaidAmount: settlementAmount(
+      settlement.finallyPaidAmount,
+      'finallyPaidAmount',
+    ),
+    finallyPaidVersion: settlement.finallyPaidVersion,
+    vendorBilledChargeAmount: settlementAmount(
+      settlement.vendorBilledChargeAmount,
+      'vendorBilledChargeAmount',
+    ),
+    savingsAmount: settlementAmount(
+      settlement.savingsAmount,
+      'savingsAmount',
+    ),
+    savingsAvailable: settlement.savingsAvailable,
+    savingsDirection: settlement.savingsDirection,
+    currency: settlement.currency,
+  }
+}
+
 export function buildMonthlyEmailReport(options: {
   period: BillingMonthScope
   generatedAt: string
   invoiceClaimedAmount: string | null
   rows: MonthlyReportInputRow[]
+  /** Absent when the caller could not read a settlement for the period. */
+  settlement?: MonthlyReportSettlement | null
 }): MonthlyEmailReport {
   const rows = options.rows.map((row): MonthlyReportRow => {
     const claimed = vendorAmount(row.vendorBilledMinutes)
@@ -120,6 +213,7 @@ export function buildMonthlyEmailReport(options: {
     authority: 'authoritative',
     period: options.period,
     generatedAt: options.generatedAt,
+    settlement: toReportSettlement(options.settlement ?? null),
     summary: {
       totalCalls: rows.length,
       independentlyAuditedCalls: rows.filter(
@@ -155,6 +249,9 @@ export function reportContentSha256(
     reportVersion: report.reportVersion,
     authority: report.authority,
     period: report.period,
+    // Part of the content hash: a report that reached a mailbox stating one
+    // "finally paid" must not hash the same as one stating another.
+    settlement: report.settlement,
     summary: report.summary,
     rows: report.rows,
     sourceManifestSha256: report.sourceManifestSha256,

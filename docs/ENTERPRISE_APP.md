@@ -68,6 +68,56 @@ findings, billing, or snapshot payloads.
 - The response carries no recording URL, evidence hash, internal call ID,
   transcript, source-row ID, or provider content.
 
+## Monthly KServe settlement — "Final amount paid to KServe"
+
+- A compact section on `/billing` for the selected bill month. An administrator
+  enters exactly ONE business value: the rupee amount actually paid to KServe
+  after negotiation. Nothing else on the panel is entered; everything else is
+  read back from the server.
+- `GET`/`POST /api/v1/billing/settlement` both require `billing:approve`, which
+  is granted to the `admin` role only — recording what was paid is a money
+  decision, not day-to-day operational access. The read is access-audited as
+  `kserve_settlement.read`; a save is `kserve_settlement.record` and an
+  idempotent retry is `kserve_settlement.replay`, so the three are separable in
+  the access log. Writes are authorized by the HttpOnly, `SameSite=Strict`
+  session cookie and require an `application/json` body.
+- Storage (`kaudit_kserve_monthly_settlement`, migration 0013) is APPEND ONLY.
+  A correction is a NEW version that supersedes the previous one; no prior row
+  is ever updated or deleted, and the schema carries no `is_current` flag that
+  would require writing one back. The CURRENT settlement is derived as the
+  highest `version_no` for the month, kept unique and unforkable by
+  `uq_kserve_settlement_month_version` and `uq_kserve_settlement_supersedes`.
+- A retry is safe by construction: `(bill_month, idempotency_key)` is unique and
+  a `request_digest` covers the payload, so an identical resubmission REPLAYS the
+  stored version. The same key carrying a different amount is a `409`, never a
+  silent second version.
+- **Savings** is deterministic fixed-precision subtraction on the server: the
+  final KServe billed charge for the COMPLETE month — the vendor's own final
+  billed-minute evidence at the contract rate, from the shared read model in
+  `mysqlKserveVendorBilled.ts` that the category analysis also uses — minus the
+  current final amount paid. It is never derived from AI duration, model output,
+  projected auditor money, or a browser calculation, and a negative result
+  (paid more than billed) is preserved.
+- If no settlement exists, **Finally paid** and **Savings** are pending or
+  unavailable — never `0.00`. The same holds for a month with no vendor billed
+  evidence.
+- The current figures also appear on `/api/v1/reports`, the reports screen, and
+  the emailed monthly PDF/Excel artifacts. Periods that closed before
+  settlements existed print "Not recorded for this period" rather than a zero
+  payment. Call Audit reports never carry this money.
+- The monthly report settlement has THREE states, never two: `recorded`,
+  `pending` (the read succeeded and the month has no settlement), and
+  `unavailable` (the read itself failed). A failed read is reported as
+  `unavailable` with every amount, version and timestamp null, and the screen
+  and artifacts label it "Settlement temporarily unavailable" — never "Not
+  recorded for this period", which would state something about the month that
+  the failed read never established. On `/api/v1/reports`, `settlement: null`
+  means only that the request is not scoped to one bill month.
+- Responses expose the month, exact decimal amount strings, version numbers,
+  status, and recorded timestamps only. No actor identity, internal ID,
+  idempotency key, digest, source ID, evidence, transcript, or provider prose is
+  returned, and history is bounded server-side.
+
 ## Login behavior
 
 - Local loopback mode accepts email/password on `/login`, verifies a one-way

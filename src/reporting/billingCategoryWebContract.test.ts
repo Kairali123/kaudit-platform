@@ -128,10 +128,17 @@ test('no duration is rendered as money, and no amount is parsed as a float', asy
     )
   }
   // The money formatter is integer arithmetic: no Number(), parseFloat, or
-  // arithmetic operator ever touches a stored amount.
+  // arithmetic operator ever touches a stored amount. It lives in ONE shared
+  // module so two Billing Audit screens cannot round the same figure
+  // differently, and the page reaches it by import rather than by copy.
   assert.equal(/Number\([^)]*Inr\)/.test(source), false)
   assert.equal(/parseFloat/.test(source), false)
-  assert.match(source, /BigInt\(/)
+  assert.match(source, /import \{ money \} from '\.\.\/lib\/money'/)
+  const formatter = await webSource('lib/money.ts')
+  assert.match(formatter, /BigInt\(/)
+  // Calls, not prose: the module names both in a comment explaining why it
+  // uses neither.
+  assert.equal(/parseFloat\(|Number\(/.test(formatter), false)
 })
 
 test('the client type keeps money as text and durations as metadata', async () => {

@@ -90,9 +90,37 @@ import {
   BILLING_CATEGORY_ANALYSIS_ROUTE,
 } from '../reporting/billingCategoryAnalysis.ts'
 import {
+  createMysqlKserveSettlementRepository,
+  type KserveSettlementRepository,
+} from '../adapters/mysqlKserveSettlement.ts'
+import {
+  createMysqlKserveVendorBilledRepository,
+  type KserveVendorBilledPort,
+} from '../adapters/mysqlKserveVendorBilled.ts'
+import {
+  buildKserveSettlementView,
+  toSettlementSummary,
+  unavailableSettlementSummary,
+  KSERVE_SETTLEMENT_ROUTE,
+  type KserveSettlementDto,
+  type KserveSettlementSummary,
+} from '../reporting/kserveSettlement.ts'
+import {
+  KserveSettlementConflictError,
+  KserveSettlementInputError,
+  KserveSettlementUnavailableError,
+  asSafeSettlementError,
+  parseHistoryLimit,
+  parseSettlementMonth,
+  DEFAULT_SETTLEMENT_HISTORY,
+} from '../billing/kserveSettlement.ts'
+import {
   collectReportEmailDeliveryStatus,
 } from '../adapters/mysqlReportEmail.ts'
-import { parseBillingMonth } from '../reporting/billingMonth.ts'
+import {
+  parseBillingMonth,
+  type BillingMonthScope,
+} from '../reporting/billingMonth.ts'
 import { USER_PERMISSIONS } from '../identity/access.ts'
 import { canViewCallContent } from '../identity/access.ts'
 import {
@@ -199,6 +227,18 @@ interface Dependencies {
    */
   billingCategoryAnalysis?: BillingCategoryAnalysisPort
   /**
+   * Append-only monthly KServe settlement store. Defaults to the MySQL
+   * repository over the same pool; injectable so a server test can exercise the
+   * admin-only read and save against synthetic rows without a database.
+   */
+  kserveSettlement?: KserveSettlementRepository
+  /**
+   * THE shared KServe vendor-billed read model. The settlement page and the
+   * monthly report both take the billed side of "savings" from here, so the two
+   * surfaces cannot drift onto different definitions of the vendor's charge.
+   */
+  kserveVendorBilled?: KserveVendorBilledPort
+  /**
    * Admin-only Call Audit settings reads. Defaults to the read-only MySQL
    * repository over the same pool; injectable for tests.
    */
@@ -247,6 +287,7 @@ const API_ROUTES = new Set([
   '/api/v1/findings',
   '/api/v1/billing',
   BILLING_CATEGORY_ANALYSIS_ROUTE,
+  KSERVE_SETTLEMENT_ROUTE,
   '/api/v1/reports',
   '/api/v1/operations',
   '/api/v1/audits',
@@ -278,6 +319,19 @@ const CALL_AUDIT_SETTINGS_WRITE_ROUTES = new Set([
 const CALL_AUDIT_RULE_TEST_ROUTES = new Set([CALL_AUDIT_RULE_TEST_ROUTE])
 const AUDIT_WORKER_CONTROL_ROUTE = '/api/v1/audit-workers/control'
 const AUDIT_WORKER_WRITE_ROUTES = new Set([AUDIT_WORKER_CONTROL_ROUTE])
+
+/**
+ * Recording the amount finally paid to KServe. POST only on the same path as
+ * the admin read above, exactly as the Call Audit settings routes do, and gated
+ * on the same `billing:approve` money boundary as that read.
+ */
+const KSERVE_SETTLEMENT_WRITE_ROUTES = new Set([KSERVE_SETTLEMENT_ROUTE])
+
+/**
+ * A settlement body is one month, one amount, and one retry key. Anything
+ * larger is a bug, and the bound is applied before a byte is parsed.
+ */
+const MAX_KSERVE_SETTLEMENT_BODY_BYTES = 2 * 1024
 
 /** An administrator's settings submission is small; anything larger is a bug. */
 const MAX_SETTINGS_BODY_BYTES = 64 * 1024
@@ -1190,6 +1244,106 @@ async function runRuleTest(
   }
 }
 
+// ---------------------------------------------------------------------------
+// Monthly KServe settlement
+// ---------------------------------------------------------------------------
+
+/**
+ * A settlement always covers ONE complete bill month.
+ *
+ * "All periods" is refused rather than folded into an aggregate: the amount
+ * finally paid is a per-month negotiation, and a savings figure summed across
+ * every month ever billed would be a number nobody agreed to.
+ */
+function settlementMonthScope(value: unknown): BillingMonthScope {
+  const scope = parseBillingMonth(parseSettlementMonth(value))
+  if (!scope) {
+    throw new KserveSettlementInputError('month', 'must be a single bill month')
+  }
+  return scope
+}
+
+function requireSettlementMonth(url: URL): BillingMonthScope {
+  return settlementMonthScope(url.searchParams.get('month'))
+}
+
+function settlementRepository(
+  dependencies: Dependencies,
+): KserveSettlementRepository {
+  return (
+    dependencies.kserveSettlement ??
+    createMysqlKserveSettlementRepository(dependencies.pool)
+  )
+}
+
+function vendorBilledRepository(
+  dependencies: Dependencies,
+): KserveVendorBilledPort {
+  return (
+    dependencies.kserveVendorBilled ??
+    createMysqlKserveVendorBilledRepository(dependencies.pool)
+  )
+}
+
+/**
+ * THE one settlement read, shared by the admin route, the reports API, and the
+ * emailed monthly report.
+ *
+ * Two bounded reads, issued together: the month's vendor billed charge and the
+ * month's newest settlement versions. Both are scoped to the same complete
+ * month before either runs, so the page and the report cannot describe
+ * different periods, and neither can drift onto a different vendor basis.
+ */
+async function collectKserveSettlement(
+  dependencies: Dependencies,
+  month: BillingMonthScope,
+  historyLimit: number,
+): Promise<KserveSettlementDto> {
+  const billMonth = parseSettlementMonth(month.month)
+  try {
+    const [vendorBilled, history] = await Promise.all([
+      vendorBilledRepository(dependencies).readMonthlyBilledCharge({
+        periodStart: month.start,
+        periodEnd: month.end,
+      }),
+      settlementRepository(dependencies).readHistory(billMonth, historyLimit),
+    ])
+    return buildKserveSettlementView({ month, vendorBilled, history })
+  } catch (error) {
+    // A driver message, a column value, or an unknown thrown value never
+    // travels past this point.
+    throw asSafeSettlementError(error)
+  }
+}
+
+/**
+ * The settlement summary a monthly report carries.
+ *
+ * NULL MEANS "NOT SCOPED TO ONE MONTH" AND NOTHING ELSE. The revenue report
+ * predates settlements and must still render for every month, including the old
+ * periods that will never have one, so a failed read does not propagate — but
+ * it is reported as an explicit `unavailable` summary with no money in it, not
+ * as null and not as `pending`. A transient failure must never be published as
+ * "no settlement exists for this period".
+ *
+ * Nothing about the failure crosses this boundary: the summary is constructed
+ * from the month alone, so no driver message, table name, value or identity can
+ * reach the response.
+ */
+async function collectSettlementSummary(
+  dependencies: Dependencies,
+  month: BillingMonthScope | null,
+): Promise<KserveSettlementSummary | null> {
+  if (!month) return null
+  try {
+    return toSettlementSummary(
+      await collectKserveSettlement(dependencies, month, 1),
+    )
+  } catch {
+    return unavailableSettlementSummary(month.month)
+  }
+}
+
 async function apiResponse(
   url: URL,
   dependencies: Dependencies,
@@ -1290,6 +1444,16 @@ async function apiResponse(
       billing: billingView,
     }
   }
+  if (pathname === KSERVE_SETTLEMENT_ROUTE) {
+    // ADMINISTRATOR-ONLY money. Gated on `billing:approve` below; the response
+    // carries amounts, versions and timestamps and nothing that identifies who
+    // recorded them or which row holds them.
+    return collectKserveSettlement(
+      dependencies,
+      requireSettlementMonth(url),
+      parseHistoryLimit(url.searchParams.get('history')),
+    )
+  }
   if (pathname === BILLING_CATEGORY_ANALYSIS_ROUTE) {
     // ADMINISTRATOR-ONLY. The response carries per-call task references and
     // drives the restricted admin review action, so it takes the audit
@@ -1305,16 +1469,23 @@ async function apiResponse(
     )
   }
   if (pathname === '/api/v1/reports') {
-    const [billing, snapshots, emailDelivery] = await Promise.all([
-      collectBilling(dependencies.pool, period),
-      collectRevenueSnapshots(dependencies.pool, period),
-      period
-        ? collectReportEmailDeliveryStatus(
-            dependencies.pool,
-            period.month,
-          )
-        : Promise.resolve(null),
-    ])
+    const [billing, snapshots, emailDelivery, settlement] =
+      await Promise.all([
+        collectBilling(dependencies.pool, period),
+        collectRevenueSnapshots(dependencies.pool, period),
+        period
+          ? collectReportEmailDeliveryStatus(
+              dependencies.pool,
+              period.month,
+            )
+          : Promise.resolve(null),
+        // Monthly only, and null ONLY when the report is not scoped to one bill
+        // month. A month with no settlement reports itself as pending rather
+        // than as a zero payment with total savings, and a month whose
+        // settlement could not be read reports itself as unavailable rather
+        // than as either of those.
+        collectSettlementSummary(dependencies, period),
+      ])
     const billingView = buildBillingView(billing, {
       calibrationComplete:
         dependencies.config.releaseGates.calibrationComplete ||
@@ -1336,6 +1507,7 @@ async function apiResponse(
         releaseVerifiedValues: billGenerated,
       }),
       emailDelivery,
+      settlement,
     }
   }
   if (pathname === '/api/v1/operations') {
@@ -1458,6 +1630,11 @@ const BOUNDED_UNAVAILABLE_TITLES: Readonly<Record<string, string>> = {
     'Audit worker start is not configured on this server',
   AUDIT_WORKER_DISPATCH_FAILED:
     'Audit worker could not be started',
+  // One bounded title for every settlement storage failure. The repository has
+  // already dropped the driver's own message, so nothing about the cause — a
+  // column, a constraint, an amount — can reach a browser through this route.
+  KSERVE_SETTLEMENT_UNAVAILABLE:
+    'Monthly settlement is temporarily unavailable',
 }
 
 /**
@@ -1487,6 +1664,12 @@ function apiAction(pathname: string): string {
   // to be distinguishable in the access log.
   if (pathname === BILLING_CATEGORY_ANALYSIS_ROUTE) {
     return 'billing_category_analysis.read'
+  }
+  // Reading what was paid and RECORDING what was paid are two different money
+  // events, so they never share an action name in the access log. The write
+  // action is chosen at the call site; this is the read.
+  if (pathname === KSERVE_SETTLEMENT_ROUTE) {
+    return 'kserve_settlement.read'
   }
   if (pathname === CALL_AUDIT_SETTINGS_ROUTE) {
     return 'call_audit_settings.read'
@@ -1518,6 +1701,10 @@ function apiPermission(pathname: string): string {
     pathname === AUDIT_WORKER_CONTROL_ROUTE
   ) return 'audit:control'
   if (pathname === '/api/v1/users') return 'user:manage'
+  // Recording and reading the amount finally paid to KServe is a money
+  // decision, so it takes the admin-only money gate rather than the aggregate
+  // metrics permission an ordinary operational user holds.
+  if (pathname === KSERVE_SETTLEMENT_ROUTE) return 'billing:approve'
   // Audit inspection, including the sanitized Call Audit report: administrator
   // only. Call Audit reporting shares the gate with the Billing Audit monitor
   // but stays a separate module with its own route, DTO and page.
@@ -1572,6 +1759,10 @@ function cacheTtlMs(pathname: string): number {
   // hide the snapshot an administrator just created.
   if (pathname === CALL_AUDIT_SETTINGS_ROUTE) return 0
   if (pathname === '/api/v1/audit-workers') return 0
+  // Money reads its own writes. A cached settlement would let one
+  // administrator save a correction and another keep seeing the superseded
+  // amount as "finally paid" for the rest of the window.
+  if (pathname === KSERVE_SETTLEMENT_ROUTE) return 0
   if (
     pathname === '/api/v1/audits' ||
     pathname === BILLING_CATEGORY_ANALYSIS_ROUTE ||
@@ -1665,6 +1856,9 @@ export function createEnterpriseDashboardServer(
     const isAuditWorkerPost =
       request.method === 'POST' &&
       AUDIT_WORKER_WRITE_ROUTES.has(url.pathname)
+    const isSettlementPost =
+      request.method === 'POST' &&
+      KSERVE_SETTLEMENT_WRITE_ROUTES.has(url.pathname)
     if (
       request.method === 'GET' &&
       (IMPORT_WRITE_ROUTES.has(url.pathname) ||
@@ -1688,7 +1882,8 @@ export function createEnterpriseDashboardServer(
       !isSettingsPost &&
       !isRuleTestPost &&
       !isUserAdminPost &&
-      !isAuditWorkerPost
+      !isAuditWorkerPost &&
+      !isSettlementPost
     ) {
       problem(
         response,
@@ -2169,6 +2364,66 @@ export function createEnterpriseDashboardServer(
         sendJson(response, correlation, state)
         return
       }
+      if (isSettlementPost) {
+        // The same admin-only money gate as the read, applied before a byte of
+        // the body is read.
+        requirePermission(context, 'billing:approve')
+        const body = await readJsonBody(
+          request,
+          MAX_KSERVE_SETTLEMENT_BODY_BYTES,
+          'INVALID_KSERVE_SETTLEMENT',
+        )
+        const input =
+          body && typeof body === 'object' && !Array.isArray(body)
+            ? body as Record<string, unknown>
+            : {}
+        // Validated before the write so a malformed month cannot reach a
+        // statement, and reused afterwards so the response describes exactly
+        // the month that was saved.
+        const settlementMonth = settlementMonthScope(input.month)
+        const saved = await settlementRepository(
+          dependencies,
+        ).recordSettlement({
+          month: settlementMonth.month,
+          finalPaidAmountInr: input.finalPaidAmountInr,
+          idempotencyKey: input.idempotencyKey,
+          // Provenance the caller cannot choose. The actor is the authenticated
+          // administrator, never a value from the body, and neither the actor
+          // nor the correlation id is echoed in the response below.
+          recordedByUserId: context.user.id,
+          correlationId: correlation,
+        })
+        // A distinct write action: reading what was paid and recording what was
+        // paid must be separable in the access log.
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          saved.outcome === 'replayed'
+            ? 'kserve_settlement.replay'
+            : 'kserve_settlement.record',
+          'kserve_monthly_settlement',
+          // The bill month, which is the resource. Never the row id, the retry
+          // key, the digest, or the amount.
+          settlementMonth.month,
+          'billing_settlement',
+        )
+        apiCache.clear()
+        // The saved state is re-read and returned in the SAME shape the GET
+        // returns, so a browser never has to assemble a settlement of its own
+        // or compute savings from a write response.
+        sendJson(response, correlation, {
+          ...(await collectKserveSettlement(
+            dependencies,
+            settlementMonth,
+            DEFAULT_SETTLEMENT_HISTORY,
+          )),
+          outcome: saved.outcome,
+        })
+        return
+      }
       if (isUserAdminPost) {
         requirePermission(context, 'user:manage')
         const administration = dependencies.userAdministration
@@ -2599,7 +2854,11 @@ export function createEnterpriseDashboardServer(
               ? url.pathname === CALL_AUDIT_RULE_ACTIVATE_ROUTE
                 ? 'call_audit_rule_version.activate'
                 : 'call_audit_rule_version.create'
-              : apiAction(url.pathname)
+              // A refused SAVE is logged as a refused save, never as a read:
+              // the two are different money events even when both fail.
+              : isSettlementPost
+                ? 'kserve_settlement.record'
+                : apiAction(url.pathname)
             : 'app.read',
         )
       } catch {
@@ -2607,6 +2866,16 @@ export function createEnterpriseDashboardServer(
         // protected database audit sink is unavailable.
       }
       const userAdminFailure = error instanceof UserAdminError
+      /**
+       * A settlement failure logs its own bounded code rather than a generic
+       * INTERNAL_ERROR. All three carry a field name at most: the input and
+       * conflict errors never quote an amount, a month, or a retry key, and the
+       * unavailable error carries nothing about the cause at all.
+       */
+      const settlementFailure =
+        error instanceof KserveSettlementInputError ||
+        error instanceof KserveSettlementConflictError ||
+        error instanceof KserveSettlementUnavailableError
       const safeLog = {
         level: authFailure ? 'warn' : 'error',
         event: authFailure
@@ -2614,7 +2883,7 @@ export function createEnterpriseDashboardServer(
           : 'dashboard_request_failed',
         code: authFailure
           ? error.code
-          : userAdminFailure
+          : userAdminFailure || settlementFailure
             ? error.code
             : 'INTERNAL_ERROR',
         correlationId: correlation,

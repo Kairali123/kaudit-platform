@@ -1,5 +1,9 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
 import { CURRENT_FINAL_BILLING_CALCULATION_SQL } from './mysqlAuditMonitor.ts'
+import {
+  KSERVE_VENDOR_RATE_PER_MINUTE,
+  VENDOR_BILLED_MINUTES_SQL,
+} from './mysqlKserveVendorBilled.ts'
 
 /**
  * Read model for the Billing Audit CATEGORY ANALYSIS page.
@@ -174,20 +178,6 @@ const AUDITED_EVIDENCE_SQL = `
   WHERE ranked.current_rank = 1
 `
 
-/**
- * Vendor-asserted billed minutes, one row per call. This is the provider's own
- * billing evidence and the only basis for the KServe figures below.
- */
-const VENDOR_BILLED_MINUTES_SQL = `
-  SELECT
-    cost.call_id,
-    MAX(cost.minutes_decimal) AS minutes_decimal
-  FROM kaudit_provider_cost cost
-  WHERE cost.provider_sku = 'vendor_asserted_billed_minutes'
-    AND cost.is_final = 1
-  GROUP BY cost.call_id
-`
-
 /** Whether a final recording artifact carries a source at all. Never the URL. */
 const RECORDING_AVAILABILITY_SQL = `
   SELECT
@@ -228,13 +218,6 @@ const TASK_REFERENCE_SQL = `
   ) ranked
   WHERE ranked.reference_rank = 1
 `
-
-/**
- * The KServe contract rate per billed minute, stated as the SQL literal the
- * other KServe-evidence surfaces use. It prices vendor-asserted minutes only;
- * the auditor's own money is never derived from a rate here.
- */
-const VENDOR_RATE_PER_MINUTE = '9.5'
 
 /**
  * Duration semantics, defined once and used by both the aggregate and the rows.
@@ -366,7 +349,8 @@ export function categoryTotalsSql(scopedRowsSql: string): string {
 export function categoryTotalsRowsSql(filters: readonly string[]): string {
   return scopedAuditedCallsSql(
     `    c.canonical_outcome_code AS category,
-    vendor.minutes_decimal * ${VENDOR_RATE_PER_MINUTE} AS kserve_charge_inr,
+    vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+      AS kserve_charge_inr,
     final_calculation.total_amount AS auditor_final_amount,
 ${DURATION_COLUMNS_SQL}`,
     filters,

@@ -368,6 +368,23 @@ dl small { color: var(--muted); font-size: .6rem; }
 .category-kpi[aria-pressed='true'] { border-color: var(--teal); box-shadow: inset 0 0 0 2px var(--teal); }
 .category-kpi:focus-visible { outline: 3px solid rgba(19,124,114,.25); outline-offset: 2px; }
 .category-table table { min-width: 1180px; }
+/* Monthly KServe settlement: a compact record-and-review block, not a page. */
+.settlement { display: grid; gap: 14px; }
+.settlement .section-title { margin-bottom: 0; }
+.settlement .section-title .muted { display: flex; align-items: center; gap: 5px; color: var(--muted); font-size: .68rem; }
+.settlement-facts { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+.settlement-facts dd { font-size: 1.02rem; font-weight: 750; font-variant-numeric: tabular-nums; }
+.settlement-facts dd small { margin-top: 3px; font-weight: 500; }
+.settlement-empty, .settlement-basis { margin: 0; color: var(--muted); font-size: .69rem; line-height: 1.55; }
+.settlement-form { grid-template-columns: minmax(0, 2fr) minmax(0, 1fr); align-items: start; }
+.settlement-actions { padding-top: 18px; }
+.settlement-history table { min-width: 620px; }
+.settlement-summary { display: grid; gap: 12px; }
+@media (max-width: 900px) {
+  .settlement-facts { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .settlement-form { grid-template-columns: 1fr; }
+  .settlement-actions { padding-top: 0; }
+}
 .audit-table tfoot th { text-align: left; }
 .audit-table tfoot td, .audit-table tfoot th { color: var(--muted); font-weight: 700; border-top: 2px solid var(--line); }
 .queue-table table { min-width: 1050px; }

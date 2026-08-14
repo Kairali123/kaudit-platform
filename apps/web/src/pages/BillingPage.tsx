@@ -1,7 +1,8 @@
 import { useQuery } from '@tanstack/react-query'
 import { ErrorState, LoadingState, Notice } from '../components/States'
 import { MetricGrid, PageHeader, UpdatedAt } from '../components/Metrics'
-import { getJson, type BillingData } from '../lib/api'
+import { KserveSettlementPanel } from '../components/KserveSettlement'
+import { getJson, type BillingData, type Profile } from '../lib/api'
 import { useBillingPeriod } from '../lib/billingPeriod'
 
 export function BillingPage() {
@@ -10,6 +11,16 @@ export function BillingPage() {
     queryKey: ['billing', period.month],
     queryFn: () =>
       getJson<BillingData>(period.apiPath('/api/v1/billing')),
+  })
+  /**
+   * Already fetched and cached by the app shell. Recording what was paid is an
+   * admin-only money action, so the section is hidden for everyone else —
+   * presentation only: the API refuses a non-administrator regardless.
+   */
+  const profileQuery = useQuery({
+    queryKey: ['me'],
+    queryFn: () => getJson<Profile>('/api/v1/me'),
+    retry: false,
   })
   if (query.isLoading) return <LoadingState />
   if (query.error)
@@ -61,6 +72,11 @@ export function BillingPage() {
           </p>
         </article>
       </section>
+      <KserveSettlementPanel
+        month={period.month}
+        monthLabel={period.label}
+        isAdmin={profileQuery.data?.roles.includes('admin') === true}
+      />
       <UpdatedAt value={data.generatedAt} />
     </>
   )

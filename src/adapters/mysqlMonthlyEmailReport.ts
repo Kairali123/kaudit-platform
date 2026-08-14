@@ -2,9 +2,70 @@ import type { Pool, RowDataPacket } from 'mysql2/promise'
 import type { BillingMonthScope } from '../reporting/billingMonth.ts'
 import {
   buildMonthlyEmailReport,
+  UNAVAILABLE_MONTHLY_SETTLEMENT,
   type MonthlyEmailReport,
   type MonthlyReportInputRow,
+  type MonthlyReportSettlement,
 } from '../reporting/monthlyEmailReport.ts'
+import {
+  buildKserveSettlementView,
+  toSettlementSummary,
+} from '../reporting/kserveSettlement.ts'
+import { createMysqlKserveSettlementRepository } from './mysqlKserveSettlement.ts'
+import { createMysqlKserveVendorBilledRepository } from './mysqlKserveVendorBilled.ts'
+import { DEFAULT_SETTLEMENT_HISTORY } from '../billing/kserveSettlement.ts'
+
+/**
+ * The month's settlement, folded into the report's own shape.
+ *
+ * It reads through the SAME view builder the Billing Audit page uses, so the
+ * emailed PDF and the screen cannot state different "finally paid" or
+ * "savings" figures for one month.
+ *
+ * A FAILED READ IS REPORTED AS `unavailable`, never as null and never as
+ * `pending`. The revenue report predates settlements and must still be produced
+ * for every month, including the closed periods that will never have one, so a
+ * failure does not propagate — but the artifacts must say "temporarily
+ * unavailable" for it rather than "not recorded for this period", which would
+ * assert something about the month that this run never established. Either read
+ * failing is enough: savings needs both sides, so a missing vendor charge is as
+ * unknown as a missing settlement.
+ */
+async function collectSettlement(
+  pool: Pool,
+  period: BillingMonthScope,
+): Promise<MonthlyReportSettlement> {
+  try {
+    const [vendorBilled, history] = await Promise.all([
+      createMysqlKserveVendorBilledRepository(pool).readMonthlyBilledCharge({
+        periodStart: period.start,
+        periodEnd: period.end,
+      }),
+      createMysqlKserveSettlementRepository(pool).readHistory(
+        period.month,
+        DEFAULT_SETTLEMENT_HISTORY,
+      ),
+    ])
+    const summary = toSettlementSummary(
+      buildKserveSettlementView({ month: period, vendorBilled, history }),
+    )
+    return {
+      status: summary.status,
+      finallyPaidAmount: summary.finallyPaidInr,
+      finallyPaidVersion: summary.finallyPaidVersion,
+      vendorBilledChargeAmount: summary.vendorBilledChargeInr,
+      savingsAmount: summary.savingsInr,
+      savingsAvailable: summary.savingsAvailable,
+      savingsDirection: summary.savingsDirection,
+      currency: summary.currency,
+    }
+  } catch {
+    // The repository has already reduced any driver failure to a bounded typed
+    // error; nothing about it is carried into the report. The constant below
+    // holds no money, so no figure can be fabricated from a failure.
+    return UNAVAILABLE_MONTHLY_SETTLEMENT
+  }
+}
 
 interface ReportRow extends RowDataPacket {
   call_reference: string
@@ -95,6 +156,7 @@ export async function collectMonthlyEmailReport(
     period: options.period,
     generatedAt: options.generatedAt,
     invoiceClaimedAmount: invoiceRows[0]?.subtotal ?? null,
+    settlement: await collectSettlement(pool, options.period),
     rows: rows.map(
       (row): MonthlyReportInputRow => ({
         callReference: row.call_reference,

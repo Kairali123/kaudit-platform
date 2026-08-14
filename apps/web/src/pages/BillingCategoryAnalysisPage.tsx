@@ -15,6 +15,7 @@ import {
   type BillingCategoryKpi,
 } from '../lib/api'
 import { useBillingPeriod } from '../lib/billingPeriod'
+import { money } from '../lib/money'
 
 /**
  * Admin-only category analysis for the selected bill month.
@@ -29,27 +30,6 @@ const MONTHS = [
   'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
   'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
 ] as const
-
-const MONEY_TEXT = /^(-?)(\d+)\.(\d+)$/
-
-/**
- * Fixed-precision rupees, rounded half-up to paise in INTEGER arithmetic.
- * A stored amount is never parsed into a binary float on its way to the screen.
- */
-function money(value: string | null): string {
-  if (value == null) return '—'
-  const match = MONEY_TEXT.exec(value)
-  if (!match) return '—'
-  const [, sign, whole, fraction] = match
-  const paise =
-    BigInt(`${whole}${fraction.slice(0, 2).padEnd(2, '0')}`) +
-    // '5' is char code 53; a shorter fraction rounds down.
-    ((fraction.charCodeAt(2) || 0) >= 53 ? 1n : 0n)
-  const units = paise / 100n
-  return `${sign}₹${units.toLocaleString('en-IN')}.${(paise % 100n)
-    .toString()
-    .padStart(2, '0')}`
-}
 
 /** Server-computed minutes, shown as given. Absent stays absent, never 0.00. */
 function minutes(value: string | null): string {

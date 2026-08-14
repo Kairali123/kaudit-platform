@@ -24,13 +24,82 @@ function columnName(index: number): string {
   return result
 }
 
+/**
+ * The settlement lines every artifact repeats, in one place so the workbook,
+ * the PDF, and the email can never state three different figures.
+ *
+ * An unavailable amount is printed as an explicit phrase, never as a blank cell
+ * or a zero: a reader must be able to tell "nothing was recorded for this
+ * month" from "we paid nothing".
+ */
+const NOT_RECORDED = 'Not recorded for this period'
+const NOT_AVAILABLE = 'Unavailable — no settlement recorded'
+/**
+ * A read that FAILED, which is a different statement from "nothing was
+ * recorded": one describes the month, the other describes this run. Fixed
+ * prose, identical for every failure, so no driver message, table name, value
+ * or identity can reach a workbook, a PDF, or a mailbox.
+ */
+const TEMPORARILY_UNAVAILABLE = 'Settlement temporarily unavailable'
+
+function settlementLines(
+  report: MonthlyEmailReport,
+): Array<[string, string]> {
+  const settlement = report.settlement
+  if (settlement?.status === 'unavailable') {
+    return [
+      ['Finally paid to KServe', TEMPORARILY_UNAVAILABLE],
+      ['KServe billed for the month', TEMPORARILY_UNAVAILABLE],
+      ['Savings vs KServe billed', TEMPORARILY_UNAVAILABLE],
+    ]
+  }
+  if (!settlement || settlement.status !== 'recorded') {
+    return [
+      ['Finally paid to KServe', NOT_RECORDED],
+      ['Savings vs KServe billed', NOT_AVAILABLE],
+    ]
+  }
+  const currency = settlement.currency
+  return [
+    [
+      'Finally paid to KServe',
+      `${formatMoney(settlement.finallyPaidAmount, currency)} ` +
+        `(version ${settlement.finallyPaidVersion ?? '—'})`,
+    ],
+    [
+      'KServe billed for the month',
+      settlement.vendorBilledChargeAmount == null
+        ? 'Unavailable — no vendor billed evidence'
+        : formatMoney(settlement.vendorBilledChargeAmount, currency),
+    ],
+    [
+      'Savings vs KServe billed',
+      settlement.savingsAvailable
+        ? `${formatMoney(settlement.savingsAmount, currency)} ` +
+          `(${settlement.savingsDirection})`
+        : NOT_AVAILABLE,
+    ],
+  ]
+}
+
 function worksheetXml(report: MonthlyEmailReport): string {
-  const values: Array<Array<string | number>> = [
+  const settlement = settlementLines(report)
+  const heading: Array<Array<string | number>> = [
     ['Kairali AI Call Audit — monthly revenue report'],
     ['Period', report.period.label],
     ['Authority', report.authority],
     ['Source manifest SHA-256', report.sourceManifestSha256],
+    ...settlement,
     [],
+  ]
+  /**
+   * Spreadsheet rows are 1-based and the filter must start on the header row.
+   * It is derived from the heading block rather than hard-coded, so adding a
+   * settlement line can never silently point the filter at a data row.
+   */
+  const headerRow = heading.length + 1
+  const values: Array<Array<string | number>> = [
+    ...heading,
     [
       'Task / call reference',
       'Category',
@@ -76,7 +145,7 @@ function worksheetXml(report: MonthlyEmailReport): string {
     <col min="5" max="10" width="22" customWidth="1"/>
   </cols>
   <sheetData>${rows}</sheetData>
-  <autoFilter ref="A6:J${Math.max(6, values.length)}"/>
+  <autoFilter ref="A${headerRow}:J${Math.max(headerRow, values.length)}"/>
 </worksheet>`
 }
 
@@ -166,6 +235,14 @@ export function buildReportPdf(
         )}`,
       )
       .moveDown()
+      .fontSize(13)
+      .text('Settlement with KServe')
+      .fontSize(11)
+    for (const [label, value] of settlementLines(report)) {
+      document.text(`${label}: ${value}`)
+    }
+    document
+      .moveDown()
       .fontSize(10)
       .text(
         `${report.summary.totalCalls.toLocaleString('en-IN')} calls: ` +
@@ -196,6 +273,12 @@ export function buildReportEmailHtml(
     <tr><td style="padding:8px;border:1px solid #cbd5e1">Verified billable revenue</td><td style="padding:8px;border:1px solid #cbd5e1"><strong>${html(formatMoney(report.summary.verifiedBillableRevenue, report.summary.currency))}</strong></td></tr>
     <tr><td style="padding:8px;border:1px solid #cbd5e1">Vendor invoice claim</td><td style="padding:8px;border:1px solid #cbd5e1"><strong>${html(formatMoney(report.summary.invoiceClaimedAmount, report.summary.currency))}</strong></td></tr>
     <tr><td style="padding:8px;border:1px solid #cbd5e1">Variance identified</td><td style="padding:8px;border:1px solid #cbd5e1"><strong>${html(formatMoney(report.summary.revenueVarianceVsInvoice, report.summary.currency))}</strong></td></tr>
+${settlementLines(report)
+  .map(
+    ([label, value]) =>
+      `    <tr><td style="padding:8px;border:1px solid #cbd5e1">${html(label)}</td><td style="padding:8px;border:1px solid #cbd5e1"><strong>${html(value)}</strong></td></tr>`,
+  )
+  .join('\n')}
   </table>
   <p>${report.summary.totalCalls.toLocaleString('en-IN')} calls are included. The PDF is the concise management summary; the Excel workbook is the call-level backup.</p>
   <p style="color:#475569;font-size:12px">Manifest: ${html(report.sourceManifestSha256)}. This automated email does not submit a dispute or authorize payment.</p>

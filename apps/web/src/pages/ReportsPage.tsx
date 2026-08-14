@@ -4,6 +4,7 @@ import { ErrorState, LoadingState, Notice } from '../components/States'
 import { PageHeader, UpdatedAt } from '../components/Metrics'
 import { getJson, type ReportsData } from '../lib/api'
 import { useBillingPeriod } from '../lib/billingPeriod'
+import { money } from '../lib/money'
 
 export function ReportsPage() {
   const period = useBillingPeriod()
@@ -70,6 +71,91 @@ export function ReportsPage() {
                 ? `Delivery stopped after ${data.emailDelivery.attempts} attempt(s): ${data.emailDelivery.lastErrorCode || 'unknown failure'}.`
                 : 'Not queued. Email is created automatically only after the full audit, final traced billing, published rate card, uploaded invoice, and reporting approval are all present.'}
       </Notice>
+      {data.settlement && (
+        /**
+         * Monthly settlement, beside the revenue snapshots and never mixed
+         * into them: verified revenue is what the audit calculated, this is
+         * what was actually paid. Both amounts and the savings between them
+         * are server-calculated fixed-precision text; this page formats and
+         * never subtracts.
+         *
+         * Three states, never two. 'recorded' shows the money; 'pending' says
+         * the month has no settlement; 'unavailable' says the settlement could
+         * not be READ, which is a statement about this request and not about
+         * the month. A failed read is never dressed up as "not recorded".
+         */
+        <section className="content-section settlement-summary">
+          <div className="section-title">
+            <div>
+              <h2>Final amount paid to KServe</h2>
+              <span className="muted">{period.label}</span>
+            </div>
+          </div>
+          {data.settlement.status === 'unavailable' && (
+            <Notice tone="warning" title="Settlement temporarily unavailable">
+              The settlement for this period could not be read just now. This is
+              not a statement that none was recorded, and no amount below has
+              been estimated. Retry the page to read it again.
+            </Notice>
+          )}
+          <dl className="cas-facts">
+            <div>
+              <dt>Finally paid</dt>
+              <dd>
+                {data.settlement.status === 'recorded'
+                  ? money(data.settlement.finallyPaidInr)
+                  : data.settlement.status === 'unavailable'
+                    ? 'Unavailable'
+                    : 'Not recorded'}
+                <small>
+                  {data.settlement.status === 'recorded'
+                    ? `Version ${data.settlement.finallyPaidVersion ?? '—'}`
+                    : data.settlement.status === 'unavailable'
+                      ? 'Settlement temporarily unavailable'
+                      : 'No settlement exists for this period'}
+                </small>
+              </dd>
+            </div>
+            <div>
+              <dt>KServe billed</dt>
+              <dd>
+                {data.settlement.vendorBilledChargeInr == null
+                  ? 'Unavailable'
+                  : money(data.settlement.vendorBilledChargeInr)}
+                <small>
+                  {data.settlement.status === 'unavailable'
+                    ? 'Settlement temporarily unavailable'
+                    : 'Vendor final billed minutes at the contract rate'}
+                </small>
+              </dd>
+            </div>
+            <div>
+              <dt>Savings</dt>
+              <dd
+                className={
+                  data.settlement.savingsDirection === 'overpaid'
+                    ? 'cell-warn'
+                    : ''
+                }
+              >
+                {data.settlement.savingsAvailable
+                  ? money(data.settlement.savingsInr)
+                  : 'Unavailable'}
+                <small>
+                  {data.settlement.status === 'unavailable'
+                    ? 'Settlement temporarily unavailable'
+                    : data.settlement.savingsDirection === 'overpaid'
+                      ? 'Paid more than KServe billed'
+                      : data.settlement.savingsAvailable
+                        ? 'KServe billed minus finally paid'
+                        : 'Needs a recorded payment and vendor billed evidence'}
+                </small>
+              </dd>
+            </div>
+          </dl>
+          <p className="settlement-basis">{data.settlement.basis}</p>
+        </section>
+      )}
       <div className="snapshot-grid">
         {data.snapshots.map((snapshot) => {
           const TrendIcon =
