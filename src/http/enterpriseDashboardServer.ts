@@ -192,6 +192,11 @@ import {
   JSON_SECURITY_HEADERS,
   STATIC_SECURITY_HEADERS,
 } from './securityHeaders.ts'
+import {
+  recordApiCache,
+  startRequestTiming,
+  timeAudit,
+} from '../runtime/performance.ts'
 
 interface Dependencies {
   config: RuntimeConfig
@@ -773,7 +778,7 @@ async function auditAccess(
   purpose = 'audit_operations',
 ): Promise<void> {
   if (dependencies.config.auth.mode === 'preview') return
-  await dependencies.audit.record({
+  await timeAudit(() => dependencies.audit.record({
     actorUserId: context?.user.id ?? null,
     actorEmail: context?.user.email ?? null,
     action,
@@ -788,7 +793,7 @@ async function auditAccess(
     ),
     client: userAgent(request),
     occurredAt: new Date(),
-  })
+  }))
 }
 
 async function resolveContentCall(
@@ -1731,6 +1736,30 @@ function contentType(filePath: string): string {
   return 'application/octet-stream'
 }
 
+function timingOperation(pathname: string): string {
+  if (API_ROUTES.has(pathname) || PUBLIC_API_ROUTES.has(pathname)) {
+    return apiAction(pathname)
+  }
+  if (
+    PUBLIC_POST_ROUTES.has(pathname) ||
+    USER_ADMIN_WRITE_ROUTES.has(pathname) ||
+    AUDIT_WORKER_WRITE_ROUTES.has(pathname) ||
+    IMPORT_WRITE_ROUTES.has(pathname) ||
+    IMPORT_ANALYSIS_ROUTES.has(pathname) ||
+    KSERVE_SETTLEMENT_WRITE_ROUTES.has(pathname) ||
+    CALL_AUDIT_SETTINGS_WRITE_ROUTES.has(pathname) ||
+    CALL_AUDIT_RULE_TEST_ROUTES.has(pathname)
+  ) {
+    return apiAction(pathname)
+  }
+  if (APP_ROUTES.has(pathname)) return 'app_document.read'
+  if (OIDC_BROWSER_FLOW_ROUTES.has(pathname)) return 'oidc_browser_flow.read'
+  if (pathname === '/logout') return 'session.logout'
+  if (pathname.startsWith('/assets/')) return 'static_asset.read'
+  if (pathname.startsWith('/api/')) return 'unknown_api.request'
+  return 'unknown_request'
+}
+
 interface ApiCacheEntry {
   expiresAt: number
   value: Promise<unknown>
@@ -1763,6 +1792,10 @@ function cacheTtlMs(pathname: string): number {
   // administrator save a correction and another keep seeing the superseded
   // amount as "finally paid" for the rest of the window.
   if (pathname === KSERVE_SETTLEMENT_ROUTE) return 0
+  // The month catalog changes only when a new billing period is imported.
+  // A one-minute bound removes repeat scans during navigation without allowing
+  // an old default month to survive an operator workflow for long.
+  if (pathname === '/api/v1/periods') return 60_000
   if (
     pathname === '/api/v1/audits' ||
     pathname === BILLING_CATEGORY_ANALYSIS_ROUTE ||
@@ -1780,12 +1813,17 @@ async function cachedApiResponse(
   cache: Map<string, ApiCacheEntry>,
 ): Promise<unknown> {
   const ttl = cacheTtlMs(url.pathname)
-  if (ttl === 0) return apiResponse(url, dependencies, context)
+  if (ttl === 0) {
+    recordApiCache('bypass')
+    return apiResponse(url, dependencies, context)
+  }
   const key = `${context.user.roles.slice().sort().join(',')}:${url.pathname}${url.search}`
   const existing = cache.get(key)
   if (existing && existing.expiresAt > Date.now()) {
+    recordApiCache('hit')
     return existing.value
   }
+  recordApiCache('miss')
   pruneApiCache(cache)
   const value = apiResponse(url, dependencies, context)
   cache.set(key, {
@@ -1837,6 +1875,12 @@ export function createEnterpriseDashboardServer(
       request.headers['x-correlation-id'],
     )
     const url = requestUrl(request)
+    const finishTiming = startRequestTiming({
+      operation: timingOperation(url.pathname),
+      method: request.method ?? 'UNKNOWN',
+    })
+    response.once('finish', () => finishTiming(response.statusCode))
+    response.once('close', () => finishTiming(response.statusCode))
     const isImportPost =
       request.method === 'POST' &&
       (IMPORT_WRITE_ROUTES.has(url.pathname) ||

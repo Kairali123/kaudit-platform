@@ -155,10 +155,24 @@ function billMonthAppliesToPath(pathname: string): boolean {
   return !pathname.startsWith('/call-audit')
 }
 
+/** Pages whose first API read is invalid until the default bill month exists. */
+function pageReadNeedsBillMonth(pathname: string): boolean {
+  return [
+    '/overview',
+    '/evidence',
+    '/findings',
+    '/billing',
+    '/billing/categories',
+    '/reports',
+    '/audits',
+  ].includes(pathname)
+}
+
 export function AppShell() {
   const [open, setOpen] = useState(false)
   const location = useLocation()
   const [searchParams, setSearchParams] = useSearchParams()
+  const billMonthInScope = billMonthAppliesToPath(location.pathname)
   const profileQuery = useQuery({
     queryKey: ['me'],
     queryFn: () => getJson<Profile>('/api/v1/me'),
@@ -174,10 +188,9 @@ export function AppShell() {
     queryKey: ['billing-periods'],
     queryFn: () =>
       getJson<BillingPeriodsData>('/api/v1/periods'),
-    enabled: profileQuery.isSuccess,
-    staleTime: 30_000,
+    enabled: profileQuery.isSuccess && billMonthInScope,
+    staleTime: 60_000,
   })
-  const billMonthInScope = billMonthAppliesToPath(location.pathname)
   const availableMonths = periodsQuery.data?.months ?? []
   const requestedMonth = searchParams.get('month')
   const monthIsAvailable =
@@ -247,6 +260,16 @@ export function AppShell() {
       <ErrorState
         error={profileQuery.error}
         retry={() => void profileQuery.refetch()}
+      />
+    )
+  }
+  const pageNeedsMonth = pageReadNeedsBillMonth(location.pathname)
+  if (pageNeedsMonth && periodsQuery.isLoading) return <LoadingState />
+  if (pageNeedsMonth && periodsQuery.error) {
+    return (
+      <ErrorState
+        error={periodsQuery.error}
+        retry={() => void periodsQuery.refetch()}
       />
     )
   }

@@ -109,6 +109,18 @@ test('static screens declare no polling of their own', async () => {
   }
 })
 
+test('month-scoped pages wait for periods instead of firing all-period aggregates', async () => {
+  const shell = await webSource('components/AppShell.tsx')
+  assert.match(shell, /pageReadNeedsBillMonth/)
+  assert.match(shell, /pageNeedsMonth && periodsQuery\.isLoading/)
+  assert.match(shell, /return <LoadingState \/>/)
+  assert.match(shell, /pageNeedsMonth && periodsQuery\.error/)
+  assert.match(
+    shell,
+    /enabled: profileQuery\.isSuccess && billMonthInScope/,
+  )
+})
+
 test('each declared interval is a bounded number, never unconditional', async () => {
   const declared = new Map<string, number[]>()
   for (const relative of LIVE_MONITORS) {

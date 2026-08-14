@@ -6,6 +6,7 @@ import {
   MAX_REQUESTED_PERIODS,
   collectPeriodAmounts,
   collectRevenueSnapshots,
+  providerPeriodTotalsSql,
   validateRequestedPeriods,
   type RequestedPeriod,
 } from './mysqlFullDashboard.ts'
@@ -183,10 +184,12 @@ function syntheticHarness(fixture: Fixture): Harness {
     async query(sql: string, params: unknown[] = []) {
       statements.push({ sql, params })
       try {
-        const rows = db.prepare(sql).all(...(params as string[])) as Record<
-          string,
-          unknown
-        >[]
+        // STRAIGHT_JOIN is MySQL's join-order control. SQLite's equivalent
+        // execution here uses ordinary JOIN over the same synthetic relations.
+        const executable = sql.replaceAll('STRAIGHT_JOIN', 'JOIN')
+        const rows = db.prepare(executable).all(
+          ...(params as string[]),
+        ) as Record<string, unknown>[]
         results.push(rows)
         return [rows]
       } catch (error) {
@@ -680,9 +683,18 @@ const ALLOWED_RELATIONS = new Set([
   'requested_period',
   'period_call',
   'scoped_calculation',
-  'scoped_provider_cost',
+  'provider_period_total',
   'scoped_invoice',
 ])
+
+test('provider totals start from provider cost and fix the production join order', async () => {
+  const sql = providerPeriodTotalsSql(2)
+  assert.match(
+    sql,
+    /FROM kaudit_provider_cost cost\s+STRAIGHT_JOIN kaudit_call c/,
+  )
+  assert.doesNotMatch(sql, /cost\.call_id IN \(SELECT call_id FROM period_call\)/)
+})
 
 test('the reads are parameterized, read-only aggregates over kaudit tables', async () => {
   const { statements, results } = await amountsOf(

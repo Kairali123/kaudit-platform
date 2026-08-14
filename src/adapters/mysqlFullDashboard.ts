@@ -422,27 +422,29 @@ export function verifiedPeriodTotalsSql(periodCount: number): string {
  * the number of calculations on the call (and vice versa); summing each fact
  * on its own and combining the two totals in Node cannot.
  *
- * The per-call grouping preserves this function's existing basis: every
- * `vendor_asserted_billed_minutes` row with minutes recorded contributes.
+ * Provider cost is deliberately the first table and STRAIGHT_JOIN fixes that
+ * order on MySQL. Production evidence showed the optimizer otherwise scanning
+ * every call before looking up costs, turning this bounded monthly aggregate
+ * into a 20+ second read. Starting from the much smaller cost fact set preserves
+ * the basis: every matching minutes row contributes to every requested period
+ * containing its call.
  */
 export function providerPeriodTotalsSql(periodCount: number): string {
   return `WITH ${requestedPeriodCte(periodCount)},
-          ${PERIOD_CALL_CTE},
-          scoped_provider_cost AS (
-            SELECT cost.call_id AS call_id,
-                   SUM(cost.minutes_decimal) AS minutes_decimal
+          provider_period_total AS (
+            SELECT requested.period_key AS period_key,
+                 CAST(SUM(cost.minutes_decimal) AS CHAR) AS provider_minutes
             FROM kaudit_provider_cost cost
+            STRAIGHT_JOIN kaudit_call c ON c.id = cost.call_id
+            STRAIGHT_JOIN requested_period requested
+              ON c.billing_period_date
+                 BETWEEN requested.period_start AND requested.period_end
             WHERE cost.provider_sku = 'vendor_asserted_billed_minutes'
               AND cost.minutes_decimal IS NOT NULL
-              AND cost.call_id IN (SELECT call_id FROM period_call)
-            GROUP BY cost.call_id
+            GROUP BY requested.period_key
           )
-          SELECT period_call.period_key AS period_key,
-                 CAST(SUM(cost.minutes_decimal) AS CHAR) AS provider_minutes
-          FROM period_call
-          JOIN scoped_provider_cost cost
-            ON cost.call_id = period_call.call_id
-          GROUP BY period_call.period_key`
+          SELECT period_key, provider_minutes
+          FROM provider_period_total`
 }
 
 /**

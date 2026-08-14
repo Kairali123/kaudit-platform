@@ -18,6 +18,7 @@ import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.t
 import { createOpenAiCallAuditModel } from '../adapters/openaiCallAuditClient.ts'
 import { resolveDatabaseTls, type CaFileReader } from './databaseTls.ts'
 import { createGitHubActionsAuditWorkerDispatcher } from '../auditWorkers/dispatcher.ts'
+import { instrumentMysqlPool } from './performance.ts'
 
 /**
  * How the runtime holds MySQL connections.
@@ -125,7 +126,7 @@ export function createDashboardRuntime(
   const config = loadRuntimeConfig(env)
   const ssl = resolveDatabaseTls(config, env, options.readCaFile)
   const createPool = options.createPool ?? mysql.createPool
-  const pool = createPool({
+  const pool = instrumentMysqlPool(createPool({
     host: config.database.host,
     port: config.database.port,
     database: config.database.name,
@@ -139,7 +140,7 @@ export function createDashboardRuntime(
     connectTimeout: 10_000,
     decimalNumbers: false,
     ...poolLimits(options.poolProfile),
-  })
+  }))
   const access = createMysqlAccessRepository(pool)
   const audit = createMysqlAuditSink(pool)
   const credentials =

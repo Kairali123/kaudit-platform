@@ -4,6 +4,7 @@ import {
   type DashboardRuntime,
   type DashboardRuntimeOptions,
 } from '../runtime/dashboardRuntime.ts'
+import { timeRuntimeBootstrap } from '../runtime/performance.ts'
 import {
   createServerlessHandler,
   type NodeRequestListener,
@@ -46,10 +47,12 @@ export function warmDashboardRuntime(
 ): DashboardRuntime {
   const existing = scope[RUNTIME_KEY]
   if (existing) return existing
-  const runtime = createRuntime({
-    ...VERCEL_RUNTIME_OPTIONS,
-    webDistRoot: process.env.KAUDIT_WEB_DIST_ROOT?.trim() || undefined,
-  })
+  const runtime = timeRuntimeBootstrap(() =>
+    createRuntime({
+      ...VERCEL_RUNTIME_OPTIONS,
+      webDistRoot: process.env.KAUDIT_WEB_DIST_ROOT?.trim() || undefined,
+    }),
+  )
   scope[RUNTIME_KEY] = runtime
   return runtime
 }
