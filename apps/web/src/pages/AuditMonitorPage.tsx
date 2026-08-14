@@ -136,6 +136,9 @@ export function AuditMonitorPage() {
       getJson<AuditMonitorData>(
         period.apiPath(`/api/v1/audits?${queryString}`),
       ),
+    // Opt-in live monitor: the audit worker moves calls between the pending,
+    // audited and no-recording sets while this page is open, so it polls on a
+    // bounded interval. Polling is not a client default.
     refetchInterval: 15_000,
   })
   useEffect(() => {

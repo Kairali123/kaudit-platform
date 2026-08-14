@@ -5,11 +5,20 @@ import { BrowserRouter } from 'react-router-dom'
 import { App } from './App'
 import './styles.css'
 
+/**
+ * Background polling is OPT-IN, never a default.
+ *
+ * A global `refetchInterval` made every mounted query re-hit the API forever,
+ * including screens whose data only changes when the operator navigates or
+ * submits something (home, overview, evidence, findings, billing, reports,
+ * profile/auth/period). Those reads are expensive aggregates, so the default
+ * client now refetches on mount/invalidation only; a screen whose displayed
+ * state genuinely moves on its own declares its own bounded interval.
+ */
 const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
-      refetchInterval: 60_000,
       retry: 1,
       refetchOnWindowFocus: false,
     },

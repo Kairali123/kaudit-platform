@@ -99,6 +99,8 @@ export function ImportPage() {
   const query = useQuery({
     queryKey: ['imports'],
     queryFn: () => getJson<ImportStatus>('/api/v1/imports'),
+    // Opt-in live monitor: import batches are ingested by background jobs, so
+    // the status list advances without navigation. Bounded, and not a default.
     refetchInterval: 30_000,
   })
 
