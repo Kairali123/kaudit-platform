@@ -102,12 +102,13 @@ test('the footer totals the whole scope and labels what does not apply', async (
   assert.match(source, /comparableCalls\)\}\s*\n?\s*comparable calls/)
 })
 
-test('the page separates final auditor money from unfinalized calls', async () => {
+test('the page reports capped auditor money and missing-duration calls', async () => {
   const source = await webSource(PAGE)
   assert.match(source, /auditorFinalChargeInr/)
   assert.match(source, /kpi\.auditorFinalPricedCalls/)
   assert.match(source, /kpi\.auditorUnfinalizedCalls/)
-  assert.match(source, /not finalized/)
+  assert.match(source, /auditor capped/)
+  assert.match(source, /missing duration/)
   assert.match(source, /kpi\.auditorMoneyComplete \? 'good' : 'warn'/)
 })
 

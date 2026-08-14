@@ -80,12 +80,12 @@ function CategoryCard({
       <p>
         audited calls · gap {minutes(kpi.gapMinutes)}
         <small className="cell-sub">
-          KServe {money(kpi.kserveChargeInr)} · auditor{' '}
+          KServe {money(kpi.kserveChargeInr)} · auditor capped{' '}
           {money(kpi.auditorFinalChargeInr)}
         </small>
         <small className="cell-sub">
-          {count(kpi.auditorFinalPricedCalls)} finalized ·{' '}
-          {count(kpi.auditorUnfinalizedCalls)} not finalized
+          {count(kpi.auditorFinalPricedCalls)} priced ·{' '}
+          {count(kpi.auditorUnfinalizedCalls)} missing duration
         </small>
       </p>
     </button>
@@ -134,10 +134,10 @@ export function BillingCategoryAnalysisPage() {
       />
       <Notice tone="warning" title="Two authorities, never one number">
         <strong>KServe charge</strong> comes from the vendor&apos;s own final
-        billed minutes. <strong>Auditor amount</strong> totals only calls that
-        already carry a current final billing calculation from the
-        deterministic engine; audited calls without one release no auditor
-        charge and are counted separately. {data.durationBasis.gapLabel}{' '}
+        billed minutes. <strong>Auditor capped amount</strong> prices audited
+        duration with the locked KServe rounding rule and caps each call at
+        KServe&apos;s charge; audited calls without a priceable duration are
+        counted separately. {data.durationBasis.gapLabel}{' '}
         {data.durationBasis.aiAuditedDurationLabel} Call times are shown exactly
         as stored.
       </Notice>
@@ -245,9 +245,9 @@ export function BillingCategoryAnalysisPage() {
                   Total · {data.scope.categoryLabel}
                   <small className="cell-sub">
                     {count(totals.auditedCallCount)} audited calls in scope ·
-                    KServe {money(totals.kserveChargeInr)} · auditor{' '}
+                    KServe {money(totals.kserveChargeInr)} · auditor capped{' '}
                     {money(totals.auditorFinalChargeInr)} from{' '}
-                    {count(totals.auditorFinalPricedCalls)} final calculations
+                    {count(totals.auditorFinalPricedCalls)} priced calls
                   </small>
                 </th>
                 <td>Not applicable</td>

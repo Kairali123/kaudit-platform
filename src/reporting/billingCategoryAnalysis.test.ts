@@ -317,7 +317,7 @@ test('totals describe the whole selected scope, not the page', async () => {
   assert.equal(dto.pagination.totalPages, 1)
 })
 
-test('unfinalized audited calls are reported, never counted as money', async () => {
+test('missing-duration audited calls are reported, never counted as money', async () => {
   const dto = await buildBillingCategoryAnalysis(
     port([]),
     { page: 1, pageSize: 25, category: null },

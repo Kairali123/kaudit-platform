@@ -354,7 +354,7 @@ const AUDITED_CALL: SyntheticCall = {
 // Per-category aggregation
 // ---------------------------------------------------------------------------
 
-test('each category reports its own audited count and both charges', () => {
+test('each category reports its own audited count and capped auditor amount', () => {
   const totals = totalsOf({
     calls: [
       AUDITED_CALL,
@@ -371,15 +371,6 @@ test('each category reports its own audited count and both charges', () => {
         taskReference: 'SYNTHETIC-TASK-3',
       },
     ],
-    calculations: [
-      {
-        id: 'calc-1',
-        callId: 'call-synthetic-1',
-        status: 'final',
-        totalAmount: '28.50000000',
-        calculatedAt: '2026-08-05 00:00:00',
-      },
-    ],
   })
 
   assert.deepEqual(
@@ -390,17 +381,18 @@ test('each category reports its own audited count and both charges', () => {
   assert.equal(enquiry.auditedCallCount, 2)
   assert.equal(enquiry.kservePricedCalls, 2)
   assert.equal(Number(enquiry.kserveChargeInr), 57)
-  // Only the call with a current final calculation releases auditor money.
-  assert.equal(enquiry.auditorFinalPricedCalls, 1)
-  assert.equal(enquiry.auditorUnfinalizedCalls, 1)
-  assert.equal(Number(enquiry.auditorFinalChargeInr), 28.5)
+  assert.equal(enquiry.auditorFinalPricedCalls, 2)
+  assert.equal(enquiry.auditorUnfinalizedCalls, 0)
+  assert.equal(Number(enquiry.auditorFinalChargeInr), 57)
   const notConnected = totals[0]
   assert.equal(notConnected.auditedCallCount, 1)
-  assert.equal(Number(notConnected.auditorFinalChargeInr), 0)
-  assert.equal(notConnected.auditorUnfinalizedCalls, 1)
+  // The audited projection is 3 minutes, but KServe billed 1 minute, so the
+  // auditor amount is capped at the vendor charge for that call.
+  assert.equal(Number(notConnected.auditorFinalChargeInr), 9.5)
+  assert.equal(notConnected.auditorUnfinalizedCalls, 0)
 })
 
-test('a superseded or draft calculation releases no auditor money', () => {
+test('billing calculations do not change the capped auditor amount', () => {
   const totals = totalsOf({
     calls: [AUDITED_CALL],
     calculations: [
@@ -421,9 +413,27 @@ test('a superseded or draft calculation releases no auditor money', () => {
       },
     ],
   })
-  assert.equal(totals[0].auditorFinalPricedCalls, 0)
-  assert.equal(totals[0].auditorUnfinalizedCalls, 1)
-  assert.equal(Number(totals[0].auditorFinalChargeInr), 0)
+  assert.equal(totals[0].auditorFinalPricedCalls, 1)
+  assert.equal(totals[0].auditorUnfinalizedCalls, 0)
+  assert.equal(Number(totals[0].auditorFinalChargeInr), 28.5)
+})
+
+test('the auditor amount keeps the lower audited projection when it is below KServe', () => {
+  const totals = totalsOf({
+    calls: [
+      {
+        ...AUDITED_CALL,
+        billedMinutes: '3.00000000',
+        decodedDurationMs: 190_000,
+        conversationEndMs: 1_000,
+      },
+    ],
+  })
+  assert.equal(Number(totals[0].kserveChargeInr), 28.5)
+  // 1s + 60s grace rounds to 2 billable minutes, below KServe's 3 minutes.
+  assert.equal(Number(totals[0].auditorFinalChargeInr), 19)
+  assert.equal(totals[0].auditorFinalPricedCalls, 1)
+  assert.equal(totals[0].auditorUnfinalizedCalls, 0)
 })
 
 test('billed minutes and the grace-adjusted audited duration define the gap', () => {
@@ -836,7 +846,7 @@ test('no per-row correlated lookup is repeated for every displayed call', () => 
   assert.equal(sql.match(/kaudit_call_external_reference/g)?.length, 1)
   assert.equal(sql.match(/kaudit_media_analysis/g)?.length, 1)
   assert.equal(sql.match(/kaudit_transcript/g)?.length, 1)
-  assert.equal(sql.match(/kaudit_billing_calculation/g)?.length, 2)
+  assert.equal(sql.match(/kaudit_billing_calculation/g)?.length ?? 0, 0)
 })
 
 test('the page order ends on a unique key that is never projected', () => {
@@ -852,13 +862,13 @@ test('the page order ends on a unique key that is never projected', () => {
   assert.equal(/\bc\.id\s+AS\s/i.test(sql), false)
 })
 
-test('the totals aggregate never synthesizes money from a duration', () => {
+test('the totals aggregate caps audited money per call before summing', () => {
   const sql = categoryTotalsSql('SELECT 1 AS category')
-  assert.equal(/CEIL\(/.test(sql), false)
-  assert.equal(/4\.75/.test(sql), false)
-  assert.equal(/adjusted_chargeable/.test(sql), false)
-  // The only auditor money in the statement is the stored final amount.
   assert.match(sql, /SUM\(scoped\.auditor_final_amount\)/)
+  const scoped = categoryTotalsRowsSql(PERIOD_FILTERS)
+  assert.match(scoped, /CEIL\(/)
+  assert.match(scoped, /vendor\.minutes_decimal \* 9\.5/)
+  assert.match(scoped, /THEN 9\.5 \/ 2/)
 })
 
 // ---------------------------------------------------------------------------

@@ -336,9 +336,10 @@ export interface AuditMonitorData {
  * call identity is the approved task reference, and the restricted review route
  * remains the single way to reach call content.
  *
- * Money is fixed-precision decimal TEXT and stays text. The auditor total is
- * summed from current final deterministic calculations only; audited calls
- * without one are reported as unfinalized rather than as a verified zero.
+ * Money is fixed-precision decimal TEXT and stays text. The auditor total is a
+ * capped audit projection: audited duration is priced with the locked KServe
+ * rule and capped per call at KServe's charge. Calls without a priceable
+ * audited duration are reported separately rather than as a verified zero.
  */
 export interface BillingCategoryKpi {
   /** Canonical outcome code, or `all` for the aggregate selection. */
@@ -349,7 +350,7 @@ export interface BillingCategoryKpi {
   /** Vendor-asserted money from final billed-minute evidence. */
   kserveChargeInr: string
   kservePricedCalls: number
-  /** Deterministic billing-engine money only. Never a duration projection. */
+  /** Capped auditor amount: never greater than KServe for the same call. */
   auditorFinalChargeInr: string
   auditorFinalPricedCalls: number
   auditorUnfinalizedCalls: number

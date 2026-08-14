@@ -231,13 +231,12 @@ export function AuditMonitorPage() {
             : 'warn',
       },
       {
-        label: 'Auditor final billing · audited calls',
+        label: 'Auditor capped amount · audited calls',
         value: money(financials.auditorFinalChargeInr),
         sub:
           `${financials.auditorFinalPricedCalls.toLocaleString('en-IN')} of ` +
-          `${financials.scopedAuditedCalls.toLocaleString('en-IN')} audited calls priced by a current final billing calculation · ` +
-          `${financials.auditorUnfinalizedCalls.toLocaleString('en-IN')} not finalized, releasing no auditor charge · ` +
-          'deterministic billing engine only, never a model projection',
+          `${financials.scopedAuditedCalls.toLocaleString('en-IN')} audited calls priced by audited duration, capped at KServe charge · ` +
+          `${financials.auditorUnfinalizedCalls.toLocaleString('en-IN')} missing audited duration`,
         status:
           financials.auditorUnfinalizedCalls === 0
             ? 'good'
@@ -265,12 +264,10 @@ export function AuditMonitorPage() {
       <Notice tone="warning" title="Automated consensus—not human ground truth">
         Use this view to inspect categories, confidence, durations, calculations,
         and stuck processing. Open Call is restricted to administrators and
-        every content access is logged. <strong>Auditor final billing</strong>{' '}
-        totals only calls that already carry a current final billing
-        calculation from the deterministic engine; audited calls without one
-        release no auditor charge and are counted separately. The duration
-        columns below are audit metadata for review—they are not a charge and
-        are never added to that total.
+        every content access is logged. <strong>Auditor capped amount</strong>{' '}
+        prices audited duration with the locked KServe rounding rule and caps
+        each call at KServe&apos;s charge, so it never exceeds the vendor charge
+        for the same call.
       </Notice>
       <AuditWorkerControl system="billing" />
       <MetricGrid tiles={tiles} />

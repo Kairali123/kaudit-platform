@@ -8,9 +8,8 @@ import path from 'node:path'
  *
  * The project has no browser test runner, so this pins what a render test
  * would otherwise catch about billing authority: the financial tile reads the
- * final-calculation total, it shows finalized and unfinalized audited calls as
- * two separate numbers, and it never presents an audited duration projection
- * as auditor money.
+ * capped auditor amount, reports priced and missing-duration audited calls as
+ * two separate numbers, and does not calculate money in the browser.
  *
  * No fixture, identifier, or amount in this file comes from real data.
  */
@@ -21,7 +20,7 @@ async function webSource(relative: string): Promise<string> {
   return readFile(path.join(WEB_ROOT, relative), 'utf8')
 }
 
-test('the web client type exposes final and unfinalized counts separately', async () => {
+test('the web client type exposes capped amount and missing-duration counts', async () => {
   const source = await webSource('lib/api.ts')
   assert.match(source, /auditorFinalChargeInr: string/)
   assert.match(source, /auditorFinalPricedCalls: number/)
@@ -31,32 +30,30 @@ test('the web client type exposes final and unfinalized counts separately', asyn
   assert.equal(/auditorCalculatedCalls\b/.test(source), false)
 })
 
-test('the financial tile is labelled as final deterministic billing', async () => {
+test('the financial tile is labelled as capped auditor money', async () => {
   const source = await webSource('pages/AuditMonitorPage.tsx')
-  assert.match(source, /label: 'Auditor final billing · audited calls'/)
+  assert.match(source, /label: 'Auditor capped amount · audited calls'/)
   assert.match(source, /value: money\(financials\.auditorFinalChargeInr\)/)
-  assert.match(source, /current final billing calculation/)
-  assert.match(source, /deterministic billing engine only, never a model projection/)
+  assert.match(source, /capped at KServe charge/)
 })
 
-test('the tile reports finalized and unfinalized audited calls distinctly', async () => {
+test('the tile reports priced and missing-duration audited calls distinctly', async () => {
   const source = await webSource('pages/AuditMonitorPage.tsx')
   assert.match(source, /financials\.auditorFinalPricedCalls\.toLocaleString/)
   assert.match(source, /financials\.auditorUnfinalizedCalls\.toLocaleString/)
-  assert.match(source, /not finalized, releasing no auditor charge/)
-  // An unfinalized audited call is an open item, not a settled one.
+  assert.match(source, /missing audited duration/)
+  // A missing-duration audited call is an open item, not a priced one.
   assert.match(
     source,
     /financials\.auditorUnfinalizedCalls === 0\s*\n?\s*\?\s*'good'\s*\n?\s*:\s*'warn'/,
   )
 })
 
-test('supporting copy separates final billing money from duration metadata', async () => {
+test('supporting copy states the per-call cap', async () => {
   const source = await webSource('pages/AuditMonitorPage.tsx')
-  assert.match(source, /release no auditor charge and are counted separately/)
   assert.match(
     source,
-    /duration\s*\n?\s*columns below are audit metadata for review—they are not a charge/,
+    /caps\s*\n?\s*each call at KServe/,
   )
 })
 

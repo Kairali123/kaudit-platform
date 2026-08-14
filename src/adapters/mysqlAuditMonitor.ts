@@ -1,5 +1,10 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
+import {
+  KSERVE_MINUTE_MS,
+  KSERVE_SHORT_CALL_CUTOFF_MS,
+} from '../billing/kserveRules.ts'
 import { calculateOpenAiAuditCost } from '../usage/openAiCost.ts'
+import { KSERVE_VENDOR_RATE_PER_MINUTE } from './mysqlKserveVendorBilled.ts'
 
 export interface AuditMonitorQuery {
   page: number
@@ -92,13 +97,13 @@ export interface AuditMonitorData {
       unpricedAiUsageRows: number
       kservePricedCalls: number
       kserveChargeInr: string
-      /** Audited calls carrying a current (non-superseded) final calculation. */
+      /** Audited calls with a capped auditor amount projection. */
       auditorFinalPricedCalls: number
-      /** Audited calls with no current final calculation, so no auditor money. */
+      /** Audited calls with no audited duration, so no auditor amount. */
       auditorUnfinalizedCalls: number
       /**
-       * Sum of the current final `kaudit_billing_calculation` amounts only.
-       * Deterministic billing-engine money; never a duration projection.
+       * Capped auditor amount: audited duration priced with locked KServe
+       * rounding, capped per call at KServe's own charge.
        */
       auditorFinalChargeInr: string
     }
@@ -272,36 +277,6 @@ const AUDITED_JOIN = `
   LEFT JOIN kaudit_audit_run ar ON ar.id = c.latest_audit_run_id
 `
 
-/**
- * The calculation that currently prices a call: `status = 'final'` and not
- * superseded by a newer calculation. At most one row per call, so joining it
- * counts a finalized amount exactly once even when a call carries several
- * calculation rows. A call with no such row is simply absent from the
- * relation, which is what releases no auditor money for it.
- */
-export const CURRENT_FINAL_BILLING_CALCULATION_SQL = `
-  SELECT
-    ranked.call_id,
-    ranked.total_amount
-  FROM (
-    SELECT
-      calculation.call_id,
-      calculation.total_amount,
-      ROW_NUMBER() OVER (
-        PARTITION BY calculation.call_id
-        ORDER BY calculation.calculated_at DESC, calculation.id DESC
-      ) AS current_rank
-    FROM kaudit_billing_calculation calculation
-    WHERE calculation.status = 'final'
-      AND NOT EXISTS (
-        SELECT 1
-        FROM kaudit_billing_calculation newer
-        WHERE newer.supersedes_calculation_id = calculation.id
-      )
-  ) ranked
-  WHERE ranked.current_rank = 1
-`
-
 /** Vendor-asserted billed minutes, one row per call. */
 const VENDOR_BILLED_MINUTES_SQL = `
   SELECT
@@ -320,38 +295,53 @@ const VENDOR_BILLED_MINUTES_SQL = `
  *
  *   * `kserve_charge` — what the vendor asserts, from its own billed-minutes
  *     evidence; and
- *   * `auditor_final_charge` — deterministic billing-engine money, summed
- *     only from current final `kaudit_billing_calculation` rows.
+ *   * `auditor_final_charge` — capped auditor projection: audited duration
+ *     priced with the locked KServe rounding rule, capped per call at KServe's
+ *     own charge.
  *
- * No money is synthesized here. A call with an audited duration but no final
- * calculation contributes nothing to `auditor_final_charge` and is counted in
- * `auditor_unfinalized_calls` instead, so the released total never mixes
- * finalized money with a provisional duration projection.
+ * The cap is applied before summing, so a call where the audited duration is
+ * longer than KServe's billed duration contributes KServe's charge, never a
+ * higher amount. A call with no audited duration is counted in
+ * `auditor_unfinalized_calls` instead.
  *
- * `scopedAuditedCallsSql` must yield one `id` column per audited call.
+ * `scopedAuditedCallsSql` must yield one `id` column and one
+ * `grace_adjusted_duration_ms` column per audited call.
  */
 export function auditedFinancialSummarySql(
   scopedAuditedCallsSql: string,
 ): string {
+  const projectedCharge = `CASE
+       WHEN scoped.grace_adjusted_duration_ms IS NULL THEN NULL
+       WHEN scoped.grace_adjusted_duration_ms = 0 THEN 0
+       WHEN scoped.grace_adjusted_duration_ms < ${KSERVE_SHORT_CALL_CUTOFF_MS}
+         THEN ${KSERVE_VENDOR_RATE_PER_MINUTE} / 2
+       ELSE CEIL(scoped.grace_adjusted_duration_ms / ${KSERVE_MINUTE_MS}.0)
+         * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+     END`
+  const cappedCharge = `CASE
+       WHEN ${projectedCharge} IS NULL THEN NULL
+       WHEN vendor.minutes_decimal IS NULL THEN ${projectedCharge}
+       WHEN ${projectedCharge}
+         <= vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+         THEN ${projectedCharge}
+       ELSE vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+     END`
   return `SELECT
      COUNT(*) AS audited_calls,
      SUM(vendor.minutes_decimal IS NOT NULL) AS kserve_priced_calls,
      COALESCE(SUM(vendor.minutes_decimal * 9.5), 0) AS kserve_charge,
-     SUM(final_calculation.total_amount IS NOT NULL)
+     SUM((${cappedCharge}) IS NOT NULL)
        AS auditor_final_priced_calls,
-     SUM(final_calculation.total_amount IS NULL)
+     SUM((${cappedCharge}) IS NULL)
        AS auditor_unfinalized_calls,
-     COALESCE(SUM(final_calculation.total_amount), 0)
+     COALESCE(SUM(${cappedCharge}), 0)
        AS auditor_final_charge
    FROM (
      ${scopedAuditedCallsSql}
    ) scoped
    LEFT JOIN (
      ${VENDOR_BILLED_MINUTES_SQL}
-   ) vendor ON vendor.call_id = scoped.id
-   LEFT JOIN (
-     ${CURRENT_FINAL_BILLING_CALCULATION_SQL}
-   ) final_calculation ON final_calculation.call_id = scoped.id`
+   ) vendor ON vendor.call_id = scoped.id`
 }
 
 const TASK_REFERENCE_SQL = `
@@ -600,7 +590,18 @@ export async function collectAuditMonitor(
   const [financialRows] =
     await pool.query<AuditedFinancialSummaryRow[]>(
       auditedFinancialSummarySql(
-        `SELECT DISTINCT c.id
+        `SELECT DISTINCT
+           c.id,
+           CASE
+             WHEN ma.conversation_end_ms IS NULL THEN NULL
+             ELSE LEAST(
+               COALESCE(
+                 ma.decoded_duration_ms,
+                 ma.conversation_end_ms + 60000
+               ),
+               ma.conversation_end_ms + 60000
+             )
+           END AS grace_adjusted_duration_ms
          ${AUDITED_JOIN}
          ${filters.sql}`,
       ),

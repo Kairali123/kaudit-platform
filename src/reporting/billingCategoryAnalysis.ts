@@ -22,9 +22,10 @@ import type { BillingMonthScope } from './billingMonth.ts'
  *     provider prose field on any shape below, and none is derivable from one.
  *   * Money is fixed-precision TEXT throughout, summed in integer arithmetic.
  *     No amount is ever produced by JavaScript floating point, and the only
- *     auditor money is the total of current final deterministic calculations.
- *     Audited calls without one are reported as unfinalized rather than as a
- *     verified zero.
+ *     auditor money is the capped audit projection produced by the read model:
+ *     audited duration priced by the locked rule and capped per call at KServe.
+ *     Audited calls without a priceable duration are reported separately rather
+ *     than as a verified zero.
  *   * Durations are metadata. They are never formatted, summed, or labelled as
  *     money, and the locked billing ruleset is not reproduced or altered here.
  */
@@ -237,12 +238,12 @@ export interface BillingCategoryKpi {
   /** Vendor-asserted money from final billed-minute evidence. */
   kserveChargeInr: string
   kservePricedCalls: number
-  /** Deterministic billing-engine money from current final calculations only. */
+  /** Capped auditor amount: never greater than KServe for the same call. */
   auditorFinalChargeInr: string
   auditorFinalPricedCalls: number
-  /** Audited calls with no current final calculation: no auditor money at all. */
+  /** Audited calls with no priceable audited duration: no auditor money. */
   auditorUnfinalizedCalls: number
-  /** False while any audited call in the category is still unfinalized. */
+  /** False while any audited call in the category still lacks an auditor amount. */
   auditorMoneyComplete: boolean
   kserveChargeTimeMs: number | null
   kserveChargeTimeMinutes: string | null
@@ -300,8 +301,8 @@ export const BILLING_CATEGORY_DURATION_BASIS: BillingCategoryDurationBasis = {
   aiAuditedDuration: 'grace_adjusted_audited_duration',
   aiAuditedDurationLabel:
     'AI-audited duration is the grace-adjusted audited duration: audit ' +
-    'metadata and a projection, not a charge, unless a current final billing ' +
-    'calculation prices the call.',
+    'metadata used for the capped auditor amount; the amount is capped per ' +
+    'call at KServe charge.',
   gap: 'kserve_billed_minus_ai_audited',
   gapLabel:
     'Gap is KServe billed duration minus AI-audited duration. The sign is ' +

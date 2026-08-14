@@ -1,5 +1,8 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
-import { CURRENT_FINAL_BILLING_CALCULATION_SQL } from './mysqlAuditMonitor.ts'
+import {
+  KSERVE_MINUTE_MS,
+  KSERVE_SHORT_CALL_CUTOFF_MS,
+} from '../billing/kserveRules.ts'
 import {
   KSERVE_VENDOR_RATE_PER_MINUTE,
   VENDOR_BILLED_MINUTES_SQL,
@@ -18,12 +21,13 @@ import {
  *
  *   * READ-ONLY SELECTs over Kaudit-owned `kaudit_*` tables only. Nothing here
  *     writes, locks, alters, or references the external voice-lead source table.
- *   * Money is never synthesized. The vendor figure comes from final
- *     vendor-asserted billed minutes — the provider's own billing evidence — and
- *     the auditor figure is summed ONLY from current (non-superseded) final
- *     `kaudit_billing_calculation` rows. A call with no such row contributes no
- *     auditor money and is counted as unfinalized instead, so an absent
- *     calculation can never be read as a verified zero.
+ *   * The vendor figure comes from final vendor-asserted billed minutes — the
+ *     provider's own billing evidence. The auditor figure is a capped audit
+ *     projection: the audited duration is priced with the locked KServe
+ *     rounding rule, then capped per call at the vendor charge. A call without
+ *     an audited duration contributes no auditor amount and is counted as
+ *     unpriced; this preserves the long-standing invariant that the auditor
+ *     amount cannot exceed KServe for the same call.
  *   * The row shape carries no recording URL, evidence hash, internal call id,
  *     transcript, source-row id, or provider prose. The only call identity is
  *     the approved task reference. Internal ids are used inside the statements
@@ -69,9 +73,9 @@ export interface BillingCategoryTotalsRow {
   /** Calls carrying final vendor billed-minute evidence. */
   kservePricedCalls: number
   kserveChargeInr: string
-  /** Calls priced by a current final deterministic calculation. */
+  /** Calls with a capped auditor amount projection. */
   auditorFinalPricedCalls: number
-  /** Audited calls with no current final calculation: no auditor money. */
+  /** Audited calls with no audited duration, so no auditor amount. */
   auditorUnfinalizedCalls: number
   auditorFinalChargeInr: string
   /** Null when no call in the category carried the duration at all. */
@@ -234,15 +238,35 @@ const TASK_REFERENCE_SQL = `
  * No rounding rule, cutoff, or minute ceiling from the locked billing ruleset is
  * reproduced here: these are durations for review, not a calculation.
  */
-const DURATION_COLUMNS_SQL = `
-    ROUND(vendor.minutes_decimal * 60000) AS kserve_charge_time_ms,
-    CASE
+const AI_AUDITED_DURATION_SQL = `CASE
       WHEN media.conversation_end_ms IS NULL THEN NULL
       WHEN media.decoded_duration_ms IS NOT NULL
        AND media.decoded_duration_ms < media.conversation_end_ms + 60000
         THEN media.decoded_duration_ms
       ELSE media.conversation_end_ms + 60000
-    END AS ai_audited_duration_ms`
+    END`
+
+const DURATION_COLUMNS_SQL = `
+    ROUND(vendor.minutes_decimal * 60000) AS kserve_charge_time_ms,
+    ${AI_AUDITED_DURATION_SQL} AS ai_audited_duration_ms`
+
+const AUDITOR_PROJECTED_CHARGE_SQL = `CASE
+      WHEN ${AI_AUDITED_DURATION_SQL} IS NULL THEN NULL
+      WHEN ${AI_AUDITED_DURATION_SQL} = 0 THEN 0
+      WHEN ${AI_AUDITED_DURATION_SQL} < ${KSERVE_SHORT_CALL_CUTOFF_MS}
+        THEN ${KSERVE_VENDOR_RATE_PER_MINUTE} / 2
+      ELSE CEIL(${AI_AUDITED_DURATION_SQL} / ${KSERVE_MINUTE_MS}.0)
+        * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+    END`
+
+const AUDITOR_CAPPED_CHARGE_SQL = `CASE
+      WHEN ${AUDITOR_PROJECTED_CHARGE_SQL} IS NULL THEN NULL
+      WHEN vendor.minutes_decimal IS NULL THEN ${AUDITOR_PROJECTED_CHARGE_SQL}
+      WHEN ${AUDITOR_PROJECTED_CHARGE_SQL}
+        <= vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+        THEN ${AUDITOR_PROJECTED_CHARGE_SQL}
+      ELSE vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+    END`
 
 /**
  * Audited calls in scope, one row per call, with every fact a KPI or a table row
@@ -252,8 +276,8 @@ const DURATION_COLUMNS_SQL = `
  * The single inner JOIN is what makes a call audited, and it carries both halves
  * of the invariant at once: there is no separate transcript join, because a
  * transcript only counts when it covers the same artifact the audited analysis
- * describes. Every other relation is a LEFT JOIN, so a missing cost, calculation,
- * recording flag or task reference reports as absent rather than dropping a call.
+ * describes. Every other relation is a LEFT JOIN, so a missing cost, recording
+ * flag or task reference reports as absent rather than dropping a call.
  */
 export function scopedAuditedCallsSql(
   select: string,
@@ -268,9 +292,6 @@ ${select}
    LEFT JOIN (
      ${VENDOR_BILLED_MINUTES_SQL}
    ) vendor ON vendor.call_id = c.id
-   LEFT JOIN (
-     ${CURRENT_FINAL_BILLING_CALCULATION_SQL}
-   ) final_calculation ON final_calculation.call_id = c.id
    LEFT JOIN (
      ${RECORDING_AVAILABILITY_SQL}
    ) recording ON recording.call_id = c.id
@@ -302,10 +323,11 @@ function periodFilter(scope: BillingCategoryScope): {
  *
  * The two money aggregates are kept apart on purpose: `kserve_charge_inr` is
  * what the vendor asserts from its own billed minutes, `auditor_final_charge_inr`
- * is deterministic billing-engine money. They are never added together, and no
- * duration column feeds either one. A duration SUM ignores nulls and yields null
- * when nothing carried the duration at all, so "not recorded" stays distinct
- * from a recorded zero.
+ * is the capped auditor projection. It is calculated per call before summing,
+ * so a long audited duration can never make the auditor amount exceed KServe's
+ * charge for that call. A duration SUM ignores nulls and yields null when
+ * nothing carried the duration at all, so "not recorded" stays distinct from a
+ * recorded zero.
  *
  * `scopedRowsSql` must yield one row per audited call with the columns
  * `category`, `kserve_charge_inr`, `auditor_final_amount`,
@@ -351,7 +373,7 @@ export function categoryTotalsRowsSql(filters: readonly string[]): string {
     `    c.canonical_outcome_code AS category,
     vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
       AS kserve_charge_inr,
-    final_calculation.total_amount AS auditor_final_amount,
+    ${AUDITOR_CAPPED_CHARGE_SQL} AS auditor_final_amount,
 ${DURATION_COLUMNS_SQL}`,
     filters,
   )
