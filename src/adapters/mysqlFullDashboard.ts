@@ -275,147 +275,256 @@ interface PeriodAmounts {
   currency: string
 }
 
-interface RequestedPeriod {
+export interface RequestedPeriod {
   key: string
+  /** Inclusive `YYYY-MM-DD` bill-period bounds. */
   start: string
   end: string
 }
 
-function addMoney(
-  total: bigint | null,
-  value: unknown,
-): bigint | null {
-  const scaled = toScaled(s(value))
-  if (scaled == null) return total
-  return (total ?? 0n) + scaled
-}
+// ---------------------------------------------------------------------------
+// Revenue snapshot reads
+// ---------------------------------------------------------------------------
 
-async function collectPeriodAmounts(
-  pool: Pool,
-  requested: RequestedPeriod[],
-): Promise<Map<string, PeriodAmounts>> {
-  const calculationShape = await one(
-    pool,
-    `SELECT COUNT(*) AS calculation_count,
-            COUNT(DISTINCT call_id) AS call_count
-     FROM kaudit_billing_calculation`,
-  )
-  const oneCalculationPerCall =
-    calculationShape != null &&
-    Number(calculationShape.calculation_count) ===
-      Number(calculationShape.call_count)
-  const currentCalculationCte = oneCalculationPerCall
-    ? `current_calculation AS (
-         SELECT call_id, total_amount, currency
-         FROM kaudit_billing_calculation
-       )`
-    : `ranked_calculation AS (
-         SELECT call_id, total_amount, currency,
-                ROW_NUMBER() OVER (
-                  PARTITION BY call_id
-                  ORDER BY calculated_at DESC, id DESC
-                ) AS row_rank
-         FROM kaudit_billing_calculation
-       ),
-       current_calculation AS (
-         SELECT call_id, total_amount, currency
-         FROM ranked_calculation
-         WHERE row_rank = 1
-       )`
-  const [
-    callDateRows,
-    billingRows,
-    providerRows,
-    rateRow,
-    invoiceRows,
-  ] = await Promise.all([
-    many(
-      pool,
-      `SELECT id AS call_id,
-              CAST(billing_period_date AS CHAR) AS billing_date
-       FROM kaudit_call
-       WHERE billing_period_date IS NOT NULL`,
-    ),
-    many(
-      pool,
-      `WITH ${currentCalculationCte}
-       SELECT call_id, CAST(total_amount AS CHAR) AS total_amount,
-              currency
-       FROM current_calculation`,
-    ),
-    many(
-      pool,
-      `SELECT call_id, CAST(minutes_decimal AS CHAR) AS minutes_decimal
-       FROM kaudit_provider_cost
-       WHERE provider_sku = 'vendor_asserted_billed_minutes'
-         AND minutes_decimal IS NOT NULL`,
-    ),
-    one(
-      pool,
-      `SELECT CAST(MAX(unit_rate) AS CHAR) AS per_minute_rate
-       FROM kaudit_billing_component_result
-       WHERE rule_code = 'PER_MINUTE_CEIL'`,
-    ),
-    many(
-      pool,
-      `SELECT CAST(period_start AS CHAR) AS period_start,
-              CAST(period_end AS CHAR) AS period_end,
-              CAST(subtotal_amount AS CHAR) AS invoice_subtotal,
-              currency
-       FROM kaudit_invoice
-       ORDER BY revision_no DESC, created_at DESC, id DESC`,
-    ),
-  ])
-  const invoiceByPeriod = new Map<string, any>()
-  for (const invoice of invoiceRows) {
-    const key = `${String(invoice.period_start)}:${String(invoice.period_end)}`
-    if (!invoiceByPeriod.has(key)) {
-      invoiceByPeriod.set(key, invoice)
+/**
+ * The snapshot cards ask for at most four cadences, each with its own prior
+ * period. Nothing legitimate reaches this adapter with more, so the bound is
+ * enforced rather than assumed: it is what keeps the requested-period relation
+ * — and therefore every result set below — small no matter what a caller does.
+ */
+export const MAX_REQUESTED_PERIODS = 8
+
+const PERIOD_KEY_PATTERN = /^[a-z]+:(current|prior)$/
+const ISO_DATE_PATTERN = /^\d{4}-\d{2}-\d{2}$/
+
+/**
+ * Validate the requested periods BEFORE any SQL is built.
+ *
+ * Only the row COUNT ever reaches the statement text; every key and every date
+ * is bound as a parameter. The checks here are therefore not an escaping
+ * mechanism — they are the bound on how much work the database is asked to do,
+ * and a guard against a malformed period silently matching nothing.
+ */
+export function validateRequestedPeriods(
+  requested: readonly RequestedPeriod[],
+): RequestedPeriod[] {
+  if (requested.length === 0) {
+    throw new RangeError('at least one billing period must be requested')
+  }
+  if (requested.length > MAX_REQUESTED_PERIODS) {
+    throw new RangeError(
+      `at most ${MAX_REQUESTED_PERIODS} billing periods may be requested`,
+    )
+  }
+  const seen = new Set<string>()
+  for (const period of requested) {
+    if (!PERIOD_KEY_PATTERN.test(period.key)) {
+      throw new RangeError(`unsupported period key: ${period.key}`)
+    }
+    if (seen.has(period.key)) {
+      throw new RangeError(`duplicate period key: ${period.key}`)
+    }
+    seen.add(period.key)
+    if (
+      !ISO_DATE_PATTERN.test(period.start) ||
+      !ISO_DATE_PATTERN.test(period.end)
+    ) {
+      throw new RangeError(`period ${period.key} must use YYYY-MM-DD bounds`)
+    }
+    if (period.start > period.end) {
+      throw new RangeError(`period ${period.key} ends before it starts`)
     }
   }
-  // Opaque call IDs are used only inside this adapter to avoid a pathological
-  // database join on the legacy schema. They are never returned by an API,
-  // logged, or exposed to the browser.
-  const callDateById = new Map(
-    callDateRows.map((row) => [
-      String(row.call_id),
-      String(row.billing_date),
-    ]),
-  )
+  return [...requested]
+}
+
+/** Key, start and end of every requested period, in statement order. */
+export function requestedPeriodParams(
+  periods: readonly RequestedPeriod[],
+): unknown[] {
+  return periods.flatMap((period) => [period.key, period.start, period.end])
+}
+
+/**
+ * The requested periods as a bounded, fully parameterized relation.
+ *
+ * `DATE(?)` rather than a bare placeholder so the bounds are compared as dates
+ * against the indexed `billing_period_date` column instead of as whatever type
+ * the engine infers for a projected placeholder. The only caller-derived thing
+ * in the statement text is the number of rows, which validation has already
+ * capped at `MAX_REQUESTED_PERIODS`.
+ */
+function requestedPeriodCte(periodCount: number): string {
+  const rows = Array.from(
+    { length: periodCount },
+    () => 'SELECT ?, DATE(?), DATE(?)',
+  ).join('\n            UNION ALL ')
+  return `requested_period (period_key, period_start, period_end) AS (
+            ${rows}
+          )`
+}
+
+/**
+ * Every call that falls in a requested period, tagged with that period.
+ *
+ * A call appearing in two overlapping requested periods (the weekly and the
+ * monthly card cover the same days) yields one row per period, which is what
+ * gives each period its own complete total. Call ids exist only inside this
+ * relation: they are joined on and grouped away, never projected.
+ */
+const PERIOD_CALL_CTE = `period_call AS (
+            SELECT requested.period_key AS period_key, c.id AS call_id
+            FROM requested_period requested
+            JOIN kaudit_call c
+              ON c.billing_period_date
+                 BETWEEN requested.period_start AND requested.period_end
+          )`
+
+/**
+ * Verified billable money per requested period: one row per period, or no row
+ * at all when the period holds no calculation.
+ *
+ * The latest calculation per call (`calculated_at DESC, id DESC`) is chosen
+ * once, over the calls in scope only, and joined at rank 1 — so several
+ * calculations for one call contribute exactly one amount, and the ranking
+ * never walks calculations belonging to months nobody asked for.
+ */
+export function verifiedPeriodTotalsSql(periodCount: number): string {
+  return `WITH ${requestedPeriodCte(periodCount)},
+          ${PERIOD_CALL_CTE},
+          scoped_calculation AS (
+            SELECT calculation.call_id AS call_id,
+                   calculation.total_amount AS total_amount,
+                   calculation.currency AS currency,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY calculation.call_id
+                     ORDER BY calculation.calculated_at DESC,
+                              calculation.id DESC
+                   ) AS revision_rank
+            FROM kaudit_billing_calculation calculation
+            WHERE calculation.call_id IN (SELECT call_id FROM period_call)
+          )
+          SELECT period_call.period_key AS period_key,
+                 CAST(SUM(latest.total_amount) AS CHAR) AS verified_amount,
+                 MAX(latest.currency) AS currency
+          FROM period_call
+          JOIN scoped_calculation latest
+            ON latest.call_id = period_call.call_id
+           AND latest.revision_rank = 1
+          GROUP BY period_call.period_key`
+}
+
+/**
+ * Vendor-asserted billed minutes per requested period: one row per period.
+ *
+ * Aggregated independently of the calculations above. Joining provider cost
+ * rows and calculations in one statement would multiply each provider row by
+ * the number of calculations on the call (and vice versa); summing each fact
+ * on its own and combining the two totals in Node cannot.
+ *
+ * The per-call grouping preserves this function's existing basis: every
+ * `vendor_asserted_billed_minutes` row with minutes recorded contributes.
+ */
+export function providerPeriodTotalsSql(periodCount: number): string {
+  return `WITH ${requestedPeriodCte(periodCount)},
+          ${PERIOD_CALL_CTE},
+          scoped_provider_cost AS (
+            SELECT cost.call_id AS call_id,
+                   SUM(cost.minutes_decimal) AS minutes_decimal
+            FROM kaudit_provider_cost cost
+            WHERE cost.provider_sku = 'vendor_asserted_billed_minutes'
+              AND cost.minutes_decimal IS NOT NULL
+              AND cost.call_id IN (SELECT call_id FROM period_call)
+            GROUP BY cost.call_id
+          )
+          SELECT period_call.period_key AS period_key,
+                 CAST(SUM(cost.minutes_decimal) AS CHAR) AS provider_minutes
+          FROM period_call
+          JOIN scoped_provider_cost cost
+            ON cost.call_id = period_call.call_id
+          GROUP BY period_call.period_key`
+}
+
+/**
+ * The latest invoice revision for each requested period's EXACT bounds: at
+ * most one row per period. An invoice covering different bounds is not this
+ * period's invoice and is never read.
+ */
+export function latestInvoicePeriodSql(periodCount: number): string {
+  return `WITH ${requestedPeriodCte(periodCount)},
+          scoped_invoice AS (
+            SELECT requested.period_key AS period_key,
+                   invoice.subtotal_amount AS subtotal_amount,
+                   invoice.currency AS currency,
+                   ROW_NUMBER() OVER (
+                     PARTITION BY requested.period_key
+                     ORDER BY invoice.revision_no DESC,
+                              invoice.created_at DESC,
+                              invoice.id DESC
+                   ) AS revision_rank
+            FROM requested_period requested
+            JOIN kaudit_invoice invoice
+              ON invoice.period_start = requested.period_start
+             AND invoice.period_end = requested.period_end
+          )
+          SELECT period_key,
+                 CAST(subtotal_amount AS CHAR) AS invoice_subtotal,
+                 currency
+          FROM scoped_invoice
+          WHERE revision_rank = 1`
+}
+
+/** The per-minute rate the provider claim is valued at. Always one row. */
+export const PER_MINUTE_RATE_SQL = `SELECT CAST(MAX(unit_rate) AS CHAR) AS per_minute_rate
+   FROM kaudit_billing_component_result
+   WHERE rule_code = 'PER_MINUTE_CEIL'`
+
+/**
+ * The amounts behind the snapshot cards, for at most eight requested periods.
+ *
+ * Four bounded reads whose cost follows the requested periods rather than the
+ * size of the tables: filtering, latest-revision selection and summation all
+ * happen in the database, and what crosses into Node is at most one aggregate
+ * row per period per read. No call id, no per-call row and no invoice identity
+ * is selected.
+ *
+ * Money stays exact throughout: the database returns fixed-precision DECIMAL
+ * text, and every arithmetic step here is BigInt at 1e8 scale.
+ */
+export async function collectPeriodAmounts(
+  pool: Pool,
+  requested: readonly RequestedPeriod[],
+): Promise<Map<string, PeriodAmounts>> {
+  const periods = validateRequestedPeriods(requested)
+  const params = requestedPeriodParams(periods)
+  const [verifiedRows, providerRows, rateRow, invoiceRows] = await Promise.all([
+    many(pool, verifiedPeriodTotalsSql(periods.length), params),
+    many(pool, providerPeriodTotalsSql(periods.length), params),
+    one(pool, PER_MINUTE_RATE_SQL),
+    many(pool, latestInvoicePeriodSql(periods.length), params),
+  ])
+  const byPeriod = (rows: any[]): Map<string, any> =>
+    new Map(rows.map((row) => [String(row.period_key), row]))
+  const verifiedByPeriod = byPeriod(verifiedRows)
+  const providerByPeriod = byPeriod(providerRows)
+  const invoiceByPeriod = byPeriod(invoiceRows)
   const rate = toScaled(s(rateRow?.per_minute_rate))
   return new Map(
-    requested.map((period) => {
-      let verified: bigint | null = null
-      let providerMinutes: bigint | null = null
-      let currency: string | null = null
-      for (const billing of billingRows) {
-        const date = callDateById.get(String(billing.call_id))
-        if (!date) continue
-        if (date < period.start || date > period.end) continue
-        verified = addMoney(verified, billing.total_amount)
-        currency = currency ?? s(billing.currency)
-      }
-      for (const provider of providerRows) {
-        const date = callDateById.get(String(provider.call_id))
-        if (!date) continue
-        if (date < period.start || date > period.end) continue
-        providerMinutes = addMoney(
-          providerMinutes,
-          provider.minutes_decimal,
-        )
-      }
+    periods.map((period) => {
+      const verifiedRow = verifiedByPeriod.get(period.key)
+      const verified = toScaled(s(verifiedRow?.verified_amount))
+      const providerMinutes = toScaled(
+        s(providerByPeriod.get(period.key)?.provider_minutes),
+      )
       const providerClaimed =
         providerMinutes == null || rate == null
           ? null
           : (providerMinutes * rate) / 100_000_000n
-      const invoice = invoiceByPeriod.get(
-        `${period.start}:${period.end}`,
-      )
+      const invoice = invoiceByPeriod.get(period.key)
       return [
         period.key,
         {
-          verified:
-            verified == null ? null : fromScaled(verified),
+          verified: verified == null ? null : fromScaled(verified),
           providerClaimed:
             providerClaimed == null
               ? null
@@ -425,7 +534,7 @@ async function collectPeriodAmounts(
           // the operational variance by IGST and round-off.
           invoiceSubtotal: s(invoice?.invoice_subtotal),
           currency:
-            s(invoice?.currency) ?? currency ?? 'INR',
+            s(invoice?.currency) ?? s(verifiedRow?.currency) ?? 'INR',
         },
       ]
     }),
