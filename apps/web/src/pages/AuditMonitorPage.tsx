@@ -228,14 +228,15 @@ export function AuditMonitorPage() {
             : 'warn',
       },
       {
-        label: 'Auditor calculated · audited calls',
-        value: money(financials.auditorChargeInr),
+        label: 'Auditor final billing · audited calls',
+        value: money(financials.auditorFinalChargeInr),
         sub:
-          `${financials.auditorCalculatedCalls.toLocaleString('en-IN')} of ` +
-          `${financials.scopedAuditedCalls.toLocaleString('en-IN')} audited calls priced from final billing or audited duration facts`,
+          `${financials.auditorFinalPricedCalls.toLocaleString('en-IN')} of ` +
+          `${financials.scopedAuditedCalls.toLocaleString('en-IN')} audited calls priced by a current final billing calculation · ` +
+          `${financials.auditorUnfinalizedCalls.toLocaleString('en-IN')} not finalized, releasing no auditor charge · ` +
+          'deterministic billing engine only, never a model projection',
         status:
-          financials.auditorCalculatedCalls ===
-          financials.scopedAuditedCalls
+          financials.auditorUnfinalizedCalls === 0
             ? 'good'
             : 'warn',
       },
@@ -261,7 +262,12 @@ export function AuditMonitorPage() {
       <Notice tone="warning" title="Automated consensus—not human ground truth">
         Use this view to inspect categories, confidence, durations, calculations,
         and stuck processing. Open Call is restricted to administrators and
-        every content access is logged.
+        every content access is logged. <strong>Auditor final billing</strong>{' '}
+        totals only calls that already carry a current final billing
+        calculation from the deterministic engine; audited calls without one
+        release no auditor charge and are counted separately. The duration
+        columns below are audit metadata for review—they are not a charge and
+        are never added to that total.
       </Notice>
       <AuditWorkerControl system="billing" />
       <MetricGrid tiles={tiles} />

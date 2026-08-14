@@ -296,8 +296,12 @@ export interface AuditMonitorData {
       unpricedAiUsageRows: number
       kservePricedCalls: number
       kserveChargeInr: string
-      auditorCalculatedCalls: number
-      auditorChargeInr: string
+      /** Audited calls carrying a current (non-superseded) final calculation. */
+      auditorFinalPricedCalls: number
+      /** Audited calls with no current final calculation, so no auditor money. */
+      auditorUnfinalizedCalls: number
+      /** Final deterministic billing money only; never a duration projection. */
+      auditorFinalChargeInr: string
     }
   }
   rows: AuditMonitorRow[]

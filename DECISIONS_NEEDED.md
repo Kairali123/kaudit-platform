@@ -4,6 +4,7 @@ Only unresolved decisions that affect the new standalone platform are listed her
 
 | ID | Decision | Owner | Release effect |
 |---|---|---|---|
+| D-03-B | Decide whether the vendor connected duration may cap the conversation-end projection, and on what time-origin normalization | Finance/Ops | Blocks any change to the locked duration ceiling |
 | D-07 | Name delegation adapter/system and approve its sandbox/security contract | Operations + Security | Blocks corrective-action delivery |
 | D-10 | Approve retention, redaction, legal-hold, unredacted-access, and recording-notice policy | Privacy/Legal + Security | Blocks production evidence/content processing |
 | D-12-A | Confirm fiscal/weekly boundaries, claim-source precedence, and trend dead-band | Finance/Ops | Blocks authoritative management snapshots |
@@ -32,3 +33,17 @@ version must be created with the locked ruleset hash, named finance approver, ap
 timestamp, and reviewed effective period before any real calculation can finalize.
 This is an approved implementation operation still awaiting supervised execution, not
 an open contract-interpretation decision.
+
+## Open duration-ceiling question (D-03-B)
+
+The Audit Monitor shows each audited call's vendor connected duration
+(`duration_without_ringing_sec`) next to the grace-adjusted duration derived from the
+model's conversation-end timestamp. The two can disagree, and not only because of the
+wrap-up grace: they may not share a time origin. The vendor duration excludes ringing,
+while the conversation-end timestamp is measured from the start of the decoded
+recording, which can include ringing and pre-connect audio.
+
+Finance must decide whether the connected duration may cap the conversation-end
+projection, and only after an explicit, verified time-origin normalization rule is
+approved. Until then the difference stays visible as non-monetary review metadata, no
+ceiling is applied to it, and the locked 2026-07-27 interpretation is unchanged.

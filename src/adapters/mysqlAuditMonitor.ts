@@ -92,8 +92,15 @@ export interface AuditMonitorData {
       unpricedAiUsageRows: number
       kservePricedCalls: number
       kserveChargeInr: string
-      auditorCalculatedCalls: number
-      auditorChargeInr: string
+      /** Audited calls carrying a current (non-superseded) final calculation. */
+      auditorFinalPricedCalls: number
+      /** Audited calls with no current final calculation, so no auditor money. */
+      auditorUnfinalizedCalls: number
+      /**
+       * Sum of the current final `kaudit_billing_calculation` amounts only.
+       * Deterministic billing-engine money; never a duration projection.
+       */
+      auditorFinalChargeInr: string
     }
   }
   rows: AuditMonitorRow[]
@@ -144,8 +151,9 @@ interface AuditedFinancialSummaryRow extends RowDataPacket {
   audited_calls: number | string
   kserve_priced_calls: number | string
   kserve_charge: number | string | null
-  auditor_calculated_calls: number | string
-  auditor_charge: number | string | null
+  auditor_final_priced_calls: number | string
+  auditor_unfinalized_calls: number | string
+  auditor_final_charge: number | string | null
 }
 
 interface DataRow extends RowDataPacket {
@@ -165,7 +173,6 @@ interface DataRow extends RowDataPacket {
   conversation_end_ms: number | string | null
   grace_adjusted_duration_ms: number | string | null
   vendor_connected_duration_ms: number | string | null
-  variance_duration_ms: number | string | null
   evidence_sha256: string | null
   last_verified_at: Date | string | null
   audited_at: Date | string | null
@@ -196,6 +203,23 @@ function count(row: CountRow | undefined): number {
 
 function nullableNumber(value: unknown): number | null {
   return value == null ? null : Number(value)
+}
+
+/**
+ * Non-monetary audit metadata: how far the vendor's connected duration sits
+ * from the grace-adjusted audited duration. It is a duration difference for
+ * review, never a charge, and stays null when either side is missing.
+ *
+ * Derived here rather than in SQL so the connected duration is read once per
+ * displayed row.
+ */
+export function durationVarianceMs(
+  vendorConnectedDurationMs: number | null,
+  graceAdjustedDurationMs: number | null,
+): number | null {
+  if (vendorConnectedDurationMs == null) return null
+  if (graceAdjustedDurationMs == null) return null
+  return vendorConnectedDurationMs - graceAdjustedDurationMs
 }
 
 function moneyDecimal(value: unknown): string {
@@ -247,6 +271,88 @@ const AUDITED_JOIN = `
    )
   LEFT JOIN kaudit_audit_run ar ON ar.id = c.latest_audit_run_id
 `
+
+/**
+ * The calculation that currently prices a call: `status = 'final'` and not
+ * superseded by a newer calculation. At most one row per call, so joining it
+ * counts a finalized amount exactly once even when a call carries several
+ * calculation rows. A call with no such row is simply absent from the
+ * relation, which is what releases no auditor money for it.
+ */
+export const CURRENT_FINAL_BILLING_CALCULATION_SQL = `
+  SELECT
+    ranked.call_id,
+    ranked.total_amount
+  FROM (
+    SELECT
+      calculation.call_id,
+      calculation.total_amount,
+      ROW_NUMBER() OVER (
+        PARTITION BY calculation.call_id
+        ORDER BY calculation.calculated_at DESC, calculation.id DESC
+      ) AS current_rank
+    FROM kaudit_billing_calculation calculation
+    WHERE calculation.status = 'final'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM kaudit_billing_calculation newer
+        WHERE newer.supersedes_calculation_id = calculation.id
+      )
+  ) ranked
+  WHERE ranked.current_rank = 1
+`
+
+/** Vendor-asserted billed minutes, one row per call. */
+const VENDOR_BILLED_MINUTES_SQL = `
+  SELECT
+    cost.call_id,
+    MAX(cost.minutes_decimal) AS minutes_decimal
+  FROM kaudit_provider_cost cost
+  WHERE cost.provider_sku = 'vendor_asserted_billed_minutes'
+    AND cost.is_final = 1
+  GROUP BY cost.call_id
+`
+
+/**
+ * Audited-call financial summary.
+ *
+ * Two independent aggregates over the same scoped calls, never blended:
+ *
+ *   * `kserve_charge` — what the vendor asserts, from its own billed-minutes
+ *     evidence; and
+ *   * `auditor_final_charge` — deterministic billing-engine money, summed
+ *     only from current final `kaudit_billing_calculation` rows.
+ *
+ * No money is synthesized here. A call with an audited duration but no final
+ * calculation contributes nothing to `auditor_final_charge` and is counted in
+ * `auditor_unfinalized_calls` instead, so the released total never mixes
+ * finalized money with a provisional duration projection.
+ *
+ * `scopedAuditedCallsSql` must yield one `id` column per audited call.
+ */
+export function auditedFinancialSummarySql(
+  scopedAuditedCallsSql: string,
+): string {
+  return `SELECT
+     COUNT(*) AS audited_calls,
+     SUM(vendor.minutes_decimal IS NOT NULL) AS kserve_priced_calls,
+     COALESCE(SUM(vendor.minutes_decimal * 9.5), 0) AS kserve_charge,
+     SUM(final_calculation.total_amount IS NOT NULL)
+       AS auditor_final_priced_calls,
+     SUM(final_calculation.total_amount IS NULL)
+       AS auditor_unfinalized_calls,
+     COALESCE(SUM(final_calculation.total_amount), 0)
+       AS auditor_final_charge
+   FROM (
+     ${scopedAuditedCallsSql}
+   ) scoped
+   LEFT JOIN (
+     ${VENDOR_BILLED_MINUTES_SQL}
+   ) vendor ON vendor.call_id = scoped.id
+   LEFT JOIN (
+     ${CURRENT_FINAL_BILLING_CALCULATION_SQL}
+   ) final_calculation ON final_calculation.call_id = scoped.id`
+}
 
 const TASK_REFERENCE_SQL = `
   COALESCE(
@@ -493,88 +599,11 @@ export async function collectAuditMonitor(
   }
   const [financialRows] =
     await pool.query<AuditedFinancialSummaryRow[]>(
-      `SELECT
-         COUNT(*) AS audited_calls,
-         SUM(scoped.vendor_amount IS NOT NULL)
-           AS kserve_priced_calls,
-         COALESCE(SUM(scoped.vendor_amount), 0)
-           AS kserve_charge,
-         SUM(scoped.auditor_amount IS NOT NULL)
-           AS auditor_calculated_calls,
-         COALESCE(SUM(scoped.auditor_amount), 0)
-           AS auditor_charge
-       FROM (
-         SELECT
-           facts.id,
-           facts.vendor_amount,
-           COALESCE(
-             facts.final_auditor_amount,
-             CASE
-               -- A completed v2 audit with no customer speech is a
-               -- deterministic zero-charge projection. Older records with no
-               -- conversation-end fact remain unpriced instead of being
-               -- silently converted to zero.
-               WHEN facts.conversation_end_ms IS NULL THEN
-                 CASE
-                   WHEN facts.engine_version =
-                          'kairali-independent-reaudit/2.0.0'
-                    AND COALESCE(facts.customer_speech_ms, 0) = 0
-                   THEN CAST(0 AS DECIMAL(20, 8))
-                   ELSE NULL
-                 END
-               WHEN facts.adjusted_chargeable_ms = 0
-                 THEN CAST(0 AS DECIMAL(20, 8))
-               WHEN facts.adjusted_chargeable_ms < 30000
-                 THEN CAST(4.75 AS DECIMAL(20, 8))
-               ELSE CAST(
-                 CEIL(facts.adjusted_chargeable_ms / 60000) * 9.5
-                 AS DECIMAL(20, 8)
-               )
-             END
-           ) AS auditor_amount
-         FROM (
-           SELECT DISTINCT
-             c.id,
-             ma.conversation_end_ms,
-             ma.customer_speech_ms,
-             ar.engine_version,
-             CASE
-               WHEN ma.conversation_end_ms IS NULL THEN NULL
-               ELSE LEAST(
-                 COALESCE(
-                   ma.decoded_duration_ms,
-                   ma.conversation_end_ms + 60000
-                 ),
-                 ma.conversation_end_ms + 60000
-               )
-             END AS adjusted_chargeable_ms,
-             (
-               SELECT MAX(cost.minutes_decimal) * 9.5
-               FROM kaudit_provider_cost cost
-               WHERE cost.call_id = c.id
-                 AND cost.provider_sku =
-                       'vendor_asserted_billed_minutes'
-                 AND cost.is_final = 1
-             ) AS vendor_amount,
-             (
-               SELECT calculation.total_amount
-               FROM kaudit_billing_calculation calculation
-               WHERE calculation.call_id = c.id
-                 AND calculation.status = 'final'
-                 AND NOT EXISTS (
-                   SELECT 1
-                   FROM kaudit_billing_calculation newer
-                   WHERE newer.supersedes_calculation_id =
-                         calculation.id
-                 )
-               ORDER BY calculation.calculated_at DESC,
-                        calculation.id DESC
-               LIMIT 1
-             ) AS final_auditor_amount
-           ${AUDITED_JOIN}
-           ${filters.sql}
-         ) facts
-       ) scoped`,
+      auditedFinancialSummarySql(
+        `SELECT DISTINCT c.id
+         ${AUDITED_JOIN}
+         ${filters.sql}`,
+      ),
       filters.params,
     )
   const financial = financialRows[0]
@@ -629,24 +658,15 @@ export async function collectAuditMonitor(
            ma.conversation_end_ms + 60000
          )
        END AS grace_adjusted_duration_ms,
+       -- Read once per displayed row. The difference against the
+       -- grace-adjusted duration is derived from these two columns after the
+       -- fact instead of repeating the lookup.
        (
          SELECT ROUND(MAX(pc.quantity_decimal) * 1000)
          FROM kaudit_provider_cost pc
          WHERE pc.call_id = c.id
            AND pc.provider_sku = 'duration_without_ringing_sec'
        ) AS vendor_connected_duration_ms,
-       CASE
-         WHEN ma.conversation_end_ms IS NULL THEN NULL
-         ELSE (
-           SELECT ROUND(MAX(pc.quantity_decimal) * 1000)
-           FROM kaudit_provider_cost pc
-           WHERE pc.call_id = c.id
-             AND pc.provider_sku = 'duration_without_ringing_sec'
-         ) - LEAST(
-           COALESCE(ma.decoded_duration_ms, ma.conversation_end_ms + 60000),
-           ma.conversation_end_ms + 60000
-         )
-       END AS variance_duration_ms,
        ca.sha256 AS evidence_sha256,
        ca.last_verified_at,
        COALESCE(ar.completed_at, ma.created_at) AS audited_at,
@@ -873,49 +893,59 @@ export async function collectAuditMonitor(
         kserveChargeInr: moneyDecimal(
           financial?.kserve_charge,
         ),
-        auditorCalculatedCalls: Number(
-          financial?.auditor_calculated_calls || 0,
+        auditorFinalPricedCalls: Number(
+          financial?.auditor_final_priced_calls || 0,
         ),
-        auditorChargeInr: moneyDecimal(
-          financial?.auditor_charge,
+        auditorUnfinalizedCalls: Number(
+          financial?.auditor_unfinalized_calls || 0,
+        ),
+        auditorFinalChargeInr: moneyDecimal(
+          financial?.auditor_final_charge,
         ),
       },
     },
-    rows: rowResult.map((row) => ({
-      callReference: row.call_reference,
-      billingPeriodDate: isoDate(row.billing_period_date),
-      category: row.category,
-      outcomeTaxonomyVersion: row.outcome_taxonomy_version,
-      confidence: row.confidence,
-      confirmationStatus: row.confirmation_status || 'model_output',
-      language: row.language || 'unknown',
-      asrProvider: row.provider_name,
-      asrModel: row.model_name,
-      asrModelVersion: row.model_version,
-      auditEngineVersion: row.engine_version,
-      recordedDurationMs: nullableNumber(row.decoded_duration_ms),
-      speechDurationMs: nullableNumber(row.speech_ms),
-      conversationEndMs: nullableNumber(row.conversation_end_ms),
-      graceAdjustedDurationMs: nullableNumber(
+    rows: rowResult.map((row) => {
+      const graceAdjustedDurationMs = nullableNumber(
         row.grace_adjusted_duration_ms,
-      ),
-      vendorConnectedDurationMs: nullableNumber(
+      )
+      const vendorConnectedDurationMs = nullableNumber(
         row.vendor_connected_duration_ms,
-      ),
-      varianceDurationMs: nullableNumber(row.variance_duration_ms),
-      evidenceHashRecorded: Boolean(row.evidence_sha256),
-      lastEvidenceVerifiedAt: isoDate(row.last_verified_at),
-      auditedAt: isoDate(row.audited_at),
-      aiUsage: {
-        inputTokens: nullableNumber(row.ai_input_tokens),
-        outputTokens: nullableNumber(row.ai_output_tokens),
-        totalTokens: nullableNumber(row.ai_total_tokens),
-        audioSeconds:
-          row.ai_audio_seconds == null
-            ? null
-            : Number(row.ai_audio_seconds).toFixed(3),
-      },
-    })),
+      )
+      return {
+        callReference: row.call_reference,
+        billingPeriodDate: isoDate(row.billing_period_date),
+        category: row.category,
+        outcomeTaxonomyVersion: row.outcome_taxonomy_version,
+        confidence: row.confidence,
+        confirmationStatus: row.confirmation_status || 'model_output',
+        language: row.language || 'unknown',
+        asrProvider: row.provider_name,
+        asrModel: row.model_name,
+        asrModelVersion: row.model_version,
+        auditEngineVersion: row.engine_version,
+        recordedDurationMs: nullableNumber(row.decoded_duration_ms),
+        speechDurationMs: nullableNumber(row.speech_ms),
+        conversationEndMs: nullableNumber(row.conversation_end_ms),
+        graceAdjustedDurationMs,
+        vendorConnectedDurationMs,
+        varianceDurationMs: durationVarianceMs(
+          vendorConnectedDurationMs,
+          graceAdjustedDurationMs,
+        ),
+        evidenceHashRecorded: Boolean(row.evidence_sha256),
+        lastEvidenceVerifiedAt: isoDate(row.last_verified_at),
+        auditedAt: isoDate(row.audited_at),
+        aiUsage: {
+          inputTokens: nullableNumber(row.ai_input_tokens),
+          outputTokens: nullableNumber(row.ai_output_tokens),
+          totalTokens: nullableNumber(row.ai_total_tokens),
+          audioSeconds:
+            row.ai_audio_seconds == null
+              ? null
+              : Number(row.ai_audio_seconds).toFixed(3),
+        },
+      }
+    }),
     pendingRows: pendingRowResult.map(mapQueueRow),
     noRecordingRows: noRecordingRowResult.map(mapQueueRow),
     pagination: pagination(
