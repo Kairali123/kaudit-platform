@@ -80,6 +80,16 @@ import {
 } from '../auditWorkers/dispatcher.ts'
 import { collectBillingMonths } from '../adapters/mysqlBillingMonths.ts'
 import {
+  createMysqlBillingCategoryAnalysisRepository,
+  type BillingCategoryAnalysisPort,
+} from '../adapters/mysqlBillingCategoryAnalysis.ts'
+import {
+  buildBillingCategoryAnalysis,
+  parseBillingCategoryAnalysisQuery,
+  BILLING_CATEGORY_ANALYSIS_PAGE_ROUTE,
+  BILLING_CATEGORY_ANALYSIS_ROUTE,
+} from '../reporting/billingCategoryAnalysis.ts'
+import {
   collectReportEmailDeliveryStatus,
 } from '../adapters/mysqlReportEmail.ts'
 import { parseBillingMonth } from '../reporting/billingMonth.ts'
@@ -183,6 +193,12 @@ interface Dependencies {
    */
   callAuditReporting?: CallAuditReportingRepository
   /**
+   * Admin-only Billing Audit category analysis. Defaults to the read-only MySQL
+   * read model over the same pool; injectable so a server test can exercise the
+   * route against synthetic rows without a database.
+   */
+  billingCategoryAnalysis?: BillingCategoryAnalysisPort
+  /**
    * Admin-only Call Audit settings reads. Defaults to the read-only MySQL
    * repository over the same pool; injectable for tests.
    */
@@ -212,6 +228,7 @@ const APP_ROUTES = new Set([
   '/evidence',
   '/findings',
   '/billing',
+  BILLING_CATEGORY_ANALYSIS_PAGE_ROUTE,
   '/reports',
   '/operations',
   '/audits',
@@ -229,6 +246,7 @@ const API_ROUTES = new Set([
   '/api/v1/evidence',
   '/api/v1/findings',
   '/api/v1/billing',
+  BILLING_CATEGORY_ANALYSIS_ROUTE,
   '/api/v1/reports',
   '/api/v1/operations',
   '/api/v1/audits',
@@ -1272,6 +1290,20 @@ async function apiResponse(
       billing: billingView,
     }
   }
+  if (pathname === BILLING_CATEGORY_ANALYSIS_ROUTE) {
+    // ADMINISTRATOR-ONLY. The response carries per-call task references and
+    // drives the restricted admin review action, so it takes the audit
+    // inspection gate rather than the aggregate metrics permission, and the
+    // read model returns no recording reference, hash, or internal id.
+    const repository =
+      dependencies.billingCategoryAnalysis ??
+      createMysqlBillingCategoryAnalysisRepository(dependencies.pool)
+    return buildBillingCategoryAnalysis(
+      repository,
+      parseBillingCategoryAnalysisQuery(url.searchParams),
+      period,
+    )
+  }
   if (pathname === '/api/v1/reports') {
     const [billing, snapshots, emailDelivery] = await Promise.all([
       collectBilling(dependencies.pool, period),
@@ -1450,6 +1482,12 @@ function apiAction(pathname: string): string {
   if (pathname === CALL_AUDIT_REPORT_ROUTE) {
     return 'call_audit_report.read'
   }
+  // Named explicitly: the trailing-segment default would record it as the
+  // shapeless 'categories.read', and an admin read of per-call references has
+  // to be distinguishable in the access log.
+  if (pathname === BILLING_CATEGORY_ANALYSIS_ROUTE) {
+    return 'billing_category_analysis.read'
+  }
   if (pathname === CALL_AUDIT_SETTINGS_ROUTE) {
     return 'call_audit_settings.read'
   }
@@ -1487,7 +1525,9 @@ function apiPermission(pathname: string): string {
     pathname === '/api/v1/audits' ||
     pathname === '/api/v1/audit-call' ||
     pathname === '/api/v1/audit-audio' ||
-    pathname === CALL_AUDIT_REPORT_ROUTE
+    pathname === CALL_AUDIT_REPORT_ROUTE ||
+    // Category analysis exposes per-call references and the review action.
+    pathname === BILLING_CATEGORY_ANALYSIS_ROUTE
   ) return 'audit:inspect'
   if (pathname.startsWith('/api/v1/imports')) return 'import:write'
   return pathname === '/api/v1/reports'
@@ -1534,6 +1574,7 @@ function cacheTtlMs(pathname: string): number {
   if (pathname === '/api/v1/audit-workers') return 0
   if (
     pathname === '/api/v1/audits' ||
+    pathname === BILLING_CATEGORY_ANALYSIS_ROUTE ||
     pathname === '/api/v1/imports'
   ) {
     return 5_000
@@ -2496,7 +2537,10 @@ export function createEnterpriseDashboardServer(
         // below still takes its own, stricter gate.
         url.pathname === '/audits' ||
           url.pathname === '/audits/call' ||
-          url.pathname === CALL_AUDIT_PAGE_ROUTE
+          url.pathname === CALL_AUDIT_PAGE_ROUTE ||
+          // The category page renders per-call references and links into the
+          // restricted review route, so the page takes the API's own gate.
+          url.pathname === BILLING_CATEGORY_ANALYSIS_PAGE_ROUTE
           ? 'audit:inspect'
           : url.pathname === '/users'
             ? 'user:manage'

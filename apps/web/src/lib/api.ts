@@ -320,6 +320,88 @@ export interface AuditMonitorData {
   contentBoundary: string
 }
 
+/**
+ * Admin-only Billing Audit CATEGORY ANALYSIS.
+ *
+ * Mirrors the server DTO in `src/reporting/billingCategoryAnalysis.ts`, which is
+ * assembled by explicit field copy. There is deliberately no recording URL,
+ * evidence hash, internal call id, transcript, or source-row id here: the only
+ * call identity is the approved task reference, and the restricted review route
+ * remains the single way to reach call content.
+ *
+ * Money is fixed-precision decimal TEXT and stays text. The auditor total is
+ * summed from current final deterministic calculations only; audited calls
+ * without one are reported as unfinalized rather than as a verified zero.
+ */
+export interface BillingCategoryKpi {
+  /** Canonical outcome code, or `all` for the aggregate selection. */
+  category: string
+  label: string
+  isAllCategories: boolean
+  auditedCallCount: number
+  /** Vendor-asserted money from final billed-minute evidence. */
+  kserveChargeInr: string
+  kservePricedCalls: number
+  /** Deterministic billing-engine money only. Never a duration projection. */
+  auditorFinalChargeInr: string
+  auditorFinalPricedCalls: number
+  auditorUnfinalizedCalls: number
+  auditorMoneyComplete: boolean
+  kserveChargeTimeMs: number | null
+  kserveChargeTimeMinutes: string | null
+  kserveChargeTimeCalls: number
+  aiAuditedDurationMs: number | null
+  aiAuditedDurationMinutes: string | null
+  aiAuditedDurationCalls: number
+  /** Signed: negative means more time was audited than billed. */
+  gapMs: number | null
+  gapMinutes: string | null
+  comparableCalls: number
+}
+
+export interface BillingCategoryCall {
+  callReference: string
+  callDate: string | null
+  callStartAt: string | null
+  callEndAt: string | null
+  category: string
+  kserveChargeTimeMs: number | null
+  kserveChargeTimeMinutes: string | null
+  aiAuditedDurationMs: number | null
+  aiAuditedDurationMinutes: string | null
+  gapMs: number | null
+  gapMinutes: string | null
+  /** Presence signal for the review action; never a recording reference. */
+  recordingAvailable: boolean
+}
+
+export interface BillingCategoryAnalysisData {
+  generatedAt: string
+  title: string
+  contentBoundary: string
+  scope: {
+    month: string | null
+    monthLabel: string
+    category: string
+    categoryLabel: string
+    pageSize: number
+  }
+  durationBasis: {
+    kserveChargeTime: string
+    kserveChargeTimeLabel: string
+    aiAuditedDuration: string
+    aiAuditedDurationLabel: string
+    gap: string
+    gapLabel: string
+  }
+  categories: BillingCategoryKpi[]
+  rows: BillingCategoryCall[]
+  /** Totals for the entire selected scope, never for the current page alone. */
+  totals: BillingCategoryKpi & { basis: 'entire_selected_scope' }
+  pagination: AuditPagination
+  authority: 'automated'
+}
+
 export interface AdminCallDetailData {
   generatedAt: string
   call: {

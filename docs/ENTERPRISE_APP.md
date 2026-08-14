@@ -15,6 +15,7 @@ per-call charge calculation when both role and sensitivity checks pass.
 | `/evidence` | Ingestion, references, hash baselines, integrity events | call/evidence/audit aggregates |
 | `/findings` | Finding totals, confidence, catalog, origins, decisions | audit-run/finding aggregates |
 | `/billing` | Calculation, claim, variance, rate card, reconciliation | billing/rate-card/reconciliation aggregates |
+| `/billing/categories` | Admin-only category analysis: per-category audited counts, KServe charge, auditor final charge, and duration gap, with a server-paged call table | audited-call, provider-cost, and final-calculation aggregates |
 | `/reports` | D-12 summaries plus monthly email-delivery status | live period aggregates and report outbox |
 | `/operations` | Outbox, inbox, jobs, idempotency, access-audit health | reliability/security aggregates |
 | `/audits` | Three admin queues: audited, pending audit, and no recording; restricted review links where applicable | audit/finding/billing metadata |
@@ -40,6 +41,32 @@ findings, billing, or snapshot payloads.
 - Per-call KServe charges are derived from sheet minutes because KServe supplies
   aggregate invoice lines, not per-task invoice amounts. Per-call values exclude
   cycle-level IGST, TDS, and round-off.
+
+## Category analysis
+
+- `/billing/categories` and `/api/v1/billing/categories` require `audit:inspect`,
+  which is granted to the `admin` role only, because the table lists per-call
+  task references and links into the restricted review route. Both the page and
+  the API are refused for anyone else, and every read is access-audited as
+  `billing_category_analysis.read`.
+- Selecting a KPI re-queries the table; paging is server-side and bounded
+  (`page`, `pageSize` 10–100, `category`, `month`), with total rows, total pages,
+  and a deterministic order returned.
+- **KServe charge time** is the final vendor-asserted billed minutes — the time
+  the vendor charges for. **AI-audited duration** is the grace-adjusted audited
+  duration: audit metadata and a projection, not a charge, unless a current final
+  billing calculation prices the call. **Gap** is KServe billed duration minus
+  AI-audited duration, sign preserved.
+- **KServe charge** money comes from the vendor's own billed-minute evidence.
+  **Auditor amount** totals only current, non-superseded final
+  `kaudit_billing_calculation` rows; audited calls without one release no auditor
+  charge and are reported as unfinalized rather than as a verified zero. Amounts
+  stay fixed-precision decimal text end to end.
+- The footer totals cover the entire selected category for the month, not the
+  current page. Columns that cannot be summed are labelled, and a duration
+  nobody recorded stays blank rather than becoming `0.00`.
+- The response carries no recording URL, evidence hash, internal call ID,
+  transcript, source-row ID, or provider content.
 
 ## Login behavior
 

@@ -6,6 +6,7 @@ import {
   FileChartColumn,
   Gauge,
   Home,
+  Layers,
   LogOut,
   Menu,
   PhoneCall,
@@ -92,7 +93,19 @@ const NAVIGATION_GROUPS: NavGroup[] = [
     items: [
       { to: '/evidence', label: 'Calls & evidence', icon: AudioLines },
       { to: '/findings', label: 'Findings', icon: Sparkles },
-      { to: '/billing', label: 'Billing', icon: CircleDollarSign },
+      // `end` keeps Billing from lighting up on the category child route.
+      {
+        to: '/billing',
+        label: 'Billing',
+        icon: CircleDollarSign,
+        end: true,
+      },
+      {
+        to: '/billing/categories',
+        label: 'Category analysis',
+        icon: Layers,
+        admin: true,
+      },
       { to: '/reports', label: 'Reports', icon: FileChartColumn },
       { to: '/operations', label: 'Operations', icon: Activity },
       {

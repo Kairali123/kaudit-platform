@@ -1,6 +1,7 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
 import { BillingPage } from './pages/BillingPage'
+import { BillingCategoryAnalysisPage } from './pages/BillingCategoryAnalysisPage'
 import { EvidencePage } from './pages/EvidencePage'
 import { FindingsPage } from './pages/FindingsPage'
 import { HomePage } from './pages/HomePage'
@@ -25,6 +26,11 @@ export function App() {
         <Route path="evidence" element={<EvidencePage />} />
         <Route path="findings" element={<FindingsPage />} />
         <Route path="billing" element={<BillingPage />} />
+        {/* Admin-only category analysis; the server gates it on audit:inspect. */}
+        <Route
+          path="billing/categories"
+          element={<BillingCategoryAnalysisPage />}
+        />
         <Route path="reports" element={<ReportsPage />} />
         {/* Admin-only sanitized reporting; the server gates it on audit:inspect. */}
         <Route path="call-audit" element={<CallAuditReportPage />} />
