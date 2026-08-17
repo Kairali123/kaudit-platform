@@ -51,9 +51,9 @@ speaker roles from conversational meaning before choosing a category:
   question, explanation, acknowledgement, or closing.
 - Put genuinely ambiguous blocks in unclear_block_numbers. Customer and unclear
   blocks must never overlap.
-- customer_spoke must be true exactly when customer_block_numbers is non-empty.
-  The final customer-exchange timestamp must be the end timestamp of one of those
-  customer blocks.
+- The deterministic engine derives whether the customer spoke and the final
+  customer-exchange timestamp from customer_block_numbers. Do not return a
+  separate boolean or timestamp for those facts.
 
 CATEGORY GUARDRAILS
 - USER_SILENCE requires at least one positively identified Saanvi block and zero
@@ -72,10 +72,9 @@ The female Kairali AI agent is named Saanvi. Calls may be English, Hindi, Hingli
 Malayalam, or another detected language.
 
 Input is a numbered, timestamped transcript with no speaker labels. Identify customer
-blocks from conversational cues. The final meaningful customer exchange is the END
-timestamp of the last meaningful customer response. Saanvi's natural closing words are
-handled later by a deterministic 60-second billing grace rule; do not extend the customer
-timestamp yourself. If the customer never meaningfully spoke, return null.
+blocks from conversational cues. The deterministic engine uses the END timestamp of the
+last identified customer block as the final meaningful customer exchange. Saanvi's
+natural closing words are handled later by a deterministic 60-second billing grace rule.
 
 ${REAUDIT_SPEAKER_ATTRIBUTION_RULES}
 
@@ -94,10 +93,10 @@ export const REAUDIT_CLASSIFIER_RULESET_SHA256 = canonicalJsonSha256({
   model: REAUDIT_CLASSIFICATION_MODEL,
   prompt: REAUDIT_CLASSIFIER_PROMPT,
   categories: REAUDIT_CATEGORIES,
-  outputSchemaVersion: '1',
+  outputSchemaVersion: '2',
 } as unknown as JsonValue)
 
-const outputSchema = {
+export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
   name: 'kairali_call_audit',
   strict: true,
   schema: {
@@ -114,10 +113,6 @@ const outputSchema = {
         type: 'array',
         items: { type: 'integer', minimum: 1 },
       },
-      customer_spoke: { type: 'boolean' },
-      last_meaningful_customer_exchange_sec: {
-        anyOf: [{ type: 'number', minimum: 0 }, { type: 'null' }],
-      },
       remarks: { type: 'string', maxLength: 1200 },
       dispute_recommended: { type: 'boolean' },
     },
@@ -126,8 +121,6 @@ const outputSchema = {
       'confidence',
       'customer_block_numbers',
       'unclear_block_numbers',
-      'customer_spoke',
-      'last_meaningful_customer_exchange_sec',
       'remarks',
       'dispute_recommended',
     ],
@@ -230,7 +223,7 @@ export function createOpenAiReaudit(apiKey: string): ReauditAi {
         temperature: 0,
         response_format: {
           type: 'json_schema',
-          json_schema: outputSchema,
+          json_schema: REAUDIT_CLASSIFIER_OUTPUT_SCHEMA,
         },
         messages: [
           { role: 'system', content: REAUDIT_CLASSIFIER_PROMPT },
@@ -261,11 +254,13 @@ ${transcript}`,
         confidence: number
         customer_block_numbers: number[]
         unclear_block_numbers: number[]
-        customer_spoke: boolean
-        last_meaningful_customer_exchange_sec: number | null
         remarks: string
         dispute_recommended: boolean
       }
+      const customerBlocks = new Set(raw.customer_block_numbers)
+      const customerEnds = options.blocks
+        .filter((block) => customerBlocks.has(block.number))
+        .map((block) => block.endMs)
       return {
         model: {
           provider: 'openai',
@@ -276,13 +271,9 @@ ${transcript}`,
         confidence: fixedConfidence(raw.confidence),
         customerBlockNumbers: raw.customer_block_numbers,
         unclearBlockNumbers: raw.unclear_block_numbers,
-        customerSpoke: raw.customer_spoke,
+        customerSpoke: customerEnds.length > 0,
         lastMeaningfulCustomerExchangeMs:
-          raw.last_meaningful_customer_exchange_sec == null
-            ? null
-            : Math.round(
-                raw.last_meaningful_customer_exchange_sec * 1000,
-              ),
+          customerEnds.length > 0 ? Math.max(...customerEnds) : null,
         remarks: raw.remarks,
         disputeRecommended: raw.dispute_recommended,
         usage: {

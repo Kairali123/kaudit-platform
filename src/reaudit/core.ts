@@ -18,8 +18,8 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.0.0'
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.1.0'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.1.0'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.2.0'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
@@ -84,33 +84,17 @@ export function validateClassification(
   if (customerBlockNumbers.some((number) => unclearBlocks.has(number))) {
     throw new Error('Customer and unclear speech blocks must not overlap')
   }
-  if (raw.customerSpoke !== (customerBlockNumbers.length > 0)) {
-    throw new Error(
-      'Customer-spoke result must match identified customer speech blocks',
-    )
-  }
-  const last = raw.lastMeaningfulCustomerExchangeMs
-  if (
-    last != null &&
-    (!Number.isSafeInteger(last) || last < 0 || last > recordedDurationMs)
-  ) {
-    throw new Error('Classifier conversation end falls outside the recording')
-  }
-  if (raw.customerSpoke && last == null) {
-    throw new Error('Customer-spoke result requires a conversation-end timestamp')
-  }
-  if (!raw.customerSpoke && last != null) {
-    throw new Error('No-customer-speech result cannot carry a conversation end')
-  }
-  if (
-    last != null &&
-    !blocks.some(
-      (block) => customerBlocks.has(block.number) && block.endMs === last,
-    )
-  ) {
-    throw new Error(
-      'Conversation end must match an identified customer block end',
-    )
+  // The model identifies roles; the engine owns the resulting time fact. This
+  // avoids rejecting a valid role assignment because a model repeated a
+  // displayed, rounded timestamp that differed from the source block by a few
+  // milliseconds.
+  const customerEnds = blocks
+    .filter((block) => customerBlocks.has(block.number))
+    .map((block) => block.endMs)
+  const customerSpoke = customerEnds.length > 0
+  const last = customerEnds.length > 0 ? Math.max(...customerEnds) : null
+  if (last != null && last > recordedDurationMs) {
+    throw new Error('Customer block end falls outside the recording')
   }
   if (raw.category === 'USER_SILENCE') {
     if (customerBlockNumbers.length > 0) {
@@ -131,6 +115,7 @@ export function validateClassification(
     ...raw,
     customerBlockNumbers,
     unclearBlockNumbers,
+    customerSpoke,
     lastMeaningfulCustomerExchangeMs: last,
     remarks: raw.remarks.trim().slice(0, 2_000),
   }
@@ -224,12 +209,12 @@ export async function auditOneCall(options: {
     transcript = await ai.transcribe(fetched.bytes, {
       contentType: fetched.contentType || 'audio/ogg',
     })
-  } catch (error) {
+  } catch {
     return {
       callId: candidate.callId,
       artifactId: candidate.artifactId,
       outcome: 'transcription_failed',
-      errorCode: String((error as Error)?.message || error).slice(0, 500),
+      errorCode: 'TRANSCRIPTION_FAILED',
     }
   }
   const durationMismatch =
@@ -272,12 +257,12 @@ export async function auditOneCall(options: {
         blocks,
         transcript.durationMs,
       )
-    } catch (error) {
+    } catch {
       return {
         callId: candidate.callId,
         artifactId: candidate.artifactId,
         outcome: 'classification_failed',
-        errorCode: String((error as Error)?.message || error).slice(0, 500),
+        errorCode: 'CLASSIFICATION_FAILED',
       }
     }
     modelClassification = classification

@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import type { Pool } from 'mysql2/promise'
+import { REAUDIT_CLASSIFIER_RULESET_VERSION } from '../reaudit/core.ts'
 import { createMysqlReauditReadRepo } from './mysqlReauditReadRepo.ts'
 
 test('parameterizes an exact external task-ID scope in the candidate query', async () => {
@@ -100,7 +101,7 @@ test('explicit completed-call reader bypasses only processing and history filter
   assert.deepEqual(capturedParameters, [
     1,
     1,
-    'kairali-12cat/2.1.0',
+    REAUDIT_CLASSIFIER_RULESET_VERSION,
     'synthetic-task',
     'synthetic-task',
     1,

@@ -15,14 +15,14 @@ import {
 } from './openaiReaudit.ts'
 
 export const CONSENSUS_REVIEWER_VERSION =
-  'kairali-independent-consensus-review/1.0.0'
+  'kairali-independent-consensus-review/1.1.0'
 
 export const CONSENSUS_REVIEWER_PROMPT = `You are an independent automated
 verification pass for Kairali's call-audit system. Review the timestamped,
 numbered transcript without seeing another model's answer.
 
-Identify whether a real customer meaningfully responded, the end timestamp of
-the final meaningful customer exchange, and exactly one category from:
+Identify the blocks where a real customer meaningfully responded and exactly
+one category from:
 ${REAUDIT_CATEGORIES.join(', ')}.
 
 Saanvi is Kairali's female AI agent. Do not count Saanvi's later monologue as a
@@ -38,10 +38,10 @@ export const CONSENSUS_REVIEWER_RULESET_SHA256 =
     model: REAUDIT_CLASSIFICATION_MODEL,
     prompt: CONSENSUS_REVIEWER_PROMPT,
     categories: REAUDIT_CATEGORIES,
-    outputSchemaVersion: '1',
+    outputSchemaVersion: '2',
   } as unknown as JsonValue)
 
-const schema = {
+export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
   name: 'kairali_consensus_review',
   strict: true,
   schema: {
@@ -58,10 +58,6 @@ const schema = {
         type: 'array',
         items: { type: 'integer', minimum: 1 },
       },
-      customer_spoke: { type: 'boolean' },
-      last_meaningful_customer_exchange_sec: {
-        anyOf: [{ type: 'number', minimum: 0 }, { type: 'null' }],
-      },
       remarks: { type: 'string', maxLength: 1200 },
       dispute_recommended: { type: 'boolean' },
     },
@@ -70,8 +66,6 @@ const schema = {
       'confidence',
       'customer_block_numbers',
       'unclear_block_numbers',
-      'customer_spoke',
-      'last_meaningful_customer_exchange_sec',
       'remarks',
       'dispute_recommended',
     ],
@@ -109,7 +103,7 @@ export function createOpenAiConsensusReviewer(apiKey: string): {
         temperature: 0,
         response_format: {
           type: 'json_schema',
-          json_schema: schema,
+          json_schema: CONSENSUS_REVIEWER_OUTPUT_SCHEMA,
         },
         messages: [
           { role: 'system', content: CONSENSUS_REVIEWER_PROMPT },
@@ -141,11 +135,13 @@ ${transcript}`,
         confidence: number
         customer_block_numbers: number[]
         unclear_block_numbers: number[]
-        customer_spoke: boolean
-        last_meaningful_customer_exchange_sec: number | null
         remarks: string
         dispute_recommended: boolean
       }
+      const customerBlocks = new Set(raw.customer_block_numbers)
+      const customerEnds = options.blocks
+        .filter((block) => customerBlocks.has(block.number))
+        .map((block) => block.endMs)
       return {
         model: {
           provider: 'openai',
@@ -156,13 +152,9 @@ ${transcript}`,
         confidence: Number(raw.confidence).toFixed(8),
         customerBlockNumbers: raw.customer_block_numbers,
         unclearBlockNumbers: raw.unclear_block_numbers,
-        customerSpoke: raw.customer_spoke,
+        customerSpoke: customerEnds.length > 0,
         lastMeaningfulCustomerExchangeMs:
-          raw.last_meaningful_customer_exchange_sec == null
-            ? null
-            : Math.round(
-                raw.last_meaningful_customer_exchange_sec * 1000,
-              ),
+          customerEnds.length > 0 ? Math.max(...customerEnds) : null,
         remarks: raw.remarks,
         disputeRecommended: raw.dispute_recommended,
         usage: {

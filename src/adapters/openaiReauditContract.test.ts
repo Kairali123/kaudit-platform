@@ -1,7 +1,11 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { CONSENSUS_REVIEWER_PROMPT } from './openaiConsensus.ts'
 import {
+  CONSENSUS_REVIEWER_OUTPUT_SCHEMA,
+  CONSENSUS_REVIEWER_PROMPT,
+} from './openaiConsensus.ts'
+import {
+  REAUDIT_CLASSIFIER_OUTPUT_SCHEMA,
   REAUDIT_CLASSIFIER_PROMPT,
   REAUDIT_SPEAKER_ATTRIBUTION_RULES,
 } from './openaiReaudit.ts'
@@ -31,6 +35,19 @@ test('primary and consensus classifiers share speaker-attribution guardrails', (
     assert.match(
       prompt,
       /answering-machine greeting is VOICEMAIL/,
+    )
+  }
+})
+
+test('classifier schemas leave customer timing to the deterministic engine', () => {
+  for (const output of [
+    REAUDIT_CLASSIFIER_OUTPUT_SCHEMA,
+    CONSENSUS_REVIEWER_OUTPUT_SCHEMA,
+  ]) {
+    assert.ok('customer_block_numbers' in output.schema.properties)
+    assert.ok(!('customer_spoke' in output.schema.properties))
+    assert.ok(
+      !('last_meaningful_customer_exchange_sec' in output.schema.properties),
     )
   }
 })

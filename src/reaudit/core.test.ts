@@ -35,7 +35,7 @@ test('merges fragments using the approved pause, duration, and character limits'
   assert.equal(blocks[1]?.number, 2)
 })
 
-test('classification validation rejects impossible conversation ends', () => {
+test('classification derives the conversation end from customer blocks', () => {
   const raw: ModelClassification = {
     model: {
       provider: 'openai',
@@ -46,20 +46,18 @@ test('classification validation rejects impossible conversation ends', () => {
     confidence: '0.90000000',
     customerBlockNumbers: [1],
     unclearBlockNumbers: [],
-    customerSpoke: true,
+    customerSpoke: false,
     lastMeaningfulCustomerExchangeMs: 5_000,
     remarks: 'Synthetic',
     disputeRecommended: false,
   }
-  assert.throws(
-    () =>
-      validateClassification(
-        raw,
-        [{ number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic' }],
-        4_000,
-      ),
-    /outside the recording/,
+  const result = validateClassification(
+    raw,
+    [{ number: 1, startMs: 0, endMs: 1_234, text: 'Synthetic' }],
+    4_000,
   )
+  assert.equal(result.customerSpoke, true)
+  assert.equal(result.lastMeaningfulCustomerExchangeMs, 1_234)
 })
 
 test('classification validation rejects user silence when customer speech exists', () => {
@@ -119,7 +117,7 @@ test('classification validation rejects user silence without identified agent sp
   )
 })
 
-test('classification validation requires customer flags and timestamps to match blocks', () => {
+test('classification clears redundant customer facts when no customer block exists', () => {
   const raw: ModelClassification = {
     model: {
       provider: 'openai',
@@ -128,22 +126,55 @@ test('classification validation requires customer flags and timestamps to match 
     },
     category: 'AGENT_FAILURE',
     confidence: '0.90000000',
-    customerBlockNumbers: [1],
+    customerBlockNumbers: [],
     unclearBlockNumbers: [],
-    customerSpoke: false,
-    lastMeaningfulCustomerExchangeMs: null,
+    customerSpoke: true,
+    lastMeaningfulCustomerExchangeMs: 2_000,
     remarks: 'Synthetic inconsistent role assignment.',
     disputeRecommended: true,
   }
-  assert.throws(
-    () =>
-      validateClassification(
-        raw,
-        [{ number: 1, startMs: 0, endMs: 2_000, text: 'Synthetic request' }],
-        3_000,
-      ),
-    /must match identified customer speech blocks/,
+  const result = validateClassification(
+    raw,
+    [{ number: 1, startMs: 0, endMs: 2_000, text: 'Synthetic request' }],
+    3_000,
   )
+  assert.equal(result.customerSpoke, false)
+  assert.equal(result.lastMeaningfulCustomerExchangeMs, null)
+})
+
+test('classification failure stores a bounded code instead of thrown prose', async () => {
+  const ai: ReauditAi = {
+    async transcribe() {
+      return {
+        model: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
+        language: 'english',
+        durationMs: 10_000,
+        speechMs: 2_000,
+        text: 'Synthetic speech',
+        segments: [{ startMs: 0, endMs: 2_000, text: 'Synthetic speech' }],
+      }
+    },
+    async classify() {
+      throw new Error('synthetic provider prose that must not be stored')
+    },
+  }
+  const result = await auditOneCall({
+    candidate,
+    allowedHosts: ['cdr-storage-recs.s3.ap-south-1.amazonaws.com'],
+    fetcher: {
+      async fetch() {
+        return {
+          ok: true,
+          status: 200,
+          bytes: Buffer.from('synthetic-audio'),
+          contentType: 'audio/ogg',
+        }
+      },
+    },
+    ai,
+  })
+  assert.equal(result.outcome, 'classification_failed')
+  assert.equal(result.errorCode, 'CLASSIFICATION_FAILED')
 })
 
 test('projection adds 60-second wrap-up grace and remains uncalibrated', () => {
