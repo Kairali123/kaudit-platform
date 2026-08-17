@@ -78,6 +78,13 @@ import {
   AuditWorkerDispatchError,
   type AuditWorkerDispatcher,
 } from '../auditWorkers/dispatcher.ts'
+import {
+  ManualReauditError,
+  parseManualReauditRequest,
+  MANUAL_REAUDIT_ROUTE,
+  type ManualReauditRequestPort,
+} from '../reaudit/manualRequests.ts'
+import { createMysqlManualReauditRequestRepository } from '../adapters/mysqlManualReauditQueue.ts'
 import { collectBillingMonths } from '../adapters/mysqlBillingMonths.ts'
 import {
   createMysqlBillingCategoryAnalysisRepository,
@@ -261,6 +268,13 @@ interface Dependencies {
   callAuditRuleTestModel?: ContentAuditModelAdapter
   /** Durable administrator intent and privacy-safe worker observations. */
   auditWorkerControl?: AuditWorkerControlPort
+  /**
+   * The durable, Kaudit-owned queue behind the Audit Monitor's re-audit action.
+   * Defaults to the MySQL repository over the same pool; injectable so a server
+   * test can exercise authorization, privacy and idempotency against synthetic
+   * receipts without a database and without any model spend.
+   */
+  manualReauditRequests?: ManualReauditRequestPort
   /** Starts a bounded external worker without exposing its provider details. */
   auditWorkerDispatcher?: AuditWorkerDispatcher
   webDistRoot?: string
@@ -324,6 +338,21 @@ const CALL_AUDIT_SETTINGS_WRITE_ROUTES = new Set([
 const CALL_AUDIT_RULE_TEST_ROUTES = new Set([CALL_AUDIT_RULE_TEST_ROUTE])
 const AUDIT_WORKER_CONTROL_ROUTE = '/api/v1/audit-workers/control'
 const AUDIT_WORKER_WRITE_ROUTES = new Set([AUDIT_WORKER_CONTROL_ROUTE])
+
+/**
+ * Administrator-requested Billing Audit re-audits. POST only — there is nothing
+ * to GET, because the per-row state the page needs already rides on the audit
+ * monitor read — and gated on the same `audit:control` boundary as starting a
+ * worker, because this queues PAID model work.
+ */
+const MANUAL_REAUDIT_WRITE_ROUTES = new Set([MANUAL_REAUDIT_ROUTE])
+
+/**
+ * At most 100 displayed references and one bounded retry key. The byte bound is
+ * applied before a single byte is parsed, so an unbounded stream is never
+ * buffered on the way to a validator that would refuse it anyway.
+ */
+const MAX_MANUAL_REAUDIT_BODY_BYTES = 32 * 1024
 
 /**
  * Recording the amount finally paid to KServe. POST only on the same path as
@@ -1635,6 +1664,11 @@ const BOUNDED_UNAVAILABLE_TITLES: Readonly<Record<string, string>> = {
     'Audit worker start is not configured on this server',
   AUDIT_WORKER_DISPATCH_FAILED:
     'Audit worker could not be started',
+  // One bounded title for every re-audit queue storage failure. The repository
+  // has already dropped the driver's own message, so nothing about the cause —
+  // a column, a constraint, a call id, a reference — can reach a browser.
+  REAUDIT_QUEUE_UNAVAILABLE:
+    'Re-audit queue is temporarily unavailable',
   // One bounded title for every settlement storage failure. The repository has
   // already dropped the driver's own message, so nothing about the cause — a
   // column, a constraint, an amount — can reach a browser through this route.
@@ -1690,6 +1724,11 @@ function apiAction(pathname: string): string {
   if (pathname === AUDIT_WORKER_CONTROL_ROUTE) {
     return 'audit_worker.control'
   }
+  // Named explicitly: the trailing-segment default would record queuing paid
+  // model work as the shapeless 're-audit.read'.
+  if (pathname === MANUAL_REAUDIT_ROUTE) {
+    return 'billing_reaudit.request'
+  }
   return `${pathname.split('/').at(-1)}.read`
 }
 
@@ -1701,9 +1740,12 @@ function apiPermission(pathname: string): string {
     pathname === CALL_AUDIT_RULE_ACTIVATE_ROUTE ||
     pathname === CALL_AUDIT_RULE_TEST_ROUTE
   ) return 'config:manage'
+  // Queuing a paid re-audit is worker CONTROL, not audit inspection: reading
+  // the monitor must never be enough to spend money on a model.
   if (
     pathname === '/api/v1/audit-workers' ||
-    pathname === AUDIT_WORKER_CONTROL_ROUTE
+    pathname === AUDIT_WORKER_CONTROL_ROUTE ||
+    pathname === MANUAL_REAUDIT_ROUTE
   ) return 'audit:control'
   if (pathname === '/api/v1/users') return 'user:manage'
   // Recording and reading the amount finally paid to KServe is a money
@@ -1744,6 +1786,7 @@ function timingOperation(pathname: string): string {
     PUBLIC_POST_ROUTES.has(pathname) ||
     USER_ADMIN_WRITE_ROUTES.has(pathname) ||
     AUDIT_WORKER_WRITE_ROUTES.has(pathname) ||
+    MANUAL_REAUDIT_WRITE_ROUTES.has(pathname) ||
     IMPORT_WRITE_ROUTES.has(pathname) ||
     IMPORT_ANALYSIS_ROUTES.has(pathname) ||
     KSERVE_SETTLEMENT_WRITE_ROUTES.has(pathname) ||
@@ -1900,6 +1943,9 @@ export function createEnterpriseDashboardServer(
     const isAuditWorkerPost =
       request.method === 'POST' &&
       AUDIT_WORKER_WRITE_ROUTES.has(url.pathname)
+    const isManualReauditPost =
+      request.method === 'POST' &&
+      MANUAL_REAUDIT_WRITE_ROUTES.has(url.pathname)
     const isSettlementPost =
       request.method === 'POST' &&
       KSERVE_SETTLEMENT_WRITE_ROUTES.has(url.pathname)
@@ -1908,6 +1954,7 @@ export function createEnterpriseDashboardServer(
       (IMPORT_WRITE_ROUTES.has(url.pathname) ||
         IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
         CALL_AUDIT_RULE_TEST_ROUTES.has(url.pathname) ||
+        MANUAL_REAUDIT_WRITE_ROUTES.has(url.pathname) ||
         url.pathname === CALL_AUDIT_RULE_ACTIVATE_ROUTE)
     ) {
       problem(
@@ -1927,6 +1974,7 @@ export function createEnterpriseDashboardServer(
       !isRuleTestPost &&
       !isUserAdminPost &&
       !isAuditWorkerPost &&
+      !isManualReauditPost &&
       !isSettlementPost
     ) {
       problem(
@@ -2013,6 +2061,7 @@ export function createEnterpriseDashboardServer(
       PUBLIC_POST_ROUTES.has(url.pathname) ||
       USER_ADMIN_WRITE_ROUTES.has(url.pathname) ||
       AUDIT_WORKER_WRITE_ROUTES.has(url.pathname) ||
+      MANUAL_REAUDIT_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
       APP_ROUTES.has(url.pathname) ||
@@ -2406,6 +2455,88 @@ export function createEnterpriseDashboardServer(
         )
         apiCache.clear()
         sendJson(response, correlation, state)
+        return
+      }
+      if (isManualReauditPost) {
+        /**
+         * Administrator-selected Billing Audit re-audit.
+         *
+         * Order matters and is structural:
+         *
+         *   1. `audit:control` BEFORE a byte of the body is read. An operator
+         *      who may inspect the monitor must never be able to spend on a
+         *      model by posting to it.
+         *   2. The dispatcher is checked BEFORE anything is queued, so a
+         *      deployment that cannot start a worker refuses the request
+         *      instead of parking paid work nothing will drain.
+         *   3. The body is bounded, then validated exactly.
+         *   4. Provenance — the actor and the correlation id — comes from the
+         *      authenticated session, never from the body, and neither is
+         *      echoed back.
+         */
+        requirePermission(context, 'audit:control')
+        if (
+          !dependencies.auditWorkerDispatcher ||
+          dependencies.auditWorkerDispatcher.canDispatch?.(
+            'billing',
+            'requested',
+          ) === false
+        ) {
+          throw Object.assign(
+            new Error('Audit worker start is not configured'),
+            { code: 'AUDIT_WORKER_DISPATCH_NOT_CONFIGURED', status: 503 },
+          )
+        }
+        const submitted = parseManualReauditRequest(
+          await readJsonBody(
+            request,
+            MAX_MANUAL_REAUDIT_BODY_BYTES,
+            'INVALID_REAUDIT_REQUEST',
+          ),
+        )
+        const receipt = await (
+          dependencies.manualReauditRequests ??
+          createMysqlManualReauditRequestRepository(dependencies.pool)
+        ).enqueue({
+          callReferences: submitted.callReferences,
+          idempotencyKey: submitted.idempotencyKey,
+          requestedByUserId: context.user.id,
+          correlationId: correlation,
+          requestedAt: new Date(),
+        })
+        if (
+          receipt.outcome === 'accepted' ||
+          (receipt.outcome === 'replayed' && receipt.status === 'queued')
+        ) {
+          // A queued replay recovers an earlier dispatch failure. Running or
+          // completed replays are already covered and do not start another
+          // serialized host job.
+          try {
+            await dependencies.auditWorkerDispatcher.dispatch(
+              'billing',
+              'requested',
+            )
+          } catch {
+            throw new AuditWorkerDispatchError()
+          }
+        }
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          receipt.outcome === 'accepted'
+            ? 'billing_reaudit.request'
+            : 'billing_reaudit.replay',
+          'billing_reaudit_request',
+          // The request's own handle, or nothing. Never a call, artifact, or
+          // audit-run id, and never a displayed reference.
+          receipt.requestId,
+          'audit_operations',
+        )
+        apiCache.clear()
+        sendJson(response, correlation, receipt)
         return
       }
       if (isSettlementPost) {
@@ -2920,6 +3051,12 @@ export function createEnterpriseDashboardServer(
         error instanceof KserveSettlementInputError ||
         error instanceof KserveSettlementConflictError ||
         error instanceof KserveSettlementUnavailableError
+      /**
+       * A refused re-audit logs its own bounded code. Every one of them names a
+       * rule, never a value: no submitted reference, retry key, internal id, or
+       * driver message exists on the error to leak.
+       */
+      const reauditFailure = error instanceof ManualReauditError
       const safeLog = {
         level: authFailure ? 'warn' : 'error',
         event: authFailure
@@ -2927,7 +3064,7 @@ export function createEnterpriseDashboardServer(
           : 'dashboard_request_failed',
         code: authFailure
           ? error.code
-          : userAdminFailure || settlementFailure
+          : userAdminFailure || settlementFailure || reauditFailure
             ? error.code
             : 'INTERNAL_ERROR',
         correlationId: correlation,

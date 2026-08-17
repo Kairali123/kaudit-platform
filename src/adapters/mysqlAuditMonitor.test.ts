@@ -294,11 +294,16 @@ interface RowRule {
   rows: unknown[]
 }
 
-function fakePool(rules: RowRule[]) {
+function fakePool(rules: RowRule[], failing: string[] = []) {
   const statements: string[] = []
   const pool = {
     async query(sql: string) {
       statements.push(sql)
+      if (failing.some((match) => sql.includes(match))) {
+        throw Object.assign(new Error('synthetic unavailable relation'), {
+          code: 'ER_NO_SUCH_TABLE',
+        })
+      }
       const rule = rules.find((candidate) => sql.includes(candidate.match))
       return [rule ? rule.rows : []]
     },
@@ -333,6 +338,7 @@ const FINANCIAL_ROW = {
 }
 
 const AUDITED_ROW = {
+  internal_call_id: 'call-synthetic-1',
   call_reference: 'synthetic-task-1',
   billing_period_date: '2026-08-01',
   category: 'TIME_DURATION',
@@ -423,4 +429,60 @@ test('a call the monitor cannot price reports zero auditor money, not a projecti
   assert.equal(financials.auditorUnfinalizedCalls, 3)
   // The row still carries its audited duration facts.
   assert.equal(data.rows[0].graceAdjustedDurationMs, 121_000)
+})
+
+// ---------------------------------------------------------------------------
+// Per-row re-audit state
+// ---------------------------------------------------------------------------
+
+test('a row carries only its re-audit lifecycle word, never a queue internal', async () => {
+  const fake = fakePool([
+    { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },
+    { match: 'grace_adjusted_duration_ms', rows: [AUDITED_ROW] },
+    {
+      match: 'kaudit_billing_reaudit_item',
+      rows: [{ call_id: 'call-synthetic-1', status: 'processing' }],
+    },
+  ])
+  const data = await collectAuditMonitor(fake.pool, QUERY)
+  const row = data.rows[0]
+
+  assert.equal(row.reAuditStatus, 'processing')
+  // The internal key used to join the queue never reaches the DTO.
+  assert.equal('internal_call_id' in row, false)
+  assert.equal('internalCallId' in row, false)
+  const body = JSON.stringify(data)
+  assert.equal(body.includes('call-synthetic-1'), false)
+  for (const internal of ['requestId', 'itemId', 'baselineAuditRunId', 'brr_', 'bri_']) {
+    assert.equal(body.includes(internal), false)
+  }
+})
+
+test('a row with no live re-audit reports null rather than a stale word', async () => {
+  const fake = fakePool([
+    { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },
+    { match: 'grace_adjusted_duration_ms', rows: [AUDITED_ROW] },
+    { match: 'kaudit_billing_reaudit_item', rows: [] },
+  ])
+  const data = await collectAuditMonitor(fake.pool, QUERY)
+  assert.equal(data.rows[0].reAuditStatus, null)
+  // Only the calls actually on screen are asked about.
+  const lookup = fake.find('kaudit_billing_reaudit_item') ?? ''
+  assert.match(lookup, /item.status = 'queued'/)
+  assert.match(lookup, /item.status = 'processing'/)
+})
+
+test('an unapplied re-audit migration still renders the audited rows', async () => {
+  const fake = fakePool(
+    [
+      { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },
+      { match: 'grace_adjusted_duration_ms', rows: [AUDITED_ROW] },
+    ],
+    ['kaudit_billing_reaudit_item'],
+  )
+  const data = await collectAuditMonitor(fake.pool, QUERY)
+
+  assert.equal(data.rows.length, 1)
+  assert.equal(data.rows[0].reAuditStatus, null)
+  assert.equal(data.rows[0].category, 'TIME_DURATION')
 })

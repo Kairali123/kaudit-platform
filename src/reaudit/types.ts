@@ -23,6 +23,17 @@ export interface ReauditCandidate {
   claimedDurationMs: number | null
   connectedDurationMs: number | null
   vendorBilledMinutes: string | null
+  /**
+   * Present ONLY for an administrator-requested re-audit claimed from the
+   * durable queue. Its presence is what tells the writer to settle the queue
+   * item and to check the baseline before spending on a model.
+   */
+  manualRequest?: {
+    requestId: string
+    itemId: string
+    /** The call's current audit run when the administrator selected the row. */
+    baselineAuditRunId: string
+  }
 }
 
 export interface TranscriptSegment {

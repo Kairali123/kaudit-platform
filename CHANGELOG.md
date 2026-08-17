@@ -13,6 +13,21 @@
 
 ## Unreleased
 
+- Added administrator-selected Billing Audit re-audits on the Audit Monitor:
+  per-row checkboxes with page-scoped select-all, a bounded "Re-audit selected"
+  action, live queued/processing state per row, and clear pending/success/error
+  feedback.
+- Added migration 0015, an expand-only Kaudit-owned re-audit request queue that
+  stores internal ids, lifecycle, provenance, hashes, counts, ruleset, and
+  bounded error codes only — no references, URLs, content, money, or PII — and
+  enforces one active request per call in the schema.
+- Added an admin-only `POST /api/v1/audits/re-audit` gated on `audit:control`
+  before the body is read, bounded to 100 exact displayed references and one
+  retry key, idempotent on retry, and returning no internal call ids.
+- Added a billing-only requested/manual worker mode that drains the durable
+  queue while the general billing queue is paused, captures a baseline audit run
+  per item, skips safely when the call moved on, appends a new audit run on
+  success, and leaves the prior successful result current on failure.
 - Added the finance-approved KServe verified-billing V2 core: final-customer-exchange
   basis, 60-second wrap-up grace, strict 60-second one-way-tail alert, INR 4.75 short
   call and whole-minute INR 9.50 rounding, all using integer/fixed-precision math.

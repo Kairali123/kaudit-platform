@@ -15,6 +15,15 @@ import type {
   ReauditCandidate,
   ReauditItemResult,
 } from '../reaudit/types.ts'
+import {
+  ManualReauditError,
+  manualReauditBaselineDecision,
+  manualReauditOutboxMessageId,
+} from '../reaudit/manualRequests.ts'
+import {
+  manualReauditLatestAuditRunId,
+  settleManualReauditItem,
+} from './mysqlManualReauditQueue.ts'
 import type { ReauditResultRepository } from '../reaudit/worker.ts'
 import {
   canonicalJson,
@@ -53,16 +62,74 @@ function failureFinding(outcome: ReauditItemResult['outcome']): string {
   return 'CLASSIFICATION_FAILED'
 }
 
+/**
+ * The queue item behind an administrator-requested re-audit.
+ *
+ * Reading it through one accessor keeps the manual paths below from ever
+ * assuming a candidate carries queue provenance: a manual writer handed an
+ * ordinary candidate is a wiring bug, and is refused rather than allowed to
+ * spend on a call nothing will settle.
+ */
+function manualRequestOf(
+  candidate: ReauditCandidate,
+): NonNullable<ReauditCandidate['manualRequest']> {
+  const request = candidate.manualRequest
+  if (!request) {
+    throw new ManualReauditError(
+      'REAUDIT_ITEM_UNCLAIMED',
+      500,
+      'Requested re-audit writer received an unclaimed candidate',
+    )
+  }
+  return request
+}
+
 export function createMysqlReauditWriteRepo(
   pool: Pool,
-  options: { allowCompletedReaudit?: boolean } = {},
+  options: {
+    allowCompletedReaudit?: boolean
+    /**
+     * Administrator-requested mode. The call's CURRENT audit run — captured as
+     * a baseline when the row was selected — decides whether to spend, in place
+     * of the ruleset comparison targeted mode uses. That is deliberate: a
+     * manual re-audit exists because the prior AI output may be wrong, so the
+     * SAME ruleset must still be allowed to run again.
+     */
+    manualRequest?: boolean
+  } = {},
 ): ReauditResultRepository {
-  const allowCompletedReaudit = options.allowCompletedReaudit === true
+  const manualRequest = options.manualRequest === true
+  const allowCompletedReaudit =
+    options.allowCompletedReaudit === true || manualRequest
   return {
     async markStarted(candidate, at) {
       const connection = await pool.getConnection()
       try {
         await connection.beginTransaction()
+        if (manualRequest) {
+          const request = manualRequestOf(candidate)
+          const decision = manualReauditBaselineDecision({
+            baselineAuditRunId: request.baselineAuditRunId,
+            latestAuditRunId: await manualReauditLatestAuditRunId(
+              connection,
+              candidate.callId,
+            ),
+          })
+          if (decision === 'skip_baseline_changed') {
+            await settleManualReauditItem(connection, {
+              requestId: request.requestId,
+              itemId: request.itemId,
+              outcome: 'skipped',
+              at,
+            })
+            await connection.commit()
+            return 'already_completed'
+          }
+          // Claimed already, by the queue. Nothing about the call, its
+          // artifact, or its current audit result is touched here.
+          await connection.commit()
+          return 'acquired'
+        }
         const [completed] = await connection.execute<CountRow[]>(
           allowCompletedReaudit
             ? `SELECT EXISTS (
@@ -139,29 +206,58 @@ export function createMysqlReauditWriteRepo(
       const connection = await pool.getConnection()
       try {
         await connection.beginTransaction()
-        const [completed] = await connection.execute<CountRow[]>(
-          allowCompletedReaudit
-            ? `SELECT EXISTS (
-                 SELECT 1
-                 FROM kaudit_audit_run latest
-                 WHERE latest.id = c.latest_audit_run_id
-                   AND latest.status = 'completed'
-                   AND c.outcome_taxonomy_version = ?
-               ) AS n
-               FROM kaudit_call c
-               WHERE c.id = ?
-               FOR UPDATE`
-            : `SELECT COUNT(*) AS n
-               FROM kaudit_audit_run
-               WHERE call_id = ? AND status = 'completed'
-               FOR UPDATE`,
-          allowCompletedReaudit
-            ? [REAUDIT_CLASSIFIER_RULESET_VERSION, candidate.callId]
-            : [candidate.callId],
-        )
-        if (Number(completed[0]?.n || 0) > 0) {
-          await connection.commit()
-          return 'already_completed'
+        if (manualRequest) {
+          // Re-read under the row lock the whole write then holds. Between the
+          // claim and here, another worker may have advanced this call; that
+          // result stays current and this attempt is discarded rather than
+          // overwriting a newer answer with an older question's one.
+          const request = manualRequestOf(candidate)
+          const decision = manualReauditBaselineDecision({
+            baselineAuditRunId: request.baselineAuditRunId,
+            latestAuditRunId: await manualReauditLatestAuditRunId(
+              connection,
+              candidate.callId,
+            ),
+          })
+          if (decision === 'skip_baseline_changed') {
+            await settleManualReauditItem(connection, {
+              requestId: request.requestId,
+              itemId: request.itemId,
+              outcome: 'skipped',
+              at,
+            })
+            await connection.commit()
+            return 'already_completed'
+          }
+        }
+        // Skipped entirely in manual mode: the baseline above already decided
+        // this call, and asking again whether a completed run exists would
+        // refuse every administrator-requested re-audit, since one always does.
+        if (!manualRequest) {
+          const [completed] = await connection.execute<CountRow[]>(
+            allowCompletedReaudit
+              ? `SELECT EXISTS (
+                   SELECT 1
+                   FROM kaudit_audit_run latest
+                   WHERE latest.id = c.latest_audit_run_id
+                     AND latest.status = 'completed'
+                     AND c.outcome_taxonomy_version = ?
+                 ) AS n
+                 FROM kaudit_call c
+                 WHERE c.id = ?
+                 FOR UPDATE`
+              : `SELECT COUNT(*) AS n
+                 FROM kaudit_audit_run
+                 WHERE call_id = ? AND status = 'completed'
+                 FOR UPDATE`,
+            allowCompletedReaudit
+              ? [REAUDIT_CLASSIFIER_RULESET_VERSION, candidate.callId]
+              : [candidate.callId],
+          )
+          if (Number(completed[0]?.n || 0) > 0) {
+            await connection.commit()
+            return 'already_completed'
+          }
         }
 
         const auditRunId = randomUUID()
@@ -184,13 +280,17 @@ export function createMysqlReauditWriteRepo(
           !result.transcription ||
           !result.classification
         ) {
-          const [attemptRows] =
-            await connection.execute<AttemptRow[]>(
-              `SELECT audio_attempt_count
-               FROM kaudit_call_artifact
-               WHERE id = ? FOR UPDATE`,
-              [candidate.artifactId],
-            )
+          // The artifact's own attempt counter belongs to the ordinary intake
+          // queue. A manual re-audit is counted by its queue item instead, and
+          // must not read or advance the pipeline's retry state.
+          const [attemptRows] = manualRequest
+            ? [[] as AttemptRow[]]
+            : await connection.execute<AttemptRow[]>(
+                `SELECT audio_attempt_count
+                 FROM kaudit_call_artifact
+                 WHERE id = ? FOR UPDATE`,
+                [candidate.artifactId],
+              )
           const attempt = Number(
             attemptRows[0]?.audio_attempt_count || 1,
           )
@@ -235,11 +335,28 @@ export function createMysqlReauditWriteRepo(
                 errorCode: result.errorCode ?? 'unknown',
                 attempt,
               }),
-              allowCompletedReaudit
-                ? 'Targeted re-audit could not complete; the prior completed audit remains current.'
-                : 'Automated audit could not complete; the call remains unresolved.',
+              manualRequest
+                ? 'Requested re-audit could not complete; the prior completed audit remains current.'
+                : allowCompletedReaudit
+                  ? 'Targeted re-audit could not complete; the prior completed audit remains current.'
+                  : 'Automated audit could not complete; the call remains unresolved.',
             ],
           )
+          if (manualRequest) {
+            // Terminal for this item on purpose. A settled failure is never
+            // retried automatically, so a model is never paid twice for the
+            // same question; an administrator may select the row again.
+            const request = manualRequestOf(candidate)
+            await settleManualReauditItem(connection, {
+              requestId: request.requestId,
+              itemId: request.itemId,
+              outcome: 'failed',
+              errorCode: result.errorCode ?? failureFinding(result.outcome),
+              at,
+            })
+            await connection.commit()
+            return 'terminal_failure'
+          }
           if (allowCompletedReaudit) {
             await connection.commit()
             return 'terminal_failure'
@@ -434,9 +551,28 @@ export function createMysqlReauditWriteRepo(
             candidate.callId,
           ],
         )
+        if (manualRequest) {
+          const request = manualRequestOf(candidate)
+          await settleManualReauditItem(connection, {
+            requestId: request.requestId,
+            itemId: request.itemId,
+            outcome: 'completed',
+            at,
+          })
+        }
         const outbox = createMysqlOutboxWriter(connection)
         await outbox.enqueue({
-          messageId: `audit-completed:${inputManifestSha256}`,
+          // The ordinary identity is the input manifest hash, which is
+          // IDENTICAL for a same-ruleset rerun over the same evidence — exactly
+          // what an administrator asks for here. Binding the queue item in
+          // gives each requested rerun its own message instead of colliding
+          // with the run it replaces.
+          messageId: manualRequest
+            ? manualReauditOutboxMessageId({
+                itemId: manualRequestOf(candidate).itemId,
+                inputManifestSha256,
+              })
+            : `audit-completed:${inputManifestSha256}`,
           aggregateType: 'call',
           aggregateId: candidate.callId,
           eventType: 'call.audit_completed',

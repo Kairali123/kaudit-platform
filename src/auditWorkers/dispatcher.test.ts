@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ConfigurationError } from '../config/runtime.ts'
+import { AuditWorkerControlError } from './control.ts'
 import {
   AuditWorkerDispatchError,
   createGitHubActionsAuditWorkerDispatcher,
@@ -38,6 +39,8 @@ test('persistent mode resumes through durable state without provider traffic', a
   )
 
   await dispatcher?.dispatch('billing')
+  assert.equal(dispatcher?.canDispatch?.('billing'), true)
+  assert.equal(dispatcher?.canDispatch?.('billing', 'requested'), false)
   await dispatcher?.dispatch('call')
   assert.equal(requests, 0)
 })
@@ -89,6 +92,62 @@ test('dispatch sends only the closed audit system and configured ref', async () 
     (requests[0]?.init?.headers as Record<string, string>).authorization,
     'Bearer synthetic-token-value',
   )
+})
+
+test('requested mode adds the workflow input without changing ordinary dispatch', async () => {
+  const requests: Array<{ url: string; init?: RequestInit }> = []
+  const dispatcher = createGitHubActionsAuditWorkerDispatcher(
+    configured,
+    (async (url: string | URL | Request, init?: RequestInit) => {
+      requests.push({ url: String(url), init })
+      return new Response(null, { status: 204 })
+    }) as typeof fetch,
+  )
+  await dispatcher?.dispatch('billing')
+  await dispatcher?.dispatch('billing', 'ordinary')
+  await dispatcher?.dispatch('billing', 'requested')
+
+  // An ordinary run — with or without the explicit mode — sends exactly the
+  // body it sent before requested mode existed.
+  assert.deepEqual(JSON.parse(String(requests[0]?.init?.body)), {
+    ref: 'main',
+    inputs: { system: 'billing' },
+  })
+  assert.deepEqual(
+    JSON.parse(String(requests[1]?.init?.body)),
+    JSON.parse(String(requests[0]?.init?.body)),
+  )
+  assert.deepEqual(JSON.parse(String(requests[2]?.init?.body)), {
+    ref: 'main',
+    inputs: { system: 'billing', mode: 'requested' },
+  })
+})
+
+test('requested mode is refused for Call Audit and for any unknown mode', async () => {
+  const requests: string[] = []
+  const fetcher = (async () => {
+    requests.push('dispatched')
+    return new Response(null, { status: 204 })
+  }) as typeof fetch
+  for (const dispatcher of [
+    createGitHubActionsAuditWorkerDispatcher(configured, fetcher),
+    createGitHubActionsAuditWorkerDispatcher(
+      { ...configured, KAUDIT_AUDIT_WORKER_CONTROL_MODE: 'persistent' },
+      fetcher,
+    ),
+  ]) {
+    // Call Audit has no durable request queue and no manual selection surface.
+    await assert.rejects(
+      () => dispatcher!.dispatch('call', 'requested'),
+      AuditWorkerControlError,
+    )
+    await assert.rejects(
+      () =>
+        dispatcher!.dispatch('billing', 'targeted' as unknown as 'requested'),
+      AuditWorkerControlError,
+    )
+  }
+  assert.deepEqual(requests, [])
 })
 
 test('invalid enabled configuration fails without echoing any value', () => {

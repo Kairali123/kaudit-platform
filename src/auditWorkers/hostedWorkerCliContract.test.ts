@@ -25,7 +25,12 @@ test('both drain modes stop claiming work before the host deadline', () => {
     /shouldContinue: async \(\) =>[\s\S]{0,100}!shutdownRequested[\s\S]{0,100}!drain \|\| Date\.now\(\) < deadline/,
   )
   assert.match(billingWorker, /KAUDIT_AUDIT_DRAIN/)
-  assert.match(billingWorker, /!drain \|\| Date\.now\(\) < deadline/)
+  // Both bounded Billing Audit modes stop claiming before the host deadline:
+  // the general drain, and the administrator-requested queue drain.
+  assert.match(
+    billingWorker,
+    /\(!drain && !requestedMode\) \|\| Date\.now\(\) < deadline/,
+  )
   for (const source of [callWorker, billingWorker]) {
     assert.match(source, /KAUDIT_WORKER_DEADLINE_SECONDS/)
   }
@@ -76,5 +81,24 @@ test('an exact append-only one-shot can run without waking a paused queue', () =
   assert.match(
     billingWorker,
     /targetedOneShot && desiredAfterBatch === 'paused'/,
+  )
+})
+
+test('requested mode drains the durable queue and never widens the general one', () => {
+  assert.match(billingWorker, /KAUDIT_AUDIT_REQUESTED_MODE/)
+  // It reads the admin request queue, not the intake reader.
+  assert.match(
+    billingWorker,
+    /requestedMode\s*\n?\s*\? createMysqlManualReauditCandidateRepository\(pool\)/,
+  )
+  assert.match(billingWorker, /manualRequest: requestedMode/)
+  // It is an exact one-shot, so a paused queue does not block it.
+  assert.match(billingWorker, /const targetedOneShot =\s*\n?\s*requestedMode/)
+  // And it is exclusive with every other mode, including a scope file.
+  assert.match(billingWorker, /requestedMode && \(watch \|\| drain\)/)
+  assert.match(billingWorker, /requestedMode && appendReaudit/)
+  assert.match(
+    billingWorker,
+    /requestedMode && process\.env\.KAUDIT_AUDIT_SCOPE_FILE/,
   )
 })

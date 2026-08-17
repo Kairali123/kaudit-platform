@@ -53,6 +53,31 @@ test('targeted hosted re-audit is private, scope-bound, and billing-only', () =>
   assert.doesNotMatch(workflow, /echo .*KAUDIT_TARGETED_REAUDIT_SCOPE/)
 })
 
+test('requested re-audit mode is billing-only, bounded, and queue-driven', () => {
+  assert.match(workflow, /- requested/)
+  // It reads the durable Kaudit-owned queue, so it takes no scope secret and
+  // writes no file to the runner.
+  assert.match(
+    workflow,
+    /elif \[\[ "\$AUDIT_MODE" == "requested" \]\]; then\s+KAUDIT_AUDIT_REQUESTED_MODE=true/,
+  )
+  assert.match(
+    workflow,
+    /KAUDIT_AUDIT_REQUESTED_MODE=true[\s\S]{0,200}KAUDIT_AUDIT_BATCH=1/,
+  )
+  assert.match(
+    workflow,
+    /KAUDIT_AUDIT_REQUESTED_MODE=true[\s\S]{0,200}KAUDIT_AUDIT_WATCH=false/,
+  )
+  // Call Audit has no request queue, so the combination exits non-zero.
+  assert.match(
+    workflow,
+    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then[\s\S]{0,200}if \[\[ "\$AUDIT_MODE" == "requested" \]\]; then\s+exit 2/,
+  )
+  // Serialized with every other Billing Audit run by the same group.
+  assert.match(workflow, /group: kaudit-audit-worker-\$\{\{ inputs\.system \}\}/)
+})
+
 test('workflow configuration is secret-backed and minimally permissioned', () => {
   assert.match(workflow, /permissions:\n  contents: read/)
   for (const name of [

@@ -18,6 +18,7 @@ on:
         options:
           - new
           - targeted
+          - requested
 
 permissions:
   contents: read
@@ -78,6 +79,12 @@ jobs:
               KAUDIT_AUDIT_BATCH=100 \
               KAUDIT_AUDIT_WATCH=false \
               npm run audit:worker
+            elif [[ "$AUDIT_MODE" == "requested" ]]; then
+              KAUDIT_AUDIT_REQUESTED_MODE=true \
+              KAUDIT_AUDIT_MODE=EXECUTE \
+              KAUDIT_AUDIT_BATCH=1 \
+              KAUDIT_AUDIT_WATCH=false \
+              npm run audit:worker
             else
               KAUDIT_AUDIT_MODE=EXECUTE \
               KAUDIT_AUDIT_BATCH=10 \
@@ -87,6 +94,9 @@ jobs:
             fi
           elif [[ "$AUDIT_SYSTEM" == "call" ]]; then
             if [[ "$AUDIT_MODE" == "targeted" ]]; then
+              exit 2
+            fi
+            if [[ "$AUDIT_MODE" == "requested" ]]; then
               exit 2
             fi
             KAUDIT_CALL_AUDIT_DRAIN=true \

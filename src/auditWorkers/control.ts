@@ -101,6 +101,42 @@ export function parseAuditSystem(value: unknown): AuditSystem {
   return value as AuditSystem
 }
 
+/**
+ * How a worker run was asked for.
+ *
+ * `ordinary` is the existing behaviour and stays the default everywhere, so no
+ * current caller changes shape. `requested` is the administrator-selected
+ * Billing Audit re-audit: an exact, bounded, one-shot drain of the durable
+ * request queue, allowed while the general billing queue is paused.
+ */
+export const AUDIT_DISPATCH_MODES = ['ordinary', 'requested'] as const
+export type AuditDispatchMode = (typeof AUDIT_DISPATCH_MODES)[number]
+
+/**
+ * Validates a dispatch, system and mode together.
+ *
+ * Call Audit has no durable request queue and no manual selection surface, so
+ * `requested` is refused for it here rather than being handed to a workflow
+ * that would only exit non-zero. The refusal is a closed-set failure, and it
+ * names neither a provider, a repository, nor a token.
+ */
+export function parseAuditDispatch(
+  system: unknown,
+  mode: unknown = 'ordinary',
+): { system: AuditSystem; mode: AuditDispatchMode } {
+  const parsedSystem = parseAuditSystem(system)
+  if (!(AUDIT_DISPATCH_MODES as readonly unknown[]).includes(mode)) {
+    throw new AuditWorkerControlError('audit dispatch mode is invalid')
+  }
+  const parsedMode = mode as AuditDispatchMode
+  if (parsedMode === 'requested' && parsedSystem !== 'billing') {
+    throw new AuditWorkerControlError(
+      'requested dispatch mode is Billing Audit only',
+    )
+  }
+  return { system: parsedSystem, mode: parsedMode }
+}
+
 export function parseDesiredState(value: unknown): AuditWorkerDesiredState {
   if (!(AUDIT_WORKER_DESIRED_STATES as readonly unknown[]).includes(value)) {
     throw new AuditWorkerControlError('desired state is invalid')

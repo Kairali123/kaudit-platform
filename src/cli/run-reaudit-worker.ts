@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import mysql, { type RowDataPacket } from 'mysql2/promise'
 import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.ts'
 import { createMysqlReauditReadRepo } from '../adapters/mysqlReauditReadRepo.ts'
+import { createMysqlManualReauditCandidateRepository } from '../adapters/mysqlManualReauditQueue.ts'
 import { createMysqlReauditWriteRepo } from '../adapters/mysqlReauditWriteRepo.ts'
 import { createOpenAiReaudit } from '../adapters/openaiReaudit.ts'
 import { createMysqlAuditWorkerControl } from '../adapters/mysqlAuditWorkerControl.ts'
@@ -74,6 +75,31 @@ async function main(): Promise<void> {
     throw new Error('KAUDIT_AUDIT_REAUDIT_MODE must be exactly APPEND')
   }
   const appendReaudit = appendReauditValue === 'APPEND'
+  /**
+   * Administrator-requested Billing Audit re-audit.
+   *
+   * Reads the durable Kaudit-owned request queue instead of the intake queue.
+   * It is exact (only the calls an administrator selected), bounded (one batch
+   * at a time, up to the worker deadline), serialized by the same per-system
+   * workflow concurrency group, and deliberately exclusive with every other
+   * mode: it neither widens nor wakes the general billing queue.
+   */
+  const requestedMode = enabled('KAUDIT_AUDIT_REQUESTED_MODE')
+  if (requestedMode && (watch || drain)) {
+    throw new Error(
+      'KAUDIT_AUDIT_REQUESTED_MODE cannot run with WATCH or DRAIN',
+    )
+  }
+  if (requestedMode && appendReaudit) {
+    throw new Error(
+      'KAUDIT_AUDIT_REQUESTED_MODE and KAUDIT_AUDIT_REAUDIT_MODE are exclusive',
+    )
+  }
+  if (requestedMode && process.env.KAUDIT_AUDIT_SCOPE_FILE?.trim()) {
+    throw new Error(
+      'KAUDIT_AUDIT_REQUESTED_MODE reads the durable queue, not a scope file',
+    )
+  }
   const scopeFile = process.env.KAUDIT_AUDIT_SCOPE_FILE?.trim() || null
   const taskIds = scopeFile
     ? parseRecordingBackedTaskIds(await readFile(scopeFile, 'utf8'))
@@ -88,8 +114,15 @@ async function main(): Promise<void> {
       'KAUDIT_AUDIT_REAUDIT_MODE=APPEND requires KAUDIT_AUDIT_SCOPE_FILE',
     )
   }
+  /**
+   * The exact, bounded one-shot runs: a scope-bound targeted append re-audit,
+   * and an administrator-requested drain of the durable queue. Both may run
+   * while the general billing queue is PAUSED — they claim only calls that were
+   * named in advance, so neither wakes nor broadens that queue.
+   */
   const targetedOneShot =
-    appendReaudit && taskIds !== null && taskIds.length > 0 && !watch && !drain
+    requestedMode ||
+    (appendReaudit && taskIds !== null && taskIds.length > 0 && !watch && !drain)
   const allowedHosts = required('KAUDIT_ALLOWED_RECORDING_HOSTS')
     .split(',')
     .map((value) => value.trim())
@@ -114,12 +147,15 @@ async function main(): Promise<void> {
     if (Number(lockRows[0]?.acquired || 0) !== 1) {
       throw new Error('Another full-call audit worker already owns the database lock')
     }
-    const candidates = createMysqlReauditReadRepo(pool, {
-      externalTaskIds: taskIds ?? undefined,
-      allowPreviouslyClassified: appendReaudit,
-    })
+    const candidates = requestedMode
+      ? createMysqlManualReauditCandidateRepository(pool)
+      : createMysqlReauditReadRepo(pool, {
+          externalTaskIds: taskIds ?? undefined,
+          allowPreviouslyClassified: appendReaudit,
+        })
     const results = createMysqlReauditWriteRepo(pool, {
       allowCompletedReaudit: appendReaudit,
+      manualRequest: requestedMode,
     })
     const control = createMysqlAuditWorkerControl(pool)
     const fetcher = createProxyResolvingFetcher(
@@ -128,7 +164,7 @@ async function main(): Promise<void> {
     const ai = createOpenAiReaudit(required('OPENAI_API_KEY'))
     let completed = 0
     process.stdout.write(
-      `[audit-worker] started; mode=${appendReaudit ? 'append-reaudit' : 'new-only'}; scope=${taskIds ? `${taskIds.length} exact task IDs` : 'all eligible calls'}\n`,
+      `[audit-worker] started; mode=${requestedMode ? 'requested-reaudit' : appendReaudit ? 'append-reaudit' : 'new-only'}; scope=${requestedMode ? 'durable admin request queue' : taskIds ? `${taskIds.length} exact task IDs` : 'all eligible calls'}\n`,
     )
     for (;;) {
       if (shutdownRequested) {
@@ -159,13 +195,13 @@ async function main(): Promise<void> {
         summary = await runReauditBatch({
           candidates,
           results,
-          includePreviouslyClassified: appendReaudit,
+          includePreviouslyClassified: appendReaudit || requestedMode,
           batchSize,
           shouldContinue: async () =>
             !shutdownRequested &&
             (targetedOneShot ||
               (await control.getDesiredState('billing')) === 'running') &&
-            (!drain || Date.now() < deadline),
+            ((!drain && !requestedMode) || Date.now() < deadline),
           processor: {
             process: (candidate) =>
               auditOneCall({
@@ -227,6 +263,23 @@ async function main(): Promise<void> {
         if (!watch || drain) break
         await wait(pollMs)
         continue
+      }
+      if (requestedMode) {
+        // Keep draining the request queue while it yields work, bounded by the
+        // host deadline. An empty batch means every administrator request is
+        // settled, and the run ends rather than waiting for new intent.
+        if (summary.selected > 0 && Date.now() < deadline) continue
+        await control.recordObservation({
+          system: 'billing',
+          observedState:
+            (await control.getDesiredState('billing')) === 'paused'
+              ? 'paused'
+              : 'idle',
+        })
+        process.stdout.write(
+          `[audit-worker] requested re-audit finished; newly completed=${completed}\n`,
+        )
+        break
       }
       if (drain) {
         if (summary.selected > 0 && Date.now() < deadline) continue

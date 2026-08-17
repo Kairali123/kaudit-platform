@@ -1,11 +1,13 @@
-import { useQuery } from '@tanstack/react-query'
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import {
   AlertTriangle,
+  CheckCircle2,
   ChevronLeft,
   ChevronRight,
   Clock3,
   FileQuestion,
   LockKeyhole,
+  RefreshCw,
   ShieldCheck,
 } from 'lucide-react'
 import {
@@ -20,9 +22,14 @@ import { MetricGrid, PageHeader, UpdatedAt } from '../components/Metrics'
 import { ErrorState, LoadingState, Notice } from '../components/States'
 import {
   getJson,
+  postJson,
+  MANUAL_REAUDIT_ROUTE,
+  MAX_MANUAL_REAUDIT_CALLS,
   type AuditMonitorData,
   type AuditMonitorRow,
   type AuditPagination,
+  type ManualReauditReceipt,
+  type Profile,
   type Tile,
 } from '../lib/api'
 import { useBillingPeriod } from '../lib/billingPeriod'
@@ -54,6 +61,51 @@ function rowStatus(row: AuditMonitorRow): string {
   return row.confirmationStatus === 'model_output'
     ? 'Model output'
     : row.confirmationStatus
+}
+
+/**
+ * A row already carrying live re-audit work cannot be selected again.
+ *
+ * The server enforces one active request per call regardless; disabling the
+ * checkbox is how an administrator SEES that, instead of submitting a selection
+ * that is silently reported back as already queued.
+ */
+function reAuditLocked(row: AuditMonitorRow): boolean {
+  return row.reAuditStatus != null
+}
+
+function reAuditLabel(row: AuditMonitorRow): string {
+  if (row.reAuditStatus === 'processing') return 'Re-auditing'
+  return row.reAuditStatus === 'queued' ? 'Re-audit queued' : ''
+}
+
+/**
+ * One retry key per draft selection.
+ *
+ * Held until a submission SUCCEEDS, so a double-click, a retried fetch, or an
+ * impatient second press replays the request already accepted rather than
+ * queuing — and paying for — the same calls twice.
+ */
+function newIdempotencyKey(): string {
+  return `rea-${crypto.randomUUID()}`
+}
+
+/**
+ * What the administrator is told after a submission. Counts and lifecycle only;
+ * the browser calculates nothing and no reference is echoed back.
+ */
+function receiptMessage(receipt: ManualReauditReceipt): string {
+  const queued =
+    receipt.alreadyQueuedCount > 0
+      ? ` ${receipt.alreadyQueuedCount.toLocaleString('en-IN')} already had a re-audit in progress.`
+      : ''
+  if (receipt.outcome === 'already_queued') {
+    return `Nothing new was queued.${queued}`
+  }
+  const verb = receipt.outcome === 'replayed' ? 'already queued' : 'queued'
+  return `${receipt.acceptedCount.toLocaleString('en-IN')} ${
+    receipt.acceptedCount === 1 ? 'call' : 'calls'
+  } ${verb} for re-audit.${queued}`
 }
 
 function money(value: string | null): string {
@@ -109,6 +161,13 @@ function PaginationFooter({
 
 export function AuditMonitorPage() {
   const period = useBillingPeriod()
+  const client = useQueryClient()
+  const profileQuery = useQuery({
+    queryKey: ['me'],
+    queryFn: () => getJson<Profile>('/api/v1/me'),
+    retry: false,
+  })
+  const isAdmin = profileQuery.data?.roles.includes('admin') === true
   const [page, setPage] = useState(1)
   const [pendingPage, setPendingPage] = useState(1)
   const [noRecordingPage, setNoRecordingPage] = useState(1)
@@ -141,11 +200,41 @@ export function AuditMonitorPage() {
     // bounded interval. Polling is not a client default.
     refetchInterval: 15_000,
   })
+  const [selected, setSelected] = useState<string[]>([])
+  const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey)
+  const [receipt, setReceipt] = useState<ManualReauditReceipt | null>(null)
+  const reAudit = useMutation({
+    mutationFn: () =>
+      postJson<ManualReauditReceipt>(MANUAL_REAUDIT_ROUTE, {
+        // The EXACT displayed references, in the order they were selected. No
+        // filter, page, or category is sent: nothing widens the selection on
+        // the way to a paid model.
+        callReferences: selected,
+        // The SAME key for every attempt at this selection, replaced only once
+        // a submission succeeds.
+        idempotencyKey,
+      }),
+    onSuccess: (result) => {
+      setReceipt(result)
+      setSelected([])
+      setIdempotencyKey(newIdempotencyKey())
+      void client.invalidateQueries({ queryKey: ['audit-monitor'] })
+      void client.invalidateQueries({ queryKey: ['audit-workers'] })
+    },
+  })
   useEffect(() => {
     setPage(1)
     setPendingPage(1)
     setNoRecordingPage(1)
   }, [period.month])
+  // A selection belongs to the rows it was made on. Changing month, page or
+  // filter can only clear it — never carry a reference onto a screen the
+  // administrator is no longer looking at.
+  useEffect(() => {
+    setSelected([])
+    setReceipt(null)
+    setIdempotencyKey(newIdempotencyKey())
+  }, [period.month, page, category, language])
   const tiles = useMemo<Tile[]>(() => {
     const summary = query.data?.summary
     if (!summary) return []
@@ -249,6 +338,28 @@ export function AuditMonitorPage() {
   if (query.error)
     return <ErrorState error={query.error} retry={() => void query.refetch()} />
   const data = query.data!
+  const selectable = data.rows
+    .filter((row) => !reAuditLocked(row))
+    .map((row) => row.callReference)
+  const selectedSet = new Set(selected)
+  const allSelected =
+    selectable.length > 0 &&
+    selectable.every((reference) => selectedSet.has(reference))
+  const overLimit = selected.length > MAX_MANUAL_REAUDIT_CALLS
+  const toggle = (reference: string) =>
+    setSelected((current) =>
+      current.includes(reference)
+        ? current.filter((value) => value !== reference)
+        : [...current, reference],
+    )
+  // Select-all covers THIS page's selectable rows and nothing more: an
+  // administrator can never queue a page they have not seen.
+  const toggleAll = () =>
+    setSelected((current) =>
+      allSelected
+        ? current.filter((value) => !selectable.includes(value))
+        : [...new Set([...current, ...selectable])],
+    )
   return (
     <>
       <PageHeader
@@ -309,6 +420,59 @@ export function AuditMonitorPage() {
         </label>
       </section>
 
+      {isAdmin && (
+        <section className="content-section reaudit-bar">
+          <div className="reaudit-summary">
+            <span className="eyebrow">Re-audit</span>
+            <strong>
+              {selected.length.toLocaleString('en-IN')} selected on this page
+            </strong>
+            <small>
+              Queues a paid AI re-audit of exactly these calls. A successful run
+              appends a new audit; a failure leaves the current result in place.
+            </small>
+          </div>
+          <div className="reaudit-state" role="status" aria-live="polite">
+            {reAudit.isPending && (
+              <span className="reaudit-message pending">
+                <RefreshCw size={14} aria-hidden /> Submitting the selection…
+              </span>
+            )}
+            {!reAudit.isPending && reAudit.error && (
+              <span className="reaudit-message error">
+                <AlertTriangle size={14} aria-hidden />
+                {(reAudit.error as Error).message}
+              </span>
+            )}
+            {!reAudit.isPending && !reAudit.error && receipt && (
+              <span className="reaudit-message success">
+                <CheckCircle2 size={14} aria-hidden /> {receiptMessage(receipt)}
+              </span>
+            )}
+            {overLimit && (
+              <span className="reaudit-message error">
+                <AlertTriangle size={14} aria-hidden /> Select at most{' '}
+                {MAX_MANUAL_REAUDIT_CALLS} calls in one request.
+              </span>
+            )}
+          </div>
+          <button
+            type="button"
+            className="button-primary"
+            disabled={reAudit.isPending || selected.length === 0 || overLimit}
+            title={
+              selected.length === 0
+                ? 'Select audited calls to re-audit'
+                : 'Queue a paid re-audit of the selected calls'
+            }
+            onClick={() => reAudit.mutate()}
+          >
+            <RefreshCw size={16} aria-hidden />
+            Re-audit selected
+          </button>
+        </section>
+      )}
+
       <section className="data-table content-section audit-table">
         <div className="table-heading">
           <div>
@@ -323,6 +487,17 @@ export function AuditMonitorPage() {
           <table>
             <thead>
               <tr>
+                {isAdmin && (
+                  <th className="select-cell">
+                    <input
+                      type="checkbox"
+                      checked={allSelected}
+                      disabled={selectable.length === 0}
+                      aria-label="Select every re-auditable call on this page"
+                      onChange={toggleAll}
+                    />
+                  </th>
+                )}
                 <th>Task / call reference</th>
                 <th>Audited</th>
                 <th>Category</th>
@@ -338,12 +513,24 @@ export function AuditMonitorPage() {
                 <th>Model / engine</th>
                 <th>AI usage</th>
                 <th>State</th>
+                <th>Re-audit</th>
                 <th>Admin review</th>
               </tr>
             </thead>
             <tbody>
               {data.rows.map((row) => (
                 <tr key={`${row.callReference}-${row.auditedAt}`}>
+                  {isAdmin && (
+                    <td className="select-cell">
+                      <input
+                        type="checkbox"
+                        checked={selectedSet.has(row.callReference)}
+                        disabled={reAuditLocked(row)}
+                        aria-label={`Select call ${row.callReference} for re-audit`}
+                        onChange={() => toggle(row.callReference)}
+                      />
+                    </td>
+                  )}
                   <td>
                     <code>{row.callReference}</code>
                     <small className="cell-sub">
@@ -383,6 +570,20 @@ export function AuditMonitorPage() {
                     </small>
                   </td>
                   <td>{rowStatus(row)}</td>
+                  <td>
+                    {row.reAuditStatus ? (
+                      <span className={`status-badge ${row.reAuditStatus}`}>
+                        {row.reAuditStatus === 'processing' ? (
+                          <RefreshCw size={13} aria-hidden />
+                        ) : (
+                          <Clock3 size={13} aria-hidden />
+                        )}
+                        {reAuditLabel(row)}
+                      </span>
+                    ) : (
+                      '—'
+                    )}
+                  </td>
                   <td>
                     <Link
                       className="table-action"

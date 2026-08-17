@@ -1,12 +1,26 @@
 import { ConfigurationError } from '../config/runtime.ts'
-import { parseAuditSystem, type AuditSystem } from './control.ts'
+import {
+  parseAuditDispatch,
+  type AuditDispatchMode,
+  type AuditSystem,
+} from './control.ts'
 
 const WORKFLOW_FILE = 'audit-worker.yml'
 const DISPATCH_TIMEOUT_MS = 10_000
 const CONTROL_MODE_VARIABLE = 'KAUDIT_AUDIT_WORKER_CONTROL_MODE'
 
 export interface AuditWorkerDispatcher {
-  dispatch(system: AuditSystem): Promise<void>
+  /** Whether this deployment can actually start this exact worker mode. */
+  canDispatch?(system: AuditSystem, mode?: AuditDispatchMode): boolean
+  /**
+   * Starts a bounded external worker.
+   *
+   * `mode` is optional and defaults to `ordinary`, so every existing caller and
+   * every existing dispatch keeps exactly the shape it had: no mode input is
+   * sent at all for an ordinary run. `requested` adds the administrator-
+   * selected Billing Audit re-audit, and is refused for Call Audit.
+   */
+  dispatch(system: AuditSystem, mode?: AuditDispatchMode): Promise<void>
 }
 
 export class AuditWorkerDispatchError extends Error {
@@ -79,16 +93,26 @@ export function createGitHubActionsAuditWorkerDispatcher(
   if (mode === 'disabled') return undefined
   if (mode === 'persistent') {
     return {
-      async dispatch(system) {
-        parseAuditSystem(system)
+      canDispatch(system, dispatchMode) {
+        const parsed = parseAuditDispatch(system, dispatchMode ?? 'ordinary')
+        // The persistent worker polls the ordinary intake queue only. Manual
+        // requests require a bounded requested-mode host until that changes.
+        return parsed.mode === 'ordinary'
+      },
+      async dispatch(system, dispatchMode) {
+        parseAuditDispatch(system, dispatchMode ?? 'ordinary')
       },
     }
   }
   const config = githubConfig(env)
 
   return {
-    async dispatch(system) {
-      const parsed = parseAuditSystem(system)
+    canDispatch(system, dispatchMode) {
+      parseAuditDispatch(system, dispatchMode ?? 'ordinary')
+      return true
+    },
+    async dispatch(system, dispatchMode) {
+      const parsed = parseAuditDispatch(system, dispatchMode ?? 'ordinary')
       try {
         const response = await fetcher(
           `https://api.github.com/repos/${config.repository}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
@@ -105,7 +129,13 @@ export function createGitHubActionsAuditWorkerDispatcher(
             },
             body: JSON.stringify({
               ref: config.ref,
-              inputs: { system: parsed },
+              // An ordinary run sends no mode at all, so the workflow's own
+              // default decides it and the existing dispatch is byte-identical
+              // to what it was before requested mode existed.
+              inputs:
+                parsed.mode === 'ordinary'
+                  ? { system: parsed.system }
+                  : { system: parsed.system, mode: parsed.mode },
             }),
           },
         )

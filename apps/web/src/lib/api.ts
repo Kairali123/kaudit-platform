@@ -244,12 +244,44 @@ export interface AuditMonitorRow {
   evidenceHashRecorded: boolean
   lastEvidenceVerifiedAt: string | null
   auditedAt: string | null
+  /**
+   * Whether an administrator-requested re-audit is already live for this row.
+   * The server exposes these two words and nothing else — no request id, queue
+   * item, baseline run, attempt count, or internal call id.
+   */
+  reAuditStatus: ManualReauditRowStatus | null
   aiUsage: {
     inputTokens: number | null
     outputTokens: number | null
     totalTokens: number | null
     audioSeconds: string | null
   }
+}
+
+/** Admin-only POST that queues an exact, bounded, paid Billing Audit re-audit. */
+export const MANUAL_REAUDIT_ROUTE = '/api/v1/audits/re-audit'
+
+/** The server's own ceiling on one request, restated for the selection UI. */
+export const MAX_MANUAL_REAUDIT_CALLS = 100
+
+export type ManualReauditRowStatus = 'queued' | 'processing'
+
+/**
+ * What the re-audit endpoint returns. Mirrors the server DTO in
+ * `src/reaudit/manualRequests.ts`: counts and lifecycle only, with no internal
+ * call id and nothing for the browser to calculate.
+ */
+export interface ManualReauditReceipt {
+  requestId: string | null
+  outcome: 'accepted' | 'replayed' | 'already_queued'
+  status:
+    | 'queued'
+    | 'running'
+    | 'completed'
+    | 'completed_with_failures'
+    | null
+  acceptedCount: number
+  alreadyQueuedCount: number
 }
 
 export interface AuditQueueRow {

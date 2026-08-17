@@ -4,6 +4,8 @@ import {
   KSERVE_SHORT_CALL_CUTOFF_MS,
 } from '../billing/kserveRules.ts'
 import { calculateOpenAiAuditCost } from '../usage/openAiCost.ts'
+import type { ManualReauditRowStatus } from '../reaudit/manualRequests.ts'
+import { readManualReauditRowStatuses } from './mysqlManualReauditQueue.ts'
 import { KSERVE_VENDOR_RATE_PER_MINUTE } from './mysqlKserveVendorBilled.ts'
 
 export interface AuditMonitorQuery {
@@ -38,6 +40,14 @@ export interface AuditMonitorRow {
   evidenceHashRecorded: boolean
   lastEvidenceVerifiedAt: string | null
   auditedAt: string | null
+  /**
+   * Whether an administrator-requested re-audit is already live for this row.
+   *
+   * The ONLY re-audit state this DTO carries: no request id, no queue item, no
+   * baseline run, no attempt count, no error code, and no internal call id. The
+   * page needs to know that a row is spoken for, and nothing else.
+   */
+  reAuditStatus: ManualReauditRowStatus | null
   aiUsage: {
     inputTokens: number | null
     outputTokens: number | null
@@ -162,6 +172,11 @@ interface AuditedFinancialSummaryRow extends RowDataPacket {
 }
 
 interface DataRow extends RowDataPacket {
+  /**
+   * Read so the re-audit queue can be joined by internal key. It is used to
+   * look up `reAuditStatus` and is NEVER copied into the DTO below.
+   */
+  internal_call_id: string | null
   call_reference: string
   billing_period_date: Date | string | null
   category: string
@@ -626,6 +641,7 @@ export async function collectAuditMonitor(
     await Promise.all([
       pool.query<DataRow[]>(
     `SELECT
+       c.id AS internal_call_id,
        ${TASK_REFERENCE_SQL} AS call_reference,
        c.billing_period_date,
        c.canonical_outcome_code AS category,
@@ -841,6 +857,15 @@ export async function collectAuditMonitor(
   const rowResult = auditedResult[0]
   const pendingRowResult = pendingResult[0]
   const noRecordingRowResult = noRecordingResult[0]
+  // Scoped to the rows actually on screen. The keys go in, only the two safe
+  // lifecycle words come back, and neither the keys nor the queue's own ids
+  // reach the response.
+  const reAuditStatuses = await readManualReauditRowStatuses(
+    pool,
+    rowResult
+      .map((row) => row.internal_call_id)
+      .filter((value): value is string => typeof value === 'string'),
+  )
 
   return {
     generatedAt: new Date().toISOString(),
@@ -936,6 +961,10 @@ export async function collectAuditMonitor(
         evidenceHashRecorded: Boolean(row.evidence_sha256),
         lastEvidenceVerifiedAt: isoDate(row.last_verified_at),
         auditedAt: isoDate(row.audited_at),
+        reAuditStatus:
+          (row.internal_call_id &&
+            reAuditStatuses.get(row.internal_call_id)) ||
+          null,
         aiUsage: {
           inputTokens: nullableNumber(row.ai_input_tokens),
           outputTokens: nullableNumber(row.ai_output_tokens),
