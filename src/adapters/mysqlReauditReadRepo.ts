@@ -36,7 +36,7 @@ export function createMysqlReauditReadRepo(
               FROM kaudit_call_external_reference scope_ref
               WHERE scope_ref.call_id = c.id
                 AND scope_ref.provider_name = 'kserve'
-                AND scope_ref.reference_type = 'task_id'
+                AND scope_ref.reference_type IN ('task_id','taskId','task')
                 AND scope_ref.external_id IN (${taskIds.map(() => '?').join(',')})
             )`
     : ''

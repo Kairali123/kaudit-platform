@@ -35,7 +35,10 @@ test('parameterizes an exact external task-ID scope in the candidate query', asy
   })
 
   assert.match(capturedSql, /scope_ref\.provider_name = 'kserve'/)
-  assert.match(capturedSql, /scope_ref\.reference_type = 'task_id'/)
+  assert.match(
+    capturedSql,
+    /scope_ref\.reference_type IN \('task_id','taskId','task'\)/,
+  )
   assert.match(capturedSql, /scope_ref\.external_id IN \(\?,\?\)/)
   assert.match(capturedSql, /FROM kaudit_invoice invoice/)
   assert.match(
