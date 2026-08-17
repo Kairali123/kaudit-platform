@@ -31,13 +31,16 @@ export function createMysqlReauditReadRepo(
     ? normalizeTaskIdScope(config.externalTaskIds)
     : []
   const scopeSql = taskIds.length
-    ? `AND EXISTS (
-              SELECT 1
-              FROM kaudit_call_external_reference scope_ref
-              WHERE scope_ref.call_id = c.id
-                AND scope_ref.provider_name = 'kserve'
-                AND scope_ref.reference_type IN ('task_id','taskId','task')
-                AND scope_ref.external_id IN (${taskIds.map(() => '?').join(',')})
+    ? `AND (
+              c.logical_call_key IN (${taskIds.map(() => '?').join(',')})
+              OR EXISTS (
+                SELECT 1
+                FROM kaudit_call_external_reference scope_ref
+                WHERE scope_ref.call_id = c.id
+                  AND scope_ref.provider_name = 'kserve'
+                  AND scope_ref.reference_type IN ('task_id','taskId','task')
+                  AND scope_ref.external_id IN (${taskIds.map(() => '?').join(',')})
+              )
             )`
     : ''
   return {
@@ -129,6 +132,7 @@ export function createMysqlReauditReadRepo(
           ...(options.includePreviouslyClassified
             ? [REAUDIT_CLASSIFIER_RULESET_VERSION]
             : []),
+          ...taskIds,
           ...taskIds,
           options.limit,
         ],

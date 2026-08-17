@@ -39,6 +39,7 @@ test('parameterizes an exact external task-ID scope in the candidate query', asy
     capturedSql,
     /scope_ref\.reference_type IN \('task_id','taskId','task'\)/,
   )
+  assert.match(capturedSql, /c\.logical_call_key IN \(\?,\?\)/)
   assert.match(capturedSql, /scope_ref\.external_id IN \(\?,\?\)/)
   assert.match(capturedSql, /FROM kaudit_invoice invoice/)
   assert.match(
@@ -46,7 +47,15 @@ test('parameterizes an exact external task-ID scope in the candidate query', asy
     /c\.billing_period_date BETWEEN\s+invoice\.period_start AND invoice\.period_end/,
   )
   assert.match(capturedSql, /invoice\.status IN \('received','matched','approved'\)/)
-  assert.deepEqual(capturedParameters, [0, 0, 'task-a|1', 'task-b|1', 5])
+  assert.deepEqual(capturedParameters, [
+    0,
+    0,
+    'task-a|1',
+    'task-b|1',
+    'task-a|1',
+    'task-b|1',
+    5,
+  ])
   assert.equal(candidates.length, 1)
   assert.equal(candidates[0]?.callId, 'call-1')
 })
@@ -92,6 +101,7 @@ test('explicit completed-call reader bypasses only processing and history filter
     1,
     1,
     'kairali-12cat/2.1.0',
+    'synthetic-task',
     'synthetic-task',
     1,
   ])
