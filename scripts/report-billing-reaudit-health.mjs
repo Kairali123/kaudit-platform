@@ -50,6 +50,29 @@ try {
       GROUP BY item.status, COALESCE(item.last_error_code, 'NONE')
       ORDER BY item.status, error_code`,
   )
+  const [findingRows] = await connection.query(
+    `SELECT finding.finding_code, COUNT(*) AS finding_count
+       FROM kaudit_billing_reaudit_item item
+       JOIN kaudit_audit_run audit_run
+         ON audit_run.call_id = item.call_id
+        AND audit_run.status = 'failed'
+        AND audit_run.started_at >= item.started_at
+       JOIN kaudit_audit_finding finding
+         ON finding.audit_run_id = audit_run.id
+        AND finding.call_id = item.call_id
+        AND finding.finding_code IN (
+              'SOURCE_MISSING', 'EVIDENCE_ALTERED', 'UNSAFE_SOURCE_URL',
+              'TRANSCRIPTION_FAILED', 'CLASSIFICATION_FAILED'
+            )
+      WHERE item.request_id = (
+              SELECT request.id
+                FROM kaudit_billing_reaudit_request request
+               ORDER BY request.requested_at DESC, request.id DESC
+               LIMIT 1
+            )
+      GROUP BY finding.finding_code
+      ORDER BY finding.finding_code`,
+  )
   console.log(JSON.stringify({
     operation: 'billing-reaudit-health',
     result: 'ok',
@@ -57,6 +80,10 @@ try {
       status: row.status,
       errorCode: row.error_code,
       count: Number(row.item_count),
+    })),
+    failureKinds: findingRows.map((row) => ({
+      code: row.finding_code,
+      count: Number(row.finding_count),
     })),
   }))
 } catch {
