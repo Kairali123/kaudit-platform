@@ -20,6 +20,7 @@ on:
           - targeted
           - requested
           - migration-0015
+          - diagnose-requested
       migration_confirmation:
         description: Type APPLY_0015 when selecting migration-0015
         required: false
@@ -69,7 +70,9 @@ jobs:
             unset DB_SSL_CA_PEM
           fi
           if [[ "$AUDIT_SYSTEM" == "billing" ]]; then
-            if [[ "$AUDIT_MODE" == "migration-0015" ]]; then
+            if [[ "$AUDIT_MODE" == "diagnose-requested" ]]; then
+              node scripts/report-billing-reaudit-health.mjs
+            elif [[ "$AUDIT_MODE" == "migration-0015" ]]; then
               if [[ "${{ inputs.migration_confirmation }}" != "APPLY_0015" ]]; then
                 exit 2
               fi
