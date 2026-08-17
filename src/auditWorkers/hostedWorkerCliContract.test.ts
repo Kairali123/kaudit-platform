@@ -59,3 +59,22 @@ test('Billing Audit publishes each settled candidate before continuing', () => {
   assert.match(billingWorker, /processedDelta: 1/)
   assert.match(billingWorker, /await control\.recordObservation/)
 })
+
+test('an exact append-only one-shot can run without waking a paused queue', () => {
+  assert.match(
+    billingWorker,
+    /appendReaudit && taskIds !== null && taskIds\.length > 0 && !watch && !drain/,
+  )
+  assert.match(
+    billingWorker,
+    /desired === 'paused' && !targetedOneShot/,
+  )
+  assert.match(
+    billingWorker,
+    /targetedOneShot \|\|[\s\S]{0,100}getDesiredState\('billing'\)/,
+  )
+  assert.match(
+    billingWorker,
+    /targetedOneShot && desiredAfterBatch === 'paused'/,
+  )
+})

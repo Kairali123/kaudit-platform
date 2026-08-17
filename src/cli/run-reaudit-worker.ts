@@ -88,6 +88,8 @@ async function main(): Promise<void> {
       'KAUDIT_AUDIT_REAUDIT_MODE=APPEND requires KAUDIT_AUDIT_SCOPE_FILE',
     )
   }
+  const targetedOneShot =
+    appendReaudit && taskIds !== null && taskIds.length > 0 && !watch && !drain
   const allowedHosts = required('KAUDIT_ALLOWED_RECORDING_HOSTS')
     .split(',')
     .map((value) => value.trim())
@@ -138,7 +140,7 @@ async function main(): Promise<void> {
         break
       }
       const desired = await control.getDesiredState('billing')
-      if (desired === 'paused') {
+      if (desired === 'paused' && !targetedOneShot) {
         await control.recordObservation({
           system: 'billing',
           observedState: 'paused',
@@ -161,7 +163,8 @@ async function main(): Promise<void> {
           batchSize,
           shouldContinue: async () =>
             !shutdownRequested &&
-            (await control.getDesiredState('billing')) === 'running' &&
+            (targetedOneShot ||
+              (await control.getDesiredState('billing')) === 'running') &&
             (!drain || Date.now() < deadline),
           processor: {
             process: (candidate) =>
@@ -202,11 +205,14 @@ async function main(): Promise<void> {
       const desiredAfterBatch = await control.getDesiredState('billing')
       await control.recordObservation({
         system: 'billing',
-        observedState: summary.stoppedEarly
-          ? desiredAfterBatch === 'paused'
+        observedState:
+          targetedOneShot && desiredAfterBatch === 'paused'
             ? 'paused'
-            : 'idle'
-          : 'running',
+            : summary.stoppedEarly
+              ? desiredAfterBatch === 'paused'
+                ? 'paused'
+                : 'idle'
+              : 'running',
       })
       completed += summary.completed
       if (summary.stoppedEarly) {
