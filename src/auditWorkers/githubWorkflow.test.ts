@@ -34,6 +34,25 @@ test('hosted worker drains through existing CLIs and never runs a model test', (
   }
 })
 
+test('targeted hosted re-audit is private, scope-bound, and billing-only', () => {
+  assert.match(workflow, /- targeted/)
+  assert.match(
+    workflow,
+    /KAUDIT_TARGETED_REAUDIT_SCOPE_B64: \$\{\{ secrets\.KAUDIT_TARGETED_REAUDIT_SCOPE_B64 \}\}/,
+  )
+  assert.match(workflow, /base64 --decode/)
+  assert.match(workflow, /KAUDIT_AUDIT_REQUIRE_SCOPE=true/)
+  assert.match(workflow, /KAUDIT_AUDIT_REAUDIT_MODE=APPEND/)
+  assert.match(workflow, /KAUDIT_AUDIT_BATCH=100/)
+  assert.match(
+    workflow,
+    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then\s+if \[\[ "\$AUDIT_MODE" == "targeted" \]\]; then\s+exit 2/,
+  )
+  assert.match(workflow, /if: always\(\)/)
+  assert.match(workflow, /rm -f "\$RUNNER_TEMP\/kaudit-targeted-reaudit\.json"/)
+  assert.doesNotMatch(workflow, /echo .*KAUDIT_TARGETED_REAUDIT_SCOPE/)
+})
+
 test('workflow configuration is secret-backed and minimally permissioned', () => {
   assert.match(workflow, /permissions:\n  contents: read/)
   for (const name of [
@@ -45,6 +64,7 @@ test('workflow configuration is secret-backed and minimally permissioned', () =>
     'OPENAI_API_KEY',
     'KAUDIT_ALLOWED_RECORDING_HOSTS',
     'KAUDIT_UNPOD_PROXY_BASE',
+    'KAUDIT_TARGETED_REAUDIT_SCOPE_B64',
   ]) {
     assert.match(workflow, new RegExp(`${name}: \\$\\{\\{ secrets\\.${name} \\}\\}`))
   }

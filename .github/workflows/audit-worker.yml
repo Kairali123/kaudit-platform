@@ -10,6 +10,14 @@ on:
         options:
           - billing
           - call
+      mode:
+        description: Billing audit run mode
+        required: false
+        default: new
+        type: choice
+        options:
+          - new
+          - targeted
 
 permissions:
   contents: read
@@ -36,6 +44,7 @@ jobs:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
       KAUDIT_ALLOWED_RECORDING_HOSTS: ${{ secrets.KAUDIT_ALLOWED_RECORDING_HOSTS }}
       KAUDIT_UNPOD_PROXY_BASE: ${{ secrets.KAUDIT_UNPOD_PROXY_BASE }}
+      KAUDIT_TARGETED_REAUDIT_SCOPE_B64: ${{ secrets.KAUDIT_TARGETED_REAUDIT_SCOPE_B64 }}
       KAUDIT_CALL_AUDIT_AUTO_START: "2026-07-01 00:00:00.000000"
       KAUDIT_WORKER_DEADLINE_SECONDS: "19200"
     steps:
@@ -48,20 +57,44 @@ jobs:
       - name: Drain selected audit queue
         env:
           AUDIT_SYSTEM: ${{ inputs.system }}
+          AUDIT_MODE: ${{ inputs.mode }}
         run: |
           if [[ "$DB_TLS_MODE" == "disabled" ]]; then
             unset DB_SSL_CA_PEM
           fi
           if [[ "$AUDIT_SYSTEM" == "billing" ]]; then
-            KAUDIT_AUDIT_MODE=EXECUTE \
-            KAUDIT_AUDIT_BATCH=10 \
-            KAUDIT_AUDIT_WATCH=false \
-            KAUDIT_AUDIT_DRAIN=true \
-            npm run audit:worker
+            if [[ "$AUDIT_MODE" == "targeted" ]]; then
+              if [[ -z "$KAUDIT_TARGETED_REAUDIT_SCOPE_B64" ]]; then
+                exit 2
+              fi
+              umask 077
+              printf '%s' "$KAUDIT_TARGETED_REAUDIT_SCOPE_B64" \
+                | base64 --decode \
+                > "$RUNNER_TEMP/kaudit-targeted-reaudit.json"
+              KAUDIT_AUDIT_SCOPE_FILE="$RUNNER_TEMP/kaudit-targeted-reaudit.json" \
+              KAUDIT_AUDIT_REQUIRE_SCOPE=true \
+              KAUDIT_AUDIT_REAUDIT_MODE=APPEND \
+              KAUDIT_AUDIT_MODE=EXECUTE \
+              KAUDIT_AUDIT_BATCH=100 \
+              KAUDIT_AUDIT_WATCH=false \
+              npm run audit:worker
+            else
+              KAUDIT_AUDIT_MODE=EXECUTE \
+              KAUDIT_AUDIT_BATCH=10 \
+              KAUDIT_AUDIT_WATCH=false \
+              KAUDIT_AUDIT_DRAIN=true \
+              npm run audit:worker
+            fi
           elif [[ "$AUDIT_SYSTEM" == "call" ]]; then
+            if [[ "$AUDIT_MODE" == "targeted" ]]; then
+              exit 2
+            fi
             KAUDIT_CALL_AUDIT_DRAIN=true \
             KAUDIT_CALL_AUDIT_BATCH_SIZE=25 \
             npm run callaudit:worker
           else
             exit 2
           fi
+      - name: Remove targeted scope
+        if: always()
+        run: rm -f "$RUNNER_TEMP/kaudit-targeted-reaudit.json"

@@ -45,6 +45,15 @@ KAUDIT_UNPOD_PROXY_BASE
 KAUDIT_CALL_AUDIT_AUTO_START
 ```
 
+For a deliberately scoped Billing Audit re-audit, configure the temporary
+secret `KAUDIT_TARGETED_REAUDIT_SCOPE_B64` to the base64 encoding of the private
+cleanup manifest. Dispatch the workflow with `system=billing` and
+`mode=targeted`. The runner decodes the secret only under `RUNNER_TEMP`, requires
+append-only re-audit mode, processes at most one bounded batch, and removes the
+scope in an `always()` cleanup step. Delete the repository secret immediately
+after the run. Never use a workflow input, repository variable, artifact, or log
+for the manifest because those surfaces expose identifiers.
+
 `DB_SSL_CA_FILE` is not used on a hosted runner. Use the inline PEM secret. If
 the production database explicitly uses `DB_TLS_MODE=disabled`, leave the PEM
 secret empty; the runtime refuses a CA beside disabled mode.
