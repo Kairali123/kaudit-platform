@@ -1,0 +1,41 @@
+name: Billing re-audit migration
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type APPLY_0015 to apply or verify migration 0015
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kaudit-production-migration
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    if: ${{ inputs.confirmation == 'APPLY_0015' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment: production
+    env:
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_TLS_MODE: ${{ secrets.DB_TLS_MODE }}
+      DB_SSL_CA_PEM: ${{ secrets.DB_SSL_CA_PEM }}
+      KAUDIT_MIGRATION_CONFIRM: ${{ inputs.confirmation }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+      - run: npm ci --ignore-scripts
+      - name: Apply and verify migration 0015
+        run: node scripts/apply-billing-reaudit-migration.mjs
