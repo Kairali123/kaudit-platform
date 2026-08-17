@@ -50,6 +50,35 @@ test('worker processes each selected unaudited candidate once', async () => {
   assert.equal(summary.stoppedEarly, false)
 })
 
+test('append re-audit explicitly requests previously classified candidates', async () => {
+  let includePreviouslyClassified: boolean | undefined
+  await runReauditBatch({
+    batchSize: 1,
+    includePreviouslyClassified: true,
+    candidates: {
+      async listCandidates(options) {
+        includePreviouslyClassified = options.includePreviouslyClassified
+        return []
+      },
+    },
+    results: {
+      async markStarted() {
+        return 'acquired'
+      },
+      async persist() {
+        return 'completed'
+      },
+    },
+    processor: {
+      async process() {
+        throw new Error('no candidate should run')
+      },
+    },
+  })
+
+  assert.equal(includePreviouslyClassified, true)
+})
+
 test('worker never processes a candidate already completed by another run', async () => {
   let processCalls = 0
   const summary = await runReauditBatch({

@@ -1,4 +1,5 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
+import { REAUDIT_CLASSIFIER_RULESET_VERSION } from '../reaudit/core.ts'
 import type { ReauditCandidate } from '../reaudit/types.ts'
 import { normalizeTaskIdScope } from '../reaudit/scope.ts'
 
@@ -21,10 +22,13 @@ function nullableMs(value: string | number | null): number | null {
 
 export function createMysqlReauditReadRepo(
   pool: Pool,
-  options: { externalTaskIds?: readonly string[] } = {},
+  config: {
+    externalTaskIds?: readonly string[]
+    allowPreviouslyClassified?: boolean
+  } = {},
 ) {
-  const taskIds = options.externalTaskIds
-    ? normalizeTaskIdScope(options.externalTaskIds)
+  const taskIds = config.externalTaskIds
+    ? normalizeTaskIdScope(config.externalTaskIds)
     : []
   const scopeSql = taskIds.length
     ? `AND EXISTS (
@@ -41,6 +45,14 @@ export function createMysqlReauditReadRepo(
       limit: number
       includePreviouslyClassified: boolean
     }): Promise<ReauditCandidate[]> {
+      if (
+        options.includePreviouslyClassified &&
+        !config.allowPreviouslyClassified
+      ) {
+        throw new Error(
+          'Previously classified calls require an explicitly enabled reader',
+        )
+      }
       const [rows] = await pool.execute<CandidateRow[]>(
         `SELECT c.id AS call_id, ca.id AS artifact_id, ca.source_url,
                 ca.sha256 AS baseline_sha256,
@@ -70,12 +82,14 @@ export function createMysqlReauditReadRepo(
                    invoice.period_start AND invoice.period_end
                AND invoice.status IN ('received','matched','approved')
            )
-           AND ca.audio_attempt_count < 8
-           AND (
-             ca.audio_next_attempt_at IS NULL
-             OR ca.audio_next_attempt_at <= current_timestamp(6)
-           )
-           AND ca.audio_processing_status NOT IN ('completed','exhausted')
+           AND (? = 1 OR (
+             ca.audio_attempt_count < 8
+             AND (
+               ca.audio_next_attempt_at IS NULL
+               OR ca.audio_next_attempt_at <= current_timestamp(6)
+             )
+             AND ca.audio_processing_status NOT IN ('completed','exhausted')
+           ))
            AND (? = 1 OR (
              NOT EXISTS (
                SELECT 1
@@ -99,12 +113,22 @@ export function createMysqlReauditReadRepo(
                )
              )
            ))
+           ${options.includePreviouslyClassified
+             ? `AND (
+                  c.outcome_taxonomy_version IS NULL
+                  OR c.outcome_taxonomy_version <> ?
+                )`
+             : ''}
            ${scopeSql}
          GROUP BY c.id, ca.id, ca.source_url, ca.sha256
          ORDER BY c.billing_period_date, c.id
          LIMIT ?`,
         [
           options.includePreviouslyClassified ? 1 : 0,
+          options.includePreviouslyClassified ? 1 : 0,
+          ...(options.includePreviouslyClassified
+            ? [REAUDIT_CLASSIFIER_RULESET_VERSION]
+            : []),
           ...taskIds,
           options.limit,
         ],

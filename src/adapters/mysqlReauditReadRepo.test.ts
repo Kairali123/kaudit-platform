@@ -43,7 +43,53 @@ test('parameterizes an exact external task-ID scope in the candidate query', asy
     /c\.billing_period_date BETWEEN\s+invoice\.period_start AND invoice\.period_end/,
   )
   assert.match(capturedSql, /invoice\.status IN \('received','matched','approved'\)/)
-  assert.deepEqual(capturedParameters, [0, 'task-a|1', 'task-b|1', 5])
+  assert.deepEqual(capturedParameters, [0, 0, 'task-a|1', 'task-b|1', 5])
   assert.equal(candidates.length, 1)
   assert.equal(candidates[0]?.callId, 'call-1')
+})
+
+test('completed candidates require an explicit reader capability', async () => {
+  const pool = {
+    async execute() {
+      throw new Error('query must not run')
+    },
+  } as unknown as Pool
+  const repo = createMysqlReauditReadRepo(pool, {
+    externalTaskIds: ['synthetic-task'],
+  })
+
+  await assert.rejects(
+    repo.listCandidates({ limit: 1, includePreviouslyClassified: true }),
+    /explicitly enabled reader/,
+  )
+})
+
+test('explicit completed-call reader bypasses only processing and history filters', async () => {
+  let capturedSql = ''
+  let capturedParameters: unknown[] = []
+  const pool = {
+    async execute(sql: string, parameters: unknown[]) {
+      capturedSql = sql
+      capturedParameters = parameters
+      return [[]]
+    },
+  } as unknown as Pool
+  const repo = createMysqlReauditReadRepo(pool, {
+    externalTaskIds: ['synthetic-task'],
+    allowPreviouslyClassified: true,
+  })
+
+  await repo.listCandidates({ limit: 1, includePreviouslyClassified: true })
+
+  assert.match(capturedSql, /\? = 1 OR \(\s*ca\.audio_attempt_count < 8/)
+  assert.match(capturedSql, /\? = 1 OR \(\s*NOT EXISTS/)
+  assert.match(capturedSql, /scope_ref\.external_id IN \(\?\)/)
+  assert.match(capturedSql, /c\.outcome_taxonomy_version <> \?/)
+  assert.deepEqual(capturedParameters, [
+    1,
+    1,
+    'kairali-12cat/2.1.0',
+    'synthetic-task',
+    1,
+  ])
 })

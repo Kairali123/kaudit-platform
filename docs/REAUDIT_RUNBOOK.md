@@ -105,6 +105,35 @@ receive bounded exponential retries; altered evidence and unsafe URLs are
 terminal visible findings. A MySQL advisory lock prevents two full workers from
 running concurrently.
 
+## Targeted append-only re-audit
+
+Use this mode only after a classifier-ruleset correction has been deployed. It
+revisits recording-backed calls named in an external scope file, appends a new
+audit run, and retains every earlier run as history. A successful result becomes
+the call's latest result. A failed re-audit leaves the prior successful result
+current. Calls already completed under the currently deployed ruleset are
+skipped, which makes an exact retry safe from duplicate model spend.
+
+The scope file has the same private, ignored cleanup-manifest shape documented
+above. Never commit it, print it, attach it to an issue, or put its identifiers
+in shell arguments or workflow inputs.
+
+```bash
+KAUDIT_AUDIT_SCOPE_FILE=/absolute/path/to/private-reaudit-manifest.json \
+  KAUDIT_AUDIT_REQUIRE_SCOPE=true \
+  KAUDIT_AUDIT_REAUDIT_MODE=APPEND \
+  KAUDIT_AUDIT_MODE=EXECUTE \
+  KAUDIT_AUDIT_BATCH=10 \
+  KAUDIT_AUDIT_WATCH=false \
+  npm run audit:worker
+```
+
+`KAUDIT_AUDIT_REAUDIT_MODE` must be byte-exact `APPEND`; any other supplied
+value refuses startup. This is a paid, database-writing operation. Run it from
+an approved operator environment with the deployed release checked out, while
+no other Billing Audit worker is active. The global advisory lock provides a
+second concurrency guard.
+
 ## Full-run gates
 
 Do not launch a full paid run until all of the following are true:

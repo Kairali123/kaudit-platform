@@ -66,6 +66,14 @@ async function main(): Promise<void> {
     21_000,
   )
   const deadline = Date.now() + deadlineSeconds * 1000
+  const appendReauditValue = process.env.KAUDIT_AUDIT_REAUDIT_MODE
+  if (
+    appendReauditValue !== undefined &&
+    appendReauditValue !== 'APPEND'
+  ) {
+    throw new Error('KAUDIT_AUDIT_REAUDIT_MODE must be exactly APPEND')
+  }
+  const appendReaudit = appendReauditValue === 'APPEND'
   const scopeFile = process.env.KAUDIT_AUDIT_SCOPE_FILE?.trim() || null
   const taskIds = scopeFile
     ? parseRecordingBackedTaskIds(await readFile(scopeFile, 'utf8'))
@@ -73,6 +81,11 @@ async function main(): Promise<void> {
   if (enabled('KAUDIT_AUDIT_REQUIRE_SCOPE') && !taskIds) {
     throw new Error(
       'KAUDIT_AUDIT_REQUIRE_SCOPE=true requires KAUDIT_AUDIT_SCOPE_FILE',
+    )
+  }
+  if (appendReaudit && !taskIds) {
+    throw new Error(
+      'KAUDIT_AUDIT_REAUDIT_MODE=APPEND requires KAUDIT_AUDIT_SCOPE_FILE',
     )
   }
   const allowedHosts = required('KAUDIT_ALLOWED_RECORDING_HOSTS')
@@ -101,8 +114,11 @@ async function main(): Promise<void> {
     }
     const candidates = createMysqlReauditReadRepo(pool, {
       externalTaskIds: taskIds ?? undefined,
+      allowPreviouslyClassified: appendReaudit,
     })
-    const results = createMysqlReauditWriteRepo(pool)
+    const results = createMysqlReauditWriteRepo(pool, {
+      allowCompletedReaudit: appendReaudit,
+    })
     const control = createMysqlAuditWorkerControl(pool)
     const fetcher = createProxyResolvingFetcher(
       required('KAUDIT_UNPOD_PROXY_BASE'),
@@ -110,7 +126,7 @@ async function main(): Promise<void> {
     const ai = createOpenAiReaudit(required('OPENAI_API_KEY'))
     let completed = 0
     process.stdout.write(
-      `[audit-worker] started; every already-audited call is skipped; scope=${taskIds ? `${taskIds.length} exact task IDs` : 'all eligible calls'}\n`,
+      `[audit-worker] started; mode=${appendReaudit ? 'append-reaudit' : 'new-only'}; scope=${taskIds ? `${taskIds.length} exact task IDs` : 'all eligible calls'}\n`,
     )
     for (;;) {
       if (shutdownRequested) {
@@ -141,6 +157,7 @@ async function main(): Promise<void> {
         summary = await runReauditBatch({
           candidates,
           results,
+          includePreviouslyClassified: appendReaudit,
           batchSize,
           shouldContinue: async () =>
             !shutdownRequested &&

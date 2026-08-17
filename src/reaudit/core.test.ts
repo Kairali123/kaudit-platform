@@ -44,7 +44,7 @@ test('classification validation rejects impossible conversation ends', () => {
     },
     category: 'OK',
     confidence: '0.90000000',
-    customerBlockNumbers: [2],
+    customerBlockNumbers: [1],
     unclearBlockNumbers: [],
     customerSpoke: true,
     lastMeaningfulCustomerExchangeMs: 5_000,
@@ -59,6 +59,90 @@ test('classification validation rejects impossible conversation ends', () => {
         4_000,
       ),
     /outside the recording/,
+  )
+})
+
+test('classification validation rejects user silence when customer speech exists', () => {
+  const raw: ModelClassification = {
+    model: {
+      provider: 'openai',
+      name: 'synthetic-classifier',
+      version: 'synthetic-v1',
+    },
+    category: 'USER_SILENCE',
+    confidence: '0.90000000',
+    customerBlockNumbers: [1, 2],
+    unclearBlockNumbers: [],
+    customerSpoke: true,
+    lastMeaningfulCustomerExchangeMs: 4_000,
+    remarks: 'Synthetic customer speaks while the agent is absent.',
+    disputeRecommended: true,
+  }
+  assert.throws(
+    () =>
+      validateClassification(
+        raw,
+        [
+          { number: 1, startMs: 0, endMs: 2_000, text: 'Synthetic request' },
+          { number: 2, startMs: 2_500, endMs: 4_000, text: 'Hello?' },
+        ],
+        5_000,
+      ),
+    /User-silence result cannot contain customer speech/,
+  )
+})
+
+test('classification validation rejects user silence without identified agent speech', () => {
+  const raw: ModelClassification = {
+    model: {
+      provider: 'openai',
+      name: 'synthetic-classifier',
+      version: 'synthetic-v1',
+    },
+    category: 'USER_SILENCE',
+    confidence: '0.90000000',
+    customerBlockNumbers: [],
+    unclearBlockNumbers: [1],
+    customerSpoke: false,
+    lastMeaningfulCustomerExchangeMs: null,
+    remarks: 'Synthetic ambiguous speech.',
+    disputeRecommended: true,
+  }
+  assert.throws(
+    () =>
+      validateClassification(
+        raw,
+        [{ number: 1, startMs: 0, endMs: 2_000, text: 'Hello?' }],
+        3_000,
+      ),
+    /requires positively identified agent speech/,
+  )
+})
+
+test('classification validation requires customer flags and timestamps to match blocks', () => {
+  const raw: ModelClassification = {
+    model: {
+      provider: 'openai',
+      name: 'synthetic-classifier',
+      version: 'synthetic-v1',
+    },
+    category: 'AGENT_FAILURE',
+    confidence: '0.90000000',
+    customerBlockNumbers: [1],
+    unclearBlockNumbers: [],
+    customerSpoke: false,
+    lastMeaningfulCustomerExchangeMs: null,
+    remarks: 'Synthetic inconsistent role assignment.',
+    disputeRecommended: true,
+  }
+  assert.throws(
+    () =>
+      validateClassification(
+        raw,
+        [{ number: 1, startMs: 0, endMs: 2_000, text: 'Synthetic request' }],
+        3_000,
+      ),
+    /must match identified customer speech blocks/,
   )
 })
 

@@ -9,7 +9,10 @@ import type {
   ReauditCategory,
 } from '../reaudit/types.ts'
 import { REAUDIT_CATEGORIES } from '../reaudit/types.ts'
-import { REAUDIT_CLASSIFICATION_MODEL } from './openaiReaudit.ts'
+import {
+  REAUDIT_CLASSIFICATION_MODEL,
+  REAUDIT_SPEAKER_ATTRIBUTION_RULES,
+} from './openaiReaudit.ts'
 
 export const CONSENSUS_REVIEWER_VERSION =
   'kairali-independent-consensus-review/1.0.0'
@@ -25,7 +28,9 @@ ${REAUDIT_CATEGORIES.join(', ')}.
 Saanvi is Kairali's female AI agent. Do not count Saanvi's later monologue as a
 customer exchange. Do not calculate money or add the deterministic 60-second
 goodbye grace. Return confidence from 0 to 1. If speaker identity or meaning is
-ambiguous, lower confidence and mark unclear blocks.`
+ambiguous, lower confidence and mark unclear blocks.
+
+${REAUDIT_SPEAKER_ATTRIBUTION_RULES}`
 
 export const CONSENSUS_REVIEWER_RULESET_SHA256 =
   canonicalJsonSha256({

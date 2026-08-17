@@ -37,6 +37,7 @@ export async function runReauditBatch(options: {
   results: ReauditResultRepository
   processor: ReauditProcessor
   batchSize: number
+  includePreviouslyClassified?: boolean
   now?: () => Date
   onProgress?: (
     summary: Readonly<ReauditWorkerSummary>,
@@ -49,7 +50,8 @@ export async function runReauditBatch(options: {
   }
   const rows = await options.candidates.listCandidates({
     limit: options.batchSize,
-    includePreviouslyClassified: false,
+    includePreviouslyClassified:
+      options.includePreviouslyClassified === true,
   })
   const summary: ReauditWorkerSummary = {
     selected: rows.length,

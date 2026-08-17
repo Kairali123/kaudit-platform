@@ -55,14 +55,26 @@ function failureFinding(outcome: ReauditItemResult['outcome']): string {
 
 export function createMysqlReauditWriteRepo(
   pool: Pool,
+  options: { allowCompletedReaudit?: boolean } = {},
 ): ReauditResultRepository {
+  const allowCompletedReaudit = options.allowCompletedReaudit === true
   return {
     async markStarted(candidate, at) {
       const connection = await pool.getConnection()
       try {
         await connection.beginTransaction()
         const [completed] = await connection.execute<CountRow[]>(
-          `SELECT
+          allowCompletedReaudit
+            ? `SELECT EXISTS (
+                 SELECT 1
+                 FROM kaudit_call c
+                 JOIN kaudit_audit_run latest
+                   ON latest.id = c.latest_audit_run_id
+                  AND latest.status = 'completed'
+                 WHERE c.id = ?
+                   AND c.outcome_taxonomy_version = ?
+               ) AS n`
+            : `SELECT
              (
                EXISTS (
                  SELECT 1 FROM kaudit_audit_run
@@ -82,16 +94,22 @@ export function createMysqlReauditWriteRepo(
                  WHERE c.id = ? AND c.canonical_outcome_code IS NOT NULL
                )
              ) AS n`,
-          [
-            candidate.callId,
-            candidate.artifactId,
-            candidate.artifactId,
-            candidate.callId,
-          ],
+          allowCompletedReaudit
+            ? [candidate.callId, REAUDIT_CLASSIFIER_RULESET_VERSION]
+            : [
+                candidate.callId,
+                candidate.artifactId,
+                candidate.artifactId,
+                candidate.callId,
+              ],
         )
         if (Number(completed[0]?.n || 0) > 0) {
           await connection.commit()
           return 'already_completed'
+        }
+        if (allowCompletedReaudit) {
+          await connection.commit()
+          return 'acquired'
         }
         const [updated] = await connection.execute<ResultSetHeader>(
           `UPDATE kaudit_call_artifact
@@ -122,11 +140,24 @@ export function createMysqlReauditWriteRepo(
       try {
         await connection.beginTransaction()
         const [completed] = await connection.execute<CountRow[]>(
-          `SELECT COUNT(*) AS n
-           FROM kaudit_audit_run
-           WHERE call_id = ? AND status = 'completed'
-           FOR UPDATE`,
-          [candidate.callId],
+          allowCompletedReaudit
+            ? `SELECT EXISTS (
+                 SELECT 1
+                 FROM kaudit_audit_run latest
+                 WHERE latest.id = c.latest_audit_run_id
+                   AND latest.status = 'completed'
+                   AND c.outcome_taxonomy_version = ?
+               ) AS n
+               FROM kaudit_call c
+               WHERE c.id = ?
+               FOR UPDATE`
+            : `SELECT COUNT(*) AS n
+               FROM kaudit_audit_run
+               WHERE call_id = ? AND status = 'completed'
+               FOR UPDATE`,
+          allowCompletedReaudit
+            ? [REAUDIT_CLASSIFIER_RULESET_VERSION, candidate.callId]
+            : [candidate.callId],
         )
         if (Number(completed[0]?.n || 0) > 0) {
           await connection.commit()
@@ -204,9 +235,15 @@ export function createMysqlReauditWriteRepo(
                 errorCode: result.errorCode ?? 'unknown',
                 attempt,
               }),
-              'Automated audit could not complete; the call remains unresolved.',
+              allowCompletedReaudit
+                ? 'Targeted re-audit could not complete; the prior completed audit remains current.'
+                : 'Automated audit could not complete; the call remains unresolved.',
             ],
           )
+          if (allowCompletedReaudit) {
+            await connection.commit()
+            return 'terminal_failure'
+          }
           await connection.execute(
             `UPDATE kaudit_call_artifact
              SET audio_processing_status = ?, audio_next_attempt_at = ?,

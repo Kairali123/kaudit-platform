@@ -38,6 +38,35 @@ const CATEGORY_RULEBOOK: Record<ReauditCategory, string> = {
   OK: 'Normal, legitimate and properly handled two-way customer conversation.',
 }
 
+export const REAUDIT_SPEAKER_ATTRIBUTION_RULES = `SPEAKER ATTRIBUTION RULES
+The transcript contains text and timestamps but no acoustic speaker labels. Assign
+speaker roles from conversational meaning before choosing a category:
+- A block belongs in customer_block_numbers when the speaker answers Saanvi,
+  describes a need, supplies requested details, asks a customer-side question,
+  repeatedly says hello while waiting for a response, or otherwise speaks as the
+  called person. Long or continuous speech is NOT evidence that the speaker is
+  Saanvi.
+- Leave a block out of customer_block_numbers and unclear_block_numbers only when
+  its wording positively identifies it as Saanvi's Kairali introduction, scripted
+  question, explanation, acknowledgement, or closing.
+- Put genuinely ambiguous blocks in unclear_block_numbers. Customer and unclear
+  blocks must never overlap.
+- customer_spoke must be true exactly when customer_block_numbers is non-empty.
+  The final customer-exchange timestamp must be the end timestamp of one of those
+  customer blocks.
+
+CATEGORY GUARDRAILS
+- USER_SILENCE requires at least one positively identified Saanvi block and zero
+  customer blocks. Never use USER_SILENCE when the customer speaks but Saanvi is
+  silent or stops responding.
+- When customer speech continues and Saanvi gives no substantive response after
+  it begins, use AGENT_FAILURE by default.
+- Use NETWORK_FAILURE_TELECOM instead only when the transcript contains explicit
+  evidence of one-way audio, inability to hear, distortion, a connection problem,
+  or a telecom drop. Absence of an agent response by itself is not network evidence.
+- A recorded voicemail or answering-machine greeting is VOICEMAIL, not
+  USER_SILENCE and not customer speech.`
+
 export const REAUDIT_CLASSIFIER_PROMPT = `You are the automated call-quality auditor for Kairali Group.
 The female Kairali AI agent is named Saanvi. Calls may be English, Hindi, Hinglish,
 Malayalam, or another detected language.
@@ -47,6 +76,8 @@ blocks from conversational cues. The final meaningful customer exchange is the E
 timestamp of the last meaningful customer response. Saanvi's natural closing words are
 handled later by a deterministic 60-second billing grace rule; do not extend the customer
 timestamp yourself. If the customer never meaningfully spoke, return null.
+
+${REAUDIT_SPEAKER_ATTRIBUTION_RULES}
 
 Choose exactly one category:
 ${Object.entries(CATEGORY_RULEBOOK)
