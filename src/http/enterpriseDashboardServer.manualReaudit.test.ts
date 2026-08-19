@@ -13,6 +13,7 @@ import type { AuditDispatchMode } from '../auditWorkers/control.ts'
 import {
   ManualReauditError,
   MANUAL_REAUDIT_ROUTE,
+  MANUAL_REAUDIT_RESUME_ROUTE,
   MAX_MANUAL_REAUDIT_CALLS,
   type ManualReauditEnqueueInput,
   type ManualReauditReceipt,
@@ -194,6 +195,14 @@ function post(base: string, body: unknown, headers: Record<string, string> = {})
   })
 }
 
+function resume(base: string, headers: Record<string, string> = {}) {
+  return fetch(`${base}${MANUAL_REAUDIT_RESUME_ROUTE}`, {
+    method: 'POST',
+    headers: { cookie: cookie(), 'content-type': 'application/json', ...headers },
+    body: '{}',
+  })
+}
+
 test('an administrator queues an exact selection and one worker run starts', async () => {
   const fixture = await harness()
   try {
@@ -222,6 +231,37 @@ test('an administrator queues an exact selection and one worker run starts', asy
     assert.equal(event?.action, 'billing_reaudit.request')
     assert.equal(event?.resourceType, 'billing_reaudit_request')
     assert.equal(event?.resourceId, 'brr_synthetic')
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('an administrator can resume only the durable requested queue', async () => {
+  const fixture = await harness()
+  try {
+    const response = await resume(fixture.base)
+    assert.equal(response.status, 200)
+    assert.deepEqual(await response.json(), { outcome: 'dispatched' })
+    assert.deepEqual(fixture.enqueued, [])
+    assert.deepEqual(fixture.dispatched, [
+      { system: 'billing', mode: 'requested' },
+    ])
+    assert.equal(fixture.events.at(-1)?.action, 'billing_reaudit.resume')
+    assert.equal(fixture.events.at(-1)?.resourceType, 'billing_reaudit_queue')
+    assert.equal(fixture.events.at(-1)?.resourceId, null)
+  } finally {
+    await fixture.close()
+  }
+})
+
+test('an operational user cannot resume the requested queue', async () => {
+  const fixture = await harness({ roles: ['user'] })
+  try {
+    const response = await resume(fixture.base)
+    assert.equal(response.status, 403)
+    assert.deepEqual(fixture.enqueued, [])
+    assert.deepEqual(fixture.dispatched, [])
+    assert.equal(fixture.events.at(-1)?.action, 'billing_reaudit.resume')
   } finally {
     await fixture.close()
   }

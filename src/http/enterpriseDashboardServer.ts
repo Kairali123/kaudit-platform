@@ -82,6 +82,7 @@ import {
   ManualReauditError,
   parseManualReauditRequest,
   MANUAL_REAUDIT_ROUTE,
+  MANUAL_REAUDIT_RESUME_ROUTE,
   type ManualReauditRequestPort,
 } from '../reaudit/manualRequests.ts'
 import { createMysqlManualReauditRequestRepository } from '../adapters/mysqlManualReauditQueue.ts'
@@ -91,10 +92,12 @@ import {
   type BillingCategoryAnalysisPort,
 } from '../adapters/mysqlBillingCategoryAnalysis.ts'
 import {
-  buildBillingCategoryAnalysis,
+  buildBillingCategoryPage,
+  buildBillingCategorySummary,
   parseBillingCategoryAnalysisQuery,
   BILLING_CATEGORY_ANALYSIS_PAGE_ROUTE,
   BILLING_CATEGORY_ANALYSIS_ROUTE,
+  BILLING_CATEGORY_SUMMARY_ROUTE,
 } from '../reporting/billingCategoryAnalysis.ts'
 import {
   createMysqlKserveSettlementRepository,
@@ -306,6 +309,7 @@ const API_ROUTES = new Set([
   '/api/v1/findings',
   '/api/v1/billing',
   BILLING_CATEGORY_ANALYSIS_ROUTE,
+  BILLING_CATEGORY_SUMMARY_ROUTE,
   KSERVE_SETTLEMENT_ROUTE,
   '/api/v1/reports',
   '/api/v1/operations',
@@ -345,7 +349,10 @@ const AUDIT_WORKER_WRITE_ROUTES = new Set([AUDIT_WORKER_CONTROL_ROUTE])
  * monitor read — and gated on the same `audit:control` boundary as starting a
  * worker, because this queues PAID model work.
  */
-const MANUAL_REAUDIT_WRITE_ROUTES = new Set([MANUAL_REAUDIT_ROUTE])
+const MANUAL_REAUDIT_WRITE_ROUTES = new Set([
+  MANUAL_REAUDIT_ROUTE,
+  MANUAL_REAUDIT_RESUME_ROUTE,
+])
 
 /**
  * At most 100 displayed references and one bounded retry key. The byte bound is
@@ -1378,6 +1385,20 @@ async function collectSettlementSummary(
   }
 }
 
+/**
+ * The category-analysis read model. Both halves of the page — the month summary
+ * and the table page — resolve it the same way, so an injected synthetic read
+ * model covers both and neither can quietly fall back to a different source.
+ */
+function billingCategoryRepository(
+  dependencies: Dependencies,
+): BillingCategoryAnalysisPort {
+  return (
+    dependencies.billingCategoryAnalysis ??
+    createMysqlBillingCategoryAnalysisRepository(dependencies.pool)
+  )
+}
+
 async function apiResponse(
   url: URL,
   dependencies: Dependencies,
@@ -1488,16 +1509,24 @@ async function apiResponse(
       parseHistoryLimit(url.searchParams.get('history')),
     )
   }
+  if (pathname === BILLING_CATEGORY_SUMMARY_ROUTE) {
+    // ADMINISTRATOR-ONLY, on the SAME `audit:inspect` gate as the table route
+    // below: the two halves of one admin page are never reachable through two
+    // different permissions. This half carries month aggregates only — no row,
+    // no task reference — and is scoped by month alone, so one read serves
+    // every category a reader selects.
+    return buildBillingCategorySummary(
+      billingCategoryRepository(dependencies),
+      period,
+    )
+  }
   if (pathname === BILLING_CATEGORY_ANALYSIS_ROUTE) {
     // ADMINISTRATOR-ONLY. The response carries per-call task references and
     // drives the restricted admin review action, so it takes the audit
     // inspection gate rather than the aggregate metrics permission, and the
     // read model returns no recording reference, hash, or internal id.
-    const repository =
-      dependencies.billingCategoryAnalysis ??
-      createMysqlBillingCategoryAnalysisRepository(dependencies.pool)
-    return buildBillingCategoryAnalysis(
-      repository,
+    return buildBillingCategoryPage(
+      billingCategoryRepository(dependencies),
       parseBillingCategoryAnalysisQuery(url.searchParams),
       period,
     )
@@ -1704,6 +1733,13 @@ function apiAction(pathname: string): string {
   if (pathname === BILLING_CATEGORY_ANALYSIS_ROUTE) {
     return 'billing_category_analysis.read'
   }
+  // A separate action from the table read above, and not the default
+  // 'summary.read': the two reads expose different things — month aggregates
+  // versus per-call task references — so an auditor must be able to tell which
+  // one an administrator actually made.
+  if (pathname === BILLING_CATEGORY_SUMMARY_ROUTE) {
+    return 'billing_category_summary.read'
+  }
   // Reading what was paid and RECORDING what was paid are two different money
   // events, so they never share an action name in the access log. The write
   // action is chosen at the call site; this is the read.
@@ -1729,6 +1765,9 @@ function apiAction(pathname: string): string {
   if (pathname === MANUAL_REAUDIT_ROUTE) {
     return 'billing_reaudit.request'
   }
+  if (pathname === MANUAL_REAUDIT_RESUME_ROUTE) {
+    return 'billing_reaudit.resume'
+  }
   return `${pathname.split('/').at(-1)}.read`
 }
 
@@ -1745,7 +1784,8 @@ function apiPermission(pathname: string): string {
   if (
     pathname === '/api/v1/audit-workers' ||
     pathname === AUDIT_WORKER_CONTROL_ROUTE ||
-    pathname === MANUAL_REAUDIT_ROUTE
+    pathname === MANUAL_REAUDIT_ROUTE ||
+    pathname === MANUAL_REAUDIT_RESUME_ROUTE
   ) return 'audit:control'
   if (pathname === '/api/v1/users') return 'user:manage'
   // Recording and reading the amount finally paid to KServe is a money
@@ -1761,7 +1801,11 @@ function apiPermission(pathname: string): string {
     pathname === '/api/v1/audit-audio' ||
     pathname === CALL_AUDIT_REPORT_ROUTE ||
     // Category analysis exposes per-call references and the review action.
-    pathname === BILLING_CATEGORY_ANALYSIS_ROUTE
+    pathname === BILLING_CATEGORY_ANALYSIS_ROUTE ||
+    // Its month summary is the same admin page split in two for cost, not a
+    // lesser read: it stays behind the same gate so no part of the page
+    // becomes reachable with the aggregate metrics permission.
+    pathname === BILLING_CATEGORY_SUMMARY_ROUTE
   ) return 'audit:inspect'
   if (pathname.startsWith('/api/v1/imports')) return 'import:write'
   return pathname === '/api/v1/reports'
@@ -1842,6 +1886,7 @@ function cacheTtlMs(pathname: string): number {
   if (
     pathname === '/api/v1/audits' ||
     pathname === BILLING_CATEGORY_ANALYSIS_ROUTE ||
+    pathname === BILLING_CATEGORY_SUMMARY_ROUTE ||
     pathname === '/api/v1/imports'
   ) {
     return 5_000
@@ -2458,6 +2503,46 @@ export function createEnterpriseDashboardServer(
         return
       }
       if (isManualReauditPost) {
+        if (url.pathname === MANUAL_REAUDIT_RESUME_ROUTE) {
+          requirePermission(context, 'audit:control')
+          if (
+            !dependencies.auditWorkerDispatcher ||
+            dependencies.auditWorkerDispatcher.canDispatch?.(
+              'billing',
+              'requested',
+            ) === false
+          ) {
+            throw Object.assign(
+              new Error('Audit worker start is not configured'),
+              {
+                code: 'AUDIT_WORKER_DISPATCH_NOT_CONFIGURED',
+                status: 503,
+              },
+            )
+          }
+          try {
+            await dependencies.auditWorkerDispatcher.dispatch(
+              'billing',
+              'requested',
+            )
+          } catch {
+            throw new AuditWorkerDispatchError()
+          }
+          await auditAccess(
+            dependencies,
+            request,
+            context,
+            correlation,
+            'success',
+            'billing_reaudit.resume',
+            'billing_reaudit_queue',
+            null,
+            'audit_operations',
+          )
+          apiCache.clear()
+          sendJson(response, correlation, { outcome: 'dispatched' })
+          return
+        }
         /**
          * Administrator-selected Billing Audit re-audit.
          *

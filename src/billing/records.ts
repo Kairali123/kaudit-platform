@@ -49,10 +49,10 @@ export interface BillingComponentRecord {
   componentType: 'platform'
   ruleCode: string
   rawQuantity: string
-  rawUnit: 'millisecond' | 'minute'
+  rawUnit: 'millisecond' | 'minute' | 'INR'
   billableQuantity: string
   billingIncrement: string
-  unitRate: '9.50000000'
+  unitRate: '9.50000000' | '1.00000000'
   subtotalAmount: string
   taxAmount: '0.00000000'
   totalAmount: string

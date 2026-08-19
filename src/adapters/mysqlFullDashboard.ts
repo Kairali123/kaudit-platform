@@ -415,7 +415,9 @@ export function verifiedPeriodTotalsSql(periodCount: number): string {
 }
 
 /**
- * Vendor-asserted billed minutes per requested period: one row per period.
+ * Vendor assertions per requested period: billed minutes and, when supplied,
+ * the billed amount. The amount is authoritative for the vendor claim; minutes
+ * are retained for the legacy fallback only.
  *
  * Aggregated independently of the calculations above. Joining provider cost
  * rows and calculations in one statement would multiply each provider row by
@@ -431,19 +433,43 @@ export function verifiedPeriodTotalsSql(periodCount: number): string {
  */
 export function providerPeriodTotalsSql(periodCount: number): string {
   return `WITH ${requestedPeriodCte(periodCount)},
+          provider_claim AS (
+            SELECT cost.call_id,
+                   SUM(CASE
+                     WHEN cost.provider_sku = 'vendor_asserted_billed_minutes'
+                     THEN cost.minutes_decimal
+                   END) AS provider_minutes,
+                   MAX(CASE
+                     WHEN cost.provider_sku = 'vendor_asserted_billed_amount'
+                     THEN cost.quantity_decimal
+                   END) AS provider_amount
+            FROM kaudit_provider_cost cost
+            WHERE cost.provider_sku IN (
+                    'vendor_asserted_billed_minutes',
+                    'vendor_asserted_billed_amount'
+                  )
+              AND cost.is_final = 1
+            GROUP BY cost.call_id
+          ),
           provider_period_total AS (
             SELECT requested.period_key AS period_key,
-                 CAST(SUM(cost.minutes_decimal) AS CHAR) AS provider_minutes
-            FROM kaudit_provider_cost cost
-            STRAIGHT_JOIN kaudit_call c ON c.id = cost.call_id
+                 CAST(SUM(claim.provider_minutes) AS CHAR)
+                   AS provider_minutes,
+                 CAST(SUM(claim.provider_amount) AS CHAR)
+                   AS provider_amount,
+                 CAST(SUM(CASE
+                   WHEN claim.provider_amount IS NULL
+                   THEN claim.provider_minutes
+                 END) AS CHAR) AS fallback_minutes
+            FROM provider_claim claim
+            STRAIGHT_JOIN kaudit_call c ON c.id = claim.call_id
             STRAIGHT_JOIN requested_period requested
               ON c.billing_period_date
                  BETWEEN requested.period_start AND requested.period_end
-            WHERE cost.provider_sku = 'vendor_asserted_billed_minutes'
-              AND cost.minutes_decimal IS NOT NULL
             GROUP BY requested.period_key
           )
-          SELECT period_key, provider_minutes
+          SELECT period_key, provider_minutes, provider_amount,
+                 fallback_minutes
           FROM provider_period_total`
 }
 
@@ -515,13 +541,17 @@ export async function collectPeriodAmounts(
     periods.map((period) => {
       const verifiedRow = verifiedByPeriod.get(period.key)
       const verified = toScaled(s(verifiedRow?.verified_amount))
-      const providerMinutes = toScaled(
-        s(providerByPeriod.get(period.key)?.provider_minutes),
+      const providerRow = providerByPeriod.get(period.key)
+      const suppliedProviderAmount = toScaled(
+        s(providerRow?.provider_amount),
       )
-      const providerClaimed =
-        providerMinutes == null || rate == null
-          ? null
-          : (providerMinutes * rate) / 100_000_000n
+      const fallbackMinutes = toScaled(s(providerRow?.fallback_minutes))
+      const fallbackAmount = fallbackMinutes == null || rate == null
+        ? null
+        : (fallbackMinutes * rate) / 100_000_000n
+      const providerClaimed = suppliedProviderAmount == null
+        ? fallbackAmount
+        : suppliedProviderAmount + (fallbackAmount ?? 0n)
       const invoice = invoiceByPeriod.get(period.key)
       return [
         period.key,

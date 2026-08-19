@@ -46,7 +46,9 @@ const SCHEMA = `
     id TEXT PRIMARY KEY,
     call_id TEXT NOT NULL,
     provider_sku TEXT NOT NULL,
-    minutes_decimal TEXT
+    minutes_decimal TEXT,
+    quantity_decimal TEXT,
+    is_final INTEGER NOT NULL DEFAULT 1
   );
   CREATE TABLE kaudit_billing_component_result (
     id TEXT PRIMARY KEY,
@@ -81,6 +83,7 @@ interface SyntheticProviderCost {
   id: string
   callId: string
   minutesDecimal: string | null
+  quantityDecimal?: string | null
   providerSku?: string
 }
 
@@ -143,13 +146,15 @@ function syntheticHarness(fixture: Fixture): Harness {
   for (const cost of fixture.providerCosts ?? []) {
     db.prepare(
       `INSERT INTO kaudit_provider_cost
-         (id, call_id, provider_sku, minutes_decimal)
-       VALUES (?, ?, ?, ?)`,
+         (id, call_id, provider_sku, minutes_decimal,
+          quantity_decimal, is_final)
+       VALUES (?, ?, ?, ?, ?, 1)`,
     ).run(
       cost.id,
       cost.callId,
       cost.providerSku ?? 'vendor_asserted_billed_minutes',
       cost.minutesDecimal,
+      cost.quantityDecimal ?? null,
     )
   }
   for (const invoice of fixture.invoices ?? []) {
@@ -436,6 +441,38 @@ test('provider cost rows are not multiplied by a call’s calculations', async (
   assert.equal(amounts.get('monthly:current')?.providerClaimed, '14.25')
 })
 
+test('provider amount wins per call and blank amounts retain the rate fallback', async () => {
+  const { amounts } = await amountsOf(
+    {
+      calls: [
+        { id: 'call-amount', billingPeriodDate: '2026-08-04' },
+        { id: 'call-fallback', billingPeriodDate: '2026-08-05' },
+      ],
+      providerCosts: [
+        {
+          id: 'minutes-amount',
+          callId: 'call-amount',
+          minutesDecimal: '1.00000000',
+        },
+        {
+          id: 'actual-amount',
+          callId: 'call-amount',
+          providerSku: 'vendor_asserted_billed_amount',
+          minutesDecimal: null,
+          quantityDecimal: '12.00000000',
+        },
+        {
+          id: 'minutes-fallback',
+          callId: 'call-fallback',
+          minutesDecimal: '1.00000000',
+        },
+      ],
+    },
+    [AUGUST],
+  )
+  assert.equal(amounts.get('monthly:current')?.providerClaimed, '21.5')
+})
+
 // ---------------------------------------------------------------------------
 // Invoices
 // ---------------------------------------------------------------------------
@@ -683,6 +720,7 @@ const ALLOWED_RELATIONS = new Set([
   'requested_period',
   'period_call',
   'scoped_calculation',
+  'provider_claim',
   'provider_period_total',
   'scoped_invoice',
 ])
@@ -691,8 +729,9 @@ test('provider totals start from provider cost and fix the production join order
   const sql = providerPeriodTotalsSql(2)
   assert.match(
     sql,
-    /FROM kaudit_provider_cost cost\s+STRAIGHT_JOIN kaudit_call c/,
+    /FROM provider_claim claim\s+STRAIGHT_JOIN kaudit_call c/,
   )
+  assert.match(sql, /FROM kaudit_provider_cost cost/)
   assert.doesNotMatch(sql, /cost\.call_id IN \(SELECT call_id FROM period_call\)/)
 })
 

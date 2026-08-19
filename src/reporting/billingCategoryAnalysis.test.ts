@@ -8,12 +8,19 @@ import type {
 } from '../adapters/mysqlBillingCategoryAnalysis.ts'
 import { parseBillingMonth } from './billingMonth.ts'
 import {
-  buildBillingCategoryAnalysis,
+  buildBillingCategoryPage,
+  buildBillingCategorySummary,
+  categoryLabelOf,
+  BILLING_CATEGORY_CATALOG,
+  BILLING_CATEGORY_ANALYSIS_ROUTE,
+  BILLING_CATEGORY_SUMMARY_ROUTE,
   fixedMoney,
   minutesFromMs,
+  percentageOf,
   parseBillingCategoryAnalysisQuery,
   sumDurationMs,
   sumMoney,
+  subtractMoney,
   toAllCategoriesKpi,
   BillingCategoryRequestError,
   MAX_PAGE_SIZE,
@@ -128,6 +135,12 @@ test('money is summed exactly, including places a float would lose', () => {
   assert.equal(sumMoney([]), '0.00000000')
 })
 
+test('KPI money gaps and shares use deterministic integer arithmetic', () => {
+  assert.equal(subtractMoney('19.00000000', '9.50000000'), '9.50000000')
+  assert.equal(percentageOf(1, 3), '33.33')
+  assert.equal(percentageOf(0, 0), '0.00')
+})
+
 // ---------------------------------------------------------------------------
 // Durations
 // ---------------------------------------------------------------------------
@@ -161,8 +174,10 @@ function totalsRow(
   overrides: Partial<BillingCategoryTotalsRow> = {},
 ): BillingCategoryTotalsRow {
   return {
-    category: 'PRODUCT_ENQUIRY',
+    category: 'TIME_DURATION',
     auditedCallCount: 2,
+    issueFoundCount: 1,
+    noIssueFoundCount: 1,
     kservePricedCalls: 2,
     kserveChargeInr: '19.00000000',
     auditorFinalPricedCalls: 1,
@@ -238,27 +253,63 @@ function callRow(
     callDate: '2026-08-04',
     callStartAt: '2026-08-04 09:15:00',
     callEndAt: '2026-08-04 09:18:10',
-    category: 'PRODUCT_ENQUIRY',
+    category: 'TIME_DURATION',
     kserveChargeTimeMs: 180_000,
+    kserveChargeInr: '19.00000000',
     aiAuditedDurationMs: 121_000,
+    auditorFinalChargeInr: '19.00000000',
+    aiConfidence: '0.95000000',
+    aiAuditResult: 'Issue found',
     gapMs: 59_000,
     recordingAvailable: true,
     ...overrides,
   }
 }
 
+/**
+ * A read model that records WHICH reads a builder made, so the split between
+ * the month summary and the table page is proven rather than assumed: a page
+ * request that touched a month aggregate would show up here.
+ */
 function port(
   scopes: BillingCategoryPageScope[],
   totals: BillingCategoryTotalsRow[] = [
     totalsRow(),
-    totalsRow({ category: 'NOT_CONNECTED', auditedCallCount: 1 }),
+    totalsRow({
+      category: 'AGENT_FAILURE',
+      auditedCallCount: 1,
+      issueFoundCount: 1,
+      noIssueFoundCount: 0,
+    }),
   ],
+  reads: string[] = [],
 ): BillingCategoryAnalysisPort {
   return {
     async listCategoryTotals() {
+      reads.push('listCategoryTotals')
       return totals
     },
+    async listNoRecordingTotals() {
+      reads.push('listNoRecordingTotals')
+      return totalsRow({
+        category: 'NO_RECORDING',
+        auditedCallCount: 0,
+        issueFoundCount: 0,
+        noIssueFoundCount: 0,
+        kservePricedCalls: 0,
+        kserveChargeInr: '0',
+        auditorFinalPricedCalls: 0,
+        auditorUnfinalizedCalls: 0,
+        auditorFinalChargeInr: '0',
+        kserveChargeTimeMs: 0,
+        aiAuditedDurationMs: 0,
+        aiAuditedDurationCalls: 0,
+        comparableCalls: 0,
+        gapMs: 0,
+      })
+    },
     async listCalls(scope) {
+      reads.push('listCalls')
       scopes.push(scope)
       return [callRow()]
     },
@@ -267,62 +318,116 @@ function port(
 
 const AUGUST = parseBillingMonth('2026-08')
 
-test('the KPI list leads with the all-categories selection', async () => {
-  const dto = await buildBillingCategoryAnalysis(
-    port([]),
-    { page: 1, pageSize: 25, category: null },
-    AUGUST,
-  )
+const FIRST_PAGE = { page: 1, pageSize: 25, category: null }
+
+function deepKeys(value: unknown, keys = new Set<string>()): Set<string> {
+  if (Array.isArray(value)) {
+    for (const entry of value) deepKeys(entry, keys)
+  } else if (value && typeof value === 'object') {
+    for (const [key, entry] of Object.entries(value)) {
+      keys.add(key)
+      deepKeys(entry, keys)
+    }
+  }
+  return keys
+}
+
+// ---------------------------------------------------------------------------
+// The month summary
+// ---------------------------------------------------------------------------
+
+test('the KPI list always contains all management categories', async () => {
+  const dto = await buildBillingCategorySummary(port([]), AUGUST)
   assert.deepEqual(
     dto.categories.map((kpi) => kpi.category),
-    ['all', 'PRODUCT_ENQUIRY', 'NOT_CONNECTED'],
+    [
+      'all',
+      ...BILLING_CATEGORY_CATALOG.map(({ category }) => category),
+      'NO_RECORDING',
+    ],
   )
-  assert.equal(dto.scope.category, 'all')
+  assert.equal(dto.categories.length, 10)
+  assert.deepEqual(dto.summary, {
+    totalAuditedCalls: 3,
+    issueFoundCalls: 2,
+    noIssueFoundCalls: 1,
+  })
+  const empty = dto.categories.find(
+    ({ category }) => category === 'VOICEMAIL',
+  )!
+  assert.equal(empty.auditedCallCount, 0)
+  assert.equal(empty.sharePercent, '0.00')
+  assert.equal(empty.kserveChargeInr, '0.00000000')
+  assert.equal(empty.auditorFinalChargeInr, '0.00000000')
+  assert.equal(empty.chargeGapInr, '0.00000000')
   assert.equal(dto.scope.month, '2026-08')
   assert.equal(dto.title, 'Category analysis')
-  assert.equal(dto.rows.length, 1)
 })
 
-test('the page scope is bounded and offset from the requested page', async () => {
-  const scopes: BillingCategoryPageScope[] = []
-  await buildBillingCategoryAnalysis(
-    port(scopes),
-    { page: 3, pageSize: 25, category: 'PRODUCT_ENQUIRY' },
-    AUGUST,
-  )
-  assert.deepEqual(scopes, [
-    {
-      periodStart: '2026-08-01',
-      periodEnd: '2026-08-31',
-      category: 'PRODUCT_ENQUIRY',
-      limit: 25,
-      offset: 50,
-    },
+/**
+ * The KPI a tile shows and the total the table footer shows are ONE object.
+ * Stating the basis on every KPI is what lets the page display the selected one
+ * as its scope total instead of deriving a second total from the rows on hand.
+ */
+test('every KPI declares itself a whole-scope total, not a page total', async () => {
+  const dto = await buildBillingCategorySummary(port([]), AUGUST)
+  for (const kpi of dto.categories) {
+    assert.equal(kpi.basis, 'entire_selected_scope', kpi.category)
+  }
+  const selected = dto.categories.find(
+    ({ category }) => category === 'TIME_DURATION',
+  )!
+  assert.equal(selected.auditedCallCount, 2)
+  assert.equal(selected.kserveChargeTimeMinutes, '4.00')
+  assert.equal(selected.gapMinutes, '0.98')
+})
+
+test('the month summary never reads a page of calls', async () => {
+  const reads: string[] = []
+  await buildBillingCategorySummary(port([], undefined, reads), AUGUST)
+  assert.deepEqual(reads.sort(), [
+    'listCategoryTotals',
+    'listNoRecordingTotals',
   ])
 })
 
-test('totals describe the whole selected scope, not the page', async () => {
-  const dto = await buildBillingCategoryAnalysis(
-    port([]),
-    { page: 1, pageSize: 25, category: 'PRODUCT_ENQUIRY' },
-    AUGUST,
-  )
-  assert.equal(dto.totals.basis, 'entire_selected_scope')
-  // One row is on the page; the totals still cover both audited calls.
-  assert.equal(dto.rows.length, 1)
-  assert.equal(dto.totals.auditedCallCount, 2)
-  assert.equal(dto.totals.kserveChargeTimeMinutes, '4.00')
-  assert.equal(dto.totals.gapMinutes, '0.98')
-  assert.equal(dto.pagination.totalRows, 2)
-  assert.equal(dto.pagination.totalPages, 1)
+test('no-recording charges are a ninth KPI and part of Grand Total only', async () => {
+  const repository = port([])
+  repository.listNoRecordingTotals = async () =>
+    totalsRow({
+      category: 'NO_RECORDING',
+      auditedCallCount: 2,
+      issueFoundCount: 0,
+      noIssueFoundCount: 0,
+      kservePricedCalls: 2,
+      kserveChargeInr: '14.25000000',
+      auditorFinalPricedCalls: 0,
+      auditorUnfinalizedCalls: 0,
+      auditorFinalChargeInr: '0',
+      kserveChargeTimeMs: 90_000,
+      aiAuditedDurationMs: 0,
+      aiAuditedDurationCalls: 0,
+      comparableCalls: 0,
+      gapMs: 90_000,
+    })
+  const dto = await buildBillingCategorySummary(repository, AUGUST)
+  const noRecording = dto.categories.find(
+    ({ category }) => category === 'NO_RECORDING',
+  )!
+  assert.equal(dto.summary.totalAuditedCalls, 3)
+  assert.equal(noRecording.auditedCallCount, 2)
+  assert.equal(noRecording.kserveChargeTimeMinutes, '1.50')
+  assert.equal(noRecording.aiAuditedDurationMinutes, '0.00')
+  assert.equal(noRecording.kserveChargeInr, '14.25000000')
+  assert.equal(noRecording.auditorFinalChargeInr, '0.00000000')
+  assert.equal(noRecording.gapMinutes, '1.50')
+  assert.equal(noRecording.chargeGapInr, '14.25000000')
+  assert.equal(dto.grandTotal.auditedCallCount, 5)
+  assert.equal(dto.grandTotal.kserveChargeInr, '52.25000000')
 })
 
 test('missing-duration audited calls are reported, never counted as money', async () => {
-  const dto = await buildBillingCategoryAnalysis(
-    port([]),
-    { page: 1, pageSize: 25, category: null },
-    AUGUST,
-  )
+  const dto = await buildBillingCategorySummary(port([]), AUGUST)
   const all = dto.categories[0]
   assert.equal(all.auditorFinalChargeInr, '19.00000000')
   assert.equal(all.auditorFinalPricedCalls, 2)
@@ -332,63 +437,144 @@ test('missing-duration audited calls are reported, never counted as money', asyn
   assert.equal(all.kserveChargeInr, '38.00000000')
 })
 
-test('a category that is empty this month reports an empty scope', async () => {
-  const dto = await buildBillingCategoryAnalysis(
+// ---------------------------------------------------------------------------
+// The table page
+// ---------------------------------------------------------------------------
+
+test('the page scope is bounded and offset from the requested page', async () => {
+  const scopes: BillingCategoryPageScope[] = []
+  await buildBillingCategoryPage(
+    port(scopes),
+    { page: 3, pageSize: 25, category: 'TIME_DURATION' },
+    AUGUST,
+  )
+  assert.deepEqual(scopes, [
+    {
+      periodStart: '2026-08-01',
+      periodEnd: '2026-08-31',
+      category: 'TIME_DURATION',
+      limit: 25,
+      offset: 50,
+    },
+  ])
+})
+
+/**
+ * The point of the split: a selection performs exactly one bounded row read.
+ * A regression that adds a count or folds the KPIs back into this response
+ * shows up here as another repository call.
+ */
+test('a table page never reads a month aggregate', async () => {
+  const reads: string[] = []
+  await buildBillingCategoryPage(
+    port([], undefined, reads),
+    { ...FIRST_PAGE, category: 'TIME_DURATION' },
+    AUGUST,
+  )
+  assert.deepEqual(reads, ['listCalls'])
+})
+
+test('the page response states only the bounded page it returned', async () => {
+  const dto = await buildBillingCategoryPage(
+    port([]),
+    { page: 1, pageSize: 25, category: 'TIME_DURATION' },
+    AUGUST,
+  )
+  assert.equal(dto.rows.length, 1)
+  assert.equal(dto.pagination.page, 1)
+  assert.equal(dto.pagination.pageSize, 25)
+  assert.equal(dto.scope.category, 'TIME_DURATION')
+  assert.equal(dto.scope.categoryLabel, 'Time duration')
+  assert.equal(dto.scope.pageSize, 25)
+  assert.equal(dto.rows[0].auditorFinalChargeInr, '19.00000000')
+})
+
+test('the all-categories selection is labelled and never filtered', async () => {
+  const scopes: BillingCategoryPageScope[] = []
+  const dto = await buildBillingCategoryPage(port(scopes), FIRST_PAGE, AUGUST)
+  assert.equal(dto.scope.category, 'all')
+  assert.equal(dto.scope.categoryLabel, 'All categories')
+  assert.equal(scopes[0].category, null)
+  assert.deepEqual(dto.pagination, { page: 1, pageSize: 25 })
+})
+
+test('a category that is empty this month reports an empty page', async () => {
+  const dto = await buildBillingCategoryPage(
     port([]),
     { page: 4, pageSize: 25, category: 'NOT_A_STORED_CATEGORY' },
     AUGUST,
   )
   assert.equal(dto.scope.category, 'NOT_A_STORED_CATEGORY')
-  assert.equal(dto.totals.auditedCallCount, 0)
-  assert.equal(dto.totals.kserveChargeInr, '0.00000000')
-  assert.equal(dto.totals.gapMinutes, null)
-  assert.equal(dto.pagination.totalRows, 0)
-  assert.equal(dto.pagination.totalPages, 1)
+  // A code outside the catalog is displayed as itself, never guessed at.
+  assert.equal(dto.scope.categoryLabel, 'NOT_A_STORED_CATEGORY')
+  assert.deepEqual(dto.pagination, { page: 4, pageSize: 25 })
 })
+
+test('every selectable label comes from the catalog without a query', () => {
+  assert.equal(categoryLabelOf('all'), 'All categories')
+  assert.equal(categoryLabelOf('NO_RECORDING'), 'No Recording')
+  for (const { category, label } of BILLING_CATEGORY_CATALOG) {
+    assert.equal(categoryLabelOf(category), label)
+  }
+})
+
+test('the two routes are distinct and both live under billing', () => {
+  assert.equal(BILLING_CATEGORY_ANALYSIS_ROUTE, '/api/v1/billing/categories')
+  assert.equal(
+    BILLING_CATEGORY_SUMMARY_ROUTE,
+    '/api/v1/billing/categories/summary',
+  )
+  assert.notEqual(
+    BILLING_CATEGORY_ANALYSIS_ROUTE,
+    BILLING_CATEGORY_SUMMARY_ROUTE,
+  )
+})
+
+// ---------------------------------------------------------------------------
+// Shared scope and privacy
+// ---------------------------------------------------------------------------
 
 test('no month means every stored period, stated as such', async () => {
   const scopes: BillingCategoryPageScope[] = []
-  const dto = await buildBillingCategoryAnalysis(
-    port(scopes),
-    { page: 1, pageSize: 25, category: null },
-    null,
-  )
-  assert.equal(dto.scope.month, null)
-  assert.equal(dto.scope.monthLabel, 'All periods')
+  const page = await buildBillingCategoryPage(port(scopes), FIRST_PAGE, null)
+  assert.equal(page.scope.month, null)
+  assert.equal(page.scope.monthLabel, 'All periods')
   assert.equal(scopes[0].periodStart, null)
   assert.equal(scopes[0].periodEnd, null)
+  const summary = await buildBillingCategorySummary(port([]), null)
+  assert.equal(summary.scope.month, null)
+  assert.equal(summary.scope.monthLabel, 'All periods')
 })
 
-test('the response carries no evidence, identity, or raw content field', async () => {
-  const dto = await buildBillingCategoryAnalysis(
-    port([]),
-    { page: 1, pageSize: 25, category: null },
-    AUGUST,
-  )
-  const keys = new Set<string>()
-  const walk = (value: unknown): void => {
-    if (Array.isArray(value)) value.forEach(walk)
-    else if (value && typeof value === 'object') {
-      for (const [key, entry] of Object.entries(value)) {
-        keys.add(key)
-        walk(entry)
-      }
+test('neither response carries an evidence, identity, or raw content field', async () => {
+  const responses = [
+    await buildBillingCategorySummary(port([]), AUGUST),
+    await buildBillingCategoryPage(port([]), FIRST_PAGE, AUGUST),
+  ]
+  for (const dto of responses) {
+    const keys = deepKeys(dto)
+    for (const forbidden of [
+      'callId',
+      'sourceUrl',
+      'recordingUrl',
+      'evidenceSha256',
+      'sha256',
+      'transcript',
+      'segments',
+      'sourceRowId',
+      'leadId',
+      'prompt',
+      'rawResponse',
+    ]) {
+      assert.equal(
+        keys.has(forbidden),
+        false,
+        `${forbidden} must not be returned`,
+      )
     }
   }
-  walk(dto)
-  for (const forbidden of [
-    'callId',
-    'sourceUrl',
-    'recordingUrl',
-    'evidenceSha256',
-    'sha256',
-    'transcript',
-    'segments',
-    'sourceRowId',
-    'leadId',
-    'prompt',
-    'rawResponse',
-  ]) {
-    assert.equal(keys.has(forbidden), false, `${forbidden} must not be returned`)
-  }
+  // The month summary carries no per-call row at all, so an admin-only KPI read
+  // cannot become a second way to reach call references.
+  assert.equal(deepKeys(responses[0]).has('callReference'), false)
+  assert.equal(deepKeys(responses[0]).has('rows'), false)
 })

@@ -23,6 +23,7 @@ test('creates an explicit final accepted-as-billed record without pretending an 
     claimedDurationMs: 14_000,
     connectedDurationMs: 14_000,
     vendorBilledMinutes: '0.50000000',
+    vendorBilledAmount: '5.25000000',
     sourceEvidence: {
       kind: 'call_manifest',
       referenceId: 'usage-file-1',
@@ -36,7 +37,13 @@ test('creates an explicit final accepted-as-billed record without pretending an 
   )
   assert.equal(records.calculation?.auditRunId, null)
   assert.equal(records.calculation?.billableDurationMs, 30_000)
-  assert.equal(records.calculation?.totalAmount, '4.75000000')
+  assert.equal(records.calculation?.totalAmount, '5.25000000')
+  assert.ok(records.component)
+  assert.equal(records.component.rawUnit, 'INR')
+  assert.equal(
+    records.component.billingIncrement,
+    'vendor_asserted_amount',
+  )
   assert.equal(records.decision.modelProvider, 'none')
   assert.equal(
     records.decision.reasonCode,
@@ -69,4 +76,21 @@ test('requires a published card and exact half-minute vendor quantity', () => {
       ),
     /D-03/,
   )
+})
+
+test('calculates from billed minutes only when KServe amount is blank', () => {
+  const records = buildAcceptedAsBilledRecords({
+    callId: 'call-legacy',
+    claimedDurationMs: null,
+    connectedDurationMs: null,
+    vendorBilledMinutes: '0.50000000',
+    vendorBilledAmount: null,
+    sourceEvidence: {
+      kind: 'call_manifest',
+      referenceId: 'usage-file-legacy',
+      sha256: 'c'.repeat(64),
+    },
+    decidedAt: '2026-04-30T12:00:00.000Z',
+  }, rateCard)
+  assert.equal(records.calculation?.totalAmount, '4.75000000')
 })

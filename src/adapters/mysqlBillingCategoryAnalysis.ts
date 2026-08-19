@@ -5,7 +5,7 @@ import {
 } from '../billing/kserveRules.ts'
 import {
   KSERVE_VENDOR_RATE_PER_MINUTE,
-  VENDOR_BILLED_MINUTES_SQL,
+  vendorBilledAssertionsSql,
 } from './mysqlKserveVendorBilled.ts'
 
 /**
@@ -21,8 +21,8 @@ import {
  *
  *   * READ-ONLY SELECTs over Kaudit-owned `kaudit_*` tables only. Nothing here
  *     writes, locks, alters, or references the external voice-lead source table.
- *   * The vendor figure comes from final vendor-asserted billed minutes — the
- *     provider's own billing evidence. The auditor figure is a capped audit
+ *   * The vendor figure comes from its supplied amount when present, with a
+ *     billed-minutes rate fallback only when blank. The auditor figure is a capped audit
  *     projection: the audited duration is priced with the locked KServe
  *     rounding rule, then capped per call at the vendor charge. A call without
  *     an audited duration contributes no auditor amount and is counted as
@@ -54,6 +54,7 @@ export interface BillingCategoryScope {
   periodEnd: string | null
 }
 
+/** One bounded page of one category selection inside a month. */
 export interface BillingCategoryPageScope extends BillingCategoryScope {
   /** A single canonical outcome code, or null for every category. */
   category: string | null
@@ -69,7 +70,14 @@ export interface BillingCategoryPageScope extends BillingCategoryScope {
  */
 export interface BillingCategoryTotalsRow {
   category: string
+  /**
+   * Audited calls in the category for the whole month. It is also the pager's
+   * denominator: the page statement selects from the same scoped calls under
+   * the same audited-evidence join, so this counts exactly what a page pages.
+   */
   auditedCallCount: number
+  issueFoundCount: number
+  noIssueFoundCount: number
   /** Calls carrying final vendor billed-minute evidence. */
   kservePricedCalls: number
   kserveChargeInr: string
@@ -98,15 +106,28 @@ export interface BillingCategoryCallRow {
   category: string
   /** Final vendor billed minutes expressed in milliseconds. */
   kserveChargeTimeMs: number | null
+  /** Vendor-supplied amount, with the fixed-rate fallback only when absent. */
+  kserveChargeInr: string
   /** Grace-adjusted audited duration: audit metadata, not a charge. */
   aiAuditedDurationMs: number | null
+  /** Deterministic audited-duration projection, capped at the vendor charge. */
+  auditorFinalChargeInr: string | null
+  /** Latest classifier confidence as exact decimal text. */
+  aiConfidence: string | null
+  aiAuditResult: 'Issue found' | 'No issue found'
   /** KServe billed duration minus AI-audited duration. Sign preserved. */
   gapMs: number | null
   /** Presence signal only. The recording reference itself never leaves here. */
   recordingAvailable: boolean
 }
 
-export interface BillingCategoryAnalysisPort {
+/**
+ * The MONTH-level half of the read model: the two aggregates that describe a
+ * whole bill month and do not move when a reader selects a category or turns a
+ * page. Kept as its own port so the table reads below cannot accidentally pull
+ * a month-wide scan in behind them.
+ */
+export interface BillingCategorySummaryPort {
   /**
    * Every available category for the month with its month-wide totals. The
    * table's own scope totals are read from this same result, so a footer total
@@ -115,10 +136,29 @@ export interface BillingCategoryAnalysisPort {
   listCategoryTotals(
     scope: BillingCategoryScope,
   ): Promise<BillingCategoryTotalsRow[]>
+  listNoRecordingTotals(
+    scope: BillingCategoryScope,
+  ): Promise<BillingCategoryTotalsRow>
+}
+
+/**
+ * The PAGE-level half: ONE read, for one bounded page of rows.
+ *
+ * There is deliberately no second read here. The pager's denominator is the
+ * selected category's `auditedCallCount`, which the month summary above already
+ * reports for every category and for the all-categories selection, and which is
+ * the count of exactly the population `listCalls` pages over. Counting it again
+ * per page would double every table request for a number the page already holds.
+ */
+export interface BillingCategoryPagePort {
   listCalls(
     scope: BillingCategoryPageScope,
   ): Promise<BillingCategoryCallRow[]>
 }
+
+export interface BillingCategoryAnalysisPort
+  extends BillingCategorySummaryPort,
+    BillingCategoryPagePort {}
 
 // ---------------------------------------------------------------------------
 // Derived relations. Each is grouped or ranked to exactly one row per call.
@@ -163,6 +203,8 @@ const AUDITED_EVIDENCE_SQL = `
         ORDER BY analysis.created_at DESC, analysis.id DESC
       ) AS current_rank
     FROM kaudit_call_artifact artifact
+    JOIN scoped_calls evidence_scope
+      ON evidence_scope.id = artifact.call_id
     JOIN kaudit_media_analysis analysis
       ON analysis.call_artifact_id = artifact.id
     JOIN (
@@ -188,6 +230,8 @@ const RECORDING_AVAILABILITY_SQL = `
     artifact.call_id,
     MAX(artifact.source_url IS NOT NULL) AS recording_available
   FROM kaudit_call_artifact artifact
+  JOIN scoped_calls recording_scope
+    ON recording_scope.id = artifact.call_id
   WHERE artifact.artifact_type = 'recording'
     AND artifact.is_final = 1
   GROUP BY artifact.call_id
@@ -218,10 +262,21 @@ const TASK_REFERENCE_SQL = `
         ORDER BY reference.id ASC
       ) AS reference_rank
     FROM kaudit_call_external_reference reference
+    JOIN scoped_calls reference_scope
+      ON reference_scope.id = reference.call_id
     WHERE reference.reference_type IN ('task_id','taskId','task')
   ) ranked
   WHERE ranked.reference_rank = 1
 `
+
+/**
+ * Both vendor assertions in one scoped provider-cost pass. `MAX(CASE ...)`
+ * preserves the revision semantics of the shared KServe read model while
+ * avoiding two full grouped scans for every category-analysis request.
+ */
+const SCOPED_VENDOR_BILLING_SQL = vendorBilledAssertionsSql(
+  'JOIN scoped_calls vendor_scope ON vendor_scope.id = cost.call_id',
+)
 
 /**
  * Duration semantics, defined once and used by both the aggregate and the rows.
@@ -250,6 +305,11 @@ const DURATION_COLUMNS_SQL = `
     ROUND(vendor.minutes_decimal * 60000) AS kserve_charge_time_ms,
     ${AI_AUDITED_DURATION_SQL} AS ai_audited_duration_ms`
 
+const VENDOR_CHARGE_SQL = `COALESCE(
+      CAST(vendor.amount_decimal AS DECIMAL(20,8)),
+      vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+    )`
+
 const AUDITOR_PROJECTED_CHARGE_SQL = `CASE
       WHEN ${AI_AUDITED_DURATION_SQL} IS NULL THEN NULL
       WHEN ${AI_AUDITED_DURATION_SQL} = 0 THEN 0
@@ -261,11 +321,11 @@ const AUDITOR_PROJECTED_CHARGE_SQL = `CASE
 
 const AUDITOR_CAPPED_CHARGE_SQL = `CASE
       WHEN ${AUDITOR_PROJECTED_CHARGE_SQL} IS NULL THEN NULL
-      WHEN vendor.minutes_decimal IS NULL THEN ${AUDITOR_PROJECTED_CHARGE_SQL}
+      WHEN ${VENDOR_CHARGE_SQL} IS NULL THEN ${AUDITOR_PROJECTED_CHARGE_SQL}
       WHEN ${AUDITOR_PROJECTED_CHARGE_SQL}
-        <= vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+        <= ${VENDOR_CHARGE_SQL}
         THEN ${AUDITOR_PROJECTED_CHARGE_SQL}
-      ELSE vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+      ELSE ${VENDOR_CHARGE_SQL}
     END`
 
 /**
@@ -282,23 +342,39 @@ const AUDITOR_CAPPED_CHARGE_SQL = `CASE
 export function scopedAuditedCallsSql(
   select: string,
   filters: readonly string[],
+  options: {
+    includeRecording?: boolean
+    includeTaskReference?: boolean
+  } = {},
 ): string {
-  return `SELECT
+  const includeRecording = options.includeRecording ?? true
+  const includeTaskReference = options.includeTaskReference ?? true
+  return `WITH scoped_calls AS (
+     SELECT
+       c.id,
+       c.logical_call_key,
+       c.canonical_outcome_code,
+       c.billing_period_date,
+       c.source_started_at,
+       c.source_ended_at
+     FROM kaudit_call c
+     WHERE ${filters.join('\n       AND ')}
+   )
+   SELECT
 ${select}
-   FROM kaudit_call c
+   FROM scoped_calls c
    JOIN (
      ${AUDITED_EVIDENCE_SQL}
    ) media ON media.call_id = c.id
    LEFT JOIN (
-     ${VENDOR_BILLED_MINUTES_SQL}
+     ${SCOPED_VENDOR_BILLING_SQL}
    ) vendor ON vendor.call_id = c.id
-   LEFT JOIN (
+   ${includeRecording ? `LEFT JOIN (
      ${RECORDING_AVAILABILITY_SQL}
-   ) recording ON recording.call_id = c.id
-   LEFT JOIN (
+   ) recording ON recording.call_id = c.id` : ''}
+   ${includeTaskReference ? `LEFT JOIN (
      ${TASK_REFERENCE_SQL}
-   ) task_reference ON task_reference.call_id = c.id
-   WHERE ${filters.join('\n     AND ')}`
+   ) task_reference ON task_reference.call_id = c.id` : ''}`
 }
 
 function periodFilter(scope: BillingCategoryScope): {
@@ -310,6 +386,24 @@ function periodFilter(scope: BillingCategoryScope): {
   if (scope.periodStart && scope.periodEnd) {
     filters.push('c.billing_period_date BETWEEN ? AND ?')
     params.push(scope.periodStart, scope.periodEnd)
+  }
+  return { filters, params }
+}
+
+/**
+ * The month filter narrowed to one category selection. The category is bound as
+ * a parameter, never interpolated, and it is the same equality the per-category
+ * totals group by — so the page and the KPI that sizes it describe one
+ * population.
+ */
+function selectionFilter(scope: BillingCategoryPageScope): {
+  filters: string[]
+  params: unknown[]
+} {
+  const { filters, params } = periodFilter(scope)
+  if (scope.category) {
+    filters.push('c.canonical_outcome_code = ?')
+    params.push(scope.category)
   }
   return { filters, params }
 }
@@ -337,6 +431,8 @@ export function categoryTotalsSql(scopedRowsSql: string): string {
   return `SELECT
      scoped.category,
      COUNT(*) AS audited_call_count,
+     SUM(scoped.category <> 'OK') AS issue_found_count,
+     SUM(scoped.category = 'OK') AS no_issue_found_count,
      SUM(scoped.kserve_charge_time_ms IS NOT NULL) AS kserve_priced_calls,
      COALESCE(SUM(scoped.kserve_charge_inr), 0) AS kserve_charge_inr,
      SUM(scoped.auditor_final_amount IS NOT NULL)
@@ -353,13 +449,13 @@ export function categoryTotalsSql(scopedRowsSql: string): string {
        scoped.kserve_charge_time_ms IS NOT NULL
        AND scoped.ai_audited_duration_ms IS NOT NULL
      ) AS comparable_calls,
-     SUM(
-       CASE
-         WHEN scoped.kserve_charge_time_ms IS NOT NULL
-          AND scoped.ai_audited_duration_ms IS NOT NULL
-         THEN scoped.kserve_charge_time_ms - scoped.ai_audited_duration_ms
-       END
-     ) AS gap_ms
+     CASE
+       WHEN SUM(scoped.kserve_charge_time_ms IS NOT NULL) = 0
+        AND SUM(scoped.ai_audited_duration_ms IS NOT NULL) = 0
+       THEN NULL
+       ELSE COALESCE(SUM(scoped.kserve_charge_time_ms), 0)
+          - COALESCE(SUM(scoped.ai_audited_duration_ms), 0)
+     END AS gap_ms
    FROM (
      ${scopedRowsSql}
    ) scoped
@@ -367,15 +463,62 @@ export function categoryTotalsSql(scopedRowsSql: string): string {
    ORDER BY scoped.category`
 }
 
+/**
+ * KServe-charged calls whose final recording has no source URL. They are not
+ * audited and never receive an invented auditor charge, but the vendor's
+ * supplied amount/minutes remain part of the financial population.
+ */
+export function noRecordingTotalsSql(
+  scope: BillingCategoryScope,
+): { sql: string; params: unknown[] } {
+  const scopedFilters = ['1 = 1']
+  const params: unknown[] = []
+  if (scope.periodStart && scope.periodEnd) {
+    scopedFilters.push('c.billing_period_date BETWEEN ? AND ?')
+    params.push(scope.periodStart, scope.periodEnd)
+  }
+  return {
+    sql: `SELECT
+      'NO_RECORDING' AS category,
+      COUNT(*) AS audited_call_count,
+      0 AS issue_found_count,
+      0 AS no_issue_found_count,
+      COUNT(*) AS kserve_priced_calls,
+      COALESCE(SUM(${VENDOR_CHARGE_SQL}), 0) AS kserve_charge_inr,
+      0 AS auditor_final_priced_calls,
+      0 AS auditor_unfinalized_calls,
+      0 AS auditor_final_charge_inr,
+      COALESCE(SUM(ROUND(vendor.minutes_decimal * 60000)), 0)
+        AS kserve_charge_time_ms,
+      0 AS ai_audited_duration_ms,
+      0 AS ai_audited_duration_calls,
+      0 AS comparable_calls,
+      COALESCE(SUM(ROUND(vendor.minutes_decimal * 60000)), 0) AS gap_ms
+    FROM (
+      ${vendorBilledAssertionsSql()}
+    ) vendor
+    STRAIGHT_JOIN kaudit_call c ON c.id = vendor.call_id
+    LEFT JOIN kaudit_call_artifact recording
+      ON recording.call_id = c.id
+     AND recording.artifact_type = 'recording'
+     AND recording.is_final = 1
+     AND recording.source_url IS NOT NULL
+    WHERE ${scopedFilters.join('\n      AND ')}
+      AND vendor.minutes_decimal IS NOT NULL
+      AND recording.id IS NULL`,
+    params,
+  }
+}
+
 /** The scoped projection the totals aggregate is defined over. */
 export function categoryTotalsRowsSql(filters: readonly string[]): string {
   return scopedAuditedCallsSql(
     `    c.canonical_outcome_code AS category,
-    vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
-      AS kserve_charge_inr,
+    ${VENDOR_CHARGE_SQL} AS kserve_charge_inr,
     ${AUDITOR_CAPPED_CHARGE_SQL} AS auditor_final_amount,
 ${DURATION_COLUMNS_SQL}`,
     filters,
+    { includeRecording: false, includeTaskReference: false },
   )
 }
 
@@ -400,6 +543,16 @@ export function categoryCallsSql(filters: readonly string[]): string {
     c.billing_period_date,
     c.canonical_outcome_code AS category,
     COALESCE(recording.recording_available, 0) AS recording_available,
+    ${VENDOR_CHARGE_SQL} AS kserve_charge_inr,
+    ${AUDITOR_CAPPED_CHARGE_SQL} AS auditor_final_charge_inr,
+    CAST((
+      SELECT finding.confidence
+      FROM kaudit_audit_finding finding
+      WHERE finding.call_id = c.id
+        AND finding.finding_code = c.canonical_outcome_code
+      ORDER BY finding.created_at DESC, finding.id DESC
+      LIMIT 1
+    ) AS CHAR) AS ai_confidence,
 ${DURATION_COLUMNS_SQL}`,
     filters,
   )}
@@ -414,6 +567,8 @@ ${DURATION_COLUMNS_SQL}`,
 interface TotalsDataRow extends RowDataPacket {
   category: string
   audited_call_count: number | string
+  issue_found_count: number | string | null
+  no_issue_found_count: number | string | null
   kserve_priced_calls: number | string | null
   kserve_charge_inr: number | string | null
   auditor_final_priced_calls: number | string | null
@@ -433,6 +588,9 @@ interface CallDataRow extends RowDataPacket {
   billing_period_date: Date | string | null
   category: string
   recording_available: number | string | null
+  kserve_charge_inr: number | string | null
+  auditor_final_charge_inr: number | string | null
+  ai_confidence: number | string | null
   kserve_charge_time_ms: number | string | null
   ai_audited_duration_ms: number | string | null
 }
@@ -448,6 +606,10 @@ function nullableWholeNumber(value: unknown): number | null {
 /** The database's own decimal text, kept as text. Never parsed to a float. */
 function decimalText(value: unknown): string {
   return value == null ? '0' : String(value)
+}
+
+function nullableDecimalText(value: unknown): string | null {
+  return value == null ? null : String(value)
 }
 
 const NAIVE_TIMESTAMP = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2}:\d{2})/
@@ -523,6 +685,8 @@ export function toCategoryTotalsRow(
   return {
     category: row.category,
     auditedCallCount: wholeNumber(row.audited_call_count),
+    issueFoundCount: wholeNumber(row.issue_found_count),
+    noIssueFoundCount: wholeNumber(row.no_issue_found_count),
     kservePricedCalls: wholeNumber(row.kserve_priced_calls),
     kserveChargeInr: decimalText(row.kserve_charge_inr),
     auditorFinalPricedCalls: wholeNumber(row.auditor_final_priced_calls),
@@ -549,6 +713,7 @@ export function toCategoryCallRow(
   const aiAuditedDurationMs = nullableWholeNumber(
     row.ai_audited_duration_ms,
   )
+  const noIssueFound = row.category === 'OK'
   return {
     callReference: row.call_reference,
     callDate: storedDate(row.call_started_at, row.billing_period_date),
@@ -556,7 +721,14 @@ export function toCategoryCallRow(
     callEndAt: storedTimestamp(row.call_ended_at),
     category: row.category,
     kserveChargeTimeMs,
+    kserveChargeInr: decimalText(row.kserve_charge_inr),
     aiAuditedDurationMs,
+    auditorFinalChargeInr: nullableDecimalText(
+      row.auditor_final_charge_inr,
+    ),
+    aiConfidence:
+      row.ai_confidence == null ? null : String(row.ai_confidence),
+    aiAuditResult: noIssueFound ? 'No issue found' : 'Issue found',
     gapMs: durationGapMs(kserveChargeTimeMs, aiAuditedDurationMs),
     recordingAvailable: Number(row.recording_available ?? 0) === 1,
   }
@@ -578,12 +750,16 @@ export function createMysqlBillingCategoryAnalysisRepository(
       )
       return rows.map(toCategoryTotalsRow)
     },
+    async listNoRecordingTotals(scope) {
+      const statement = noRecordingTotalsSql(scope)
+      const [rows] = await pool.query<TotalsDataRow[]>(
+        statement.sql,
+        statement.params,
+      )
+      return toCategoryTotalsRow(rows[0]!)
+    },
     async listCalls(scope) {
-      const { filters, params } = periodFilter(scope)
-      if (scope.category) {
-        filters.push('c.canonical_outcome_code = ?')
-        params.push(scope.category)
-      }
+      const { filters, params } = selectionFilter(scope)
       const [rows] = await pool.query<CallDataRow[]>(
         categoryCallsSql(filters),
         [...params, scope.limit, scope.offset],

@@ -4,6 +4,7 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import {
   MANUAL_REAUDIT_ROUTE,
+  MANUAL_REAUDIT_RESUME_ROUTE,
   MAX_MANUAL_REAUDIT_CALLS,
 } from '../reaudit/manualRequests.ts'
 
@@ -29,6 +30,12 @@ test('the client mirrors the server route and its ceiling exactly', async () => 
   assert.match(
     source,
     new RegExp(`MANUAL_REAUDIT_ROUTE = '${MANUAL_REAUDIT_ROUTE}'`),
+  )
+  assert.match(
+    source,
+    new RegExp(
+      `MANUAL_REAUDIT_RESUME_ROUTE =\\s*'${MANUAL_REAUDIT_RESUME_ROUTE}'`,
+    ),
   )
   assert.match(
     source,
@@ -143,6 +150,23 @@ test('the action is disabled while pending, empty, or over the ceiling', async (
   )
 })
 
+test('the separate recovery action resumes existing work without a selection', async () => {
+  const source = await webSource('pages/AuditMonitorPage.tsx')
+  assert.match(
+    source,
+    /postJson<ManualReauditResumeReceipt>\(\s*MANUAL_REAUDIT_RESUME_ROUTE,\s*\{\}/,
+  )
+  assert.match(source, />\s*Resume queued re-audits\s*</)
+  assert.match(
+    source,
+    /disabled=\{resumeReAudits\.isPending \|\| resumeReAudits\.isSuccess\}/,
+  )
+  assert.equal(
+    /MANUAL_REAUDIT_RESUME_ROUTE[\s\S]{0,180}callReferences/.test(source),
+    false,
+  )
+})
+
 test('pending, success, and error are all visible states', async () => {
   const source = await webSource('pages/AuditMonitorPage.tsx')
   assert.match(source, /role="status" aria-live="polite"/)
@@ -189,4 +213,5 @@ test('the re-audit bar stays responsive and stable at narrow widths', async () =
   // A fixed minimum height keeps the row from jumping as messages appear.
   assert.match(styles, /\.reaudit-bar \{[\s\S]*?min-height: 78px;/)
   assert.match(styles, /\.select-cell \{/)
+  assert.match(styles, /\.reaudit-actions \{/)
 })

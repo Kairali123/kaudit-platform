@@ -33,6 +33,10 @@ import { canonicalJson } from '../messaging/canonicalJson.ts'
 /** Admin-only POST that queues an exact, bounded, paid re-audit. */
 export const MANUAL_REAUDIT_ROUTE = '/api/v1/audits/re-audit'
 
+/** Admin-only POST that restarts the bounded durable requested-queue drain. */
+export const MANUAL_REAUDIT_RESUME_ROUTE =
+  '/api/v1/audits/re-audit/resume'
+
 /** The hard ceiling on one request, enforced before any statement runs. */
 export const MAX_MANUAL_REAUDIT_CALLS = 100
 

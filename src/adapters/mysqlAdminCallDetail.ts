@@ -126,7 +126,10 @@ export async function collectAdminCallDetail(
          AS vendor_billed_minutes,
        ROUND(vendor_connected.quantity_decimal * 1000)
          AS vendor_connected_duration_ms,
-       CAST(vendor_minutes.minutes_decimal * 9.5 AS CHAR)
+       CAST(COALESCE(
+         vendor_amount.quantity_decimal,
+         vendor_minutes.minutes_decimal * 9.5
+       ) AS CHAR)
          AS vendor_amount,
        calculation.calculation_basis,
        calculation.status AS calculation_status,
@@ -202,6 +205,11 @@ export async function collectAdminCallDetail(
       AND vendor_connected.provider_sku =
             'duration_without_ringing_sec'
       AND vendor_connected.is_final = 1
+     LEFT JOIN kaudit_provider_cost vendor_amount
+       ON vendor_amount.call_id = c.id
+      AND vendor_amount.provider_sku =
+            'vendor_asserted_billed_amount'
+      AND vendor_amount.is_final = 1
      LEFT JOIN kaudit_billing_calculation calculation
        ON calculation.call_id = c.id
       AND calculation.status = 'final'

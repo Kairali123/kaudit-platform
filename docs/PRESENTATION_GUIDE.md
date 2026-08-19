@@ -503,7 +503,7 @@ established.
 
 ### Vendor connected
 
-KServe's `Duration (seconds) Without Ringing`, converted to milliseconds:
+KServe's `Duration (Seconds) Without Ringing`, converted to milliseconds:
 
 ```text
 vendorConnectedDurationMs =
@@ -571,8 +571,9 @@ not live yet.
 |---|---|---|
 | Attempt duration | Dial request to terminal state | Vendor/carrier events when available |
 | Ringing duration | Call initiation/ringing before answer | `Duration With Ringing − Duration Without Ringing`, conceptually |
-| Vendor connected duration | KServe's answer-to-end claim | CSV `Duration (seconds) Without Ringing` |
-| Vendor billed minutes | KServe's task-level minute quantity | CSV `Duration (minutes)` |
+| Vendor connected duration | KServe's answer-to-end claim | CSV `Duration (Seconds) Without Ringing` |
+| Vendor billed minutes | KServe's task-level minute quantity | CSV `Duration (Minutes) - Actual Billing Mins` |
+| Vendor billed amount | KServe's task-level money claim | CSV `Actual Billing Amount` |
 | Recorded duration | Length of fetched and decoded audio | Independent Whisper/decoder output |
 | Speech duration | Sum of timestamped speech segments | Whisper timestamps |
 | Customer speech | Sum of blocks attributed to customer | Classifier speaker attribution |
@@ -993,9 +994,9 @@ Default headline:
 - trend versus prior same-cadence period.
 
 Current implementation uses the invoice total when an invoice exactly matches
-the requested period. Otherwise it derives a provider-claimed amount from
-vendor-asserted minutes and the available unit rate, clearly labeled as no
-invoice.
+the requested period. Otherwise it uses KServe's supplied per-log billed
+amounts. A blank amount falls back to vendor-asserted minutes and the available
+unit rate. The result remains clearly labeled as no invoice.
 
 Trend uses verified revenue and a 2% dead-band:
 
@@ -1085,9 +1086,10 @@ seconds to reduce repeated database load.
 | Call Start Time | Dial/initiation timestamp |
 | Call Connected Time | Vendor's answer/connect timestamp |
 | Call End Time | Vendor's terminal timestamp |
-| Duration (seconds) With Ringing | Vendor attempt duration including ringing |
-| Duration (seconds) Without Ringing | Vendor connected-duration claim |
-| Duration (minutes) | Vendor task-level billed-minute quantity |
+| Duration (Seconds) With Ringing | Vendor attempt duration including ringing |
+| Duration (Seconds) Without Ringing | Vendor connected-duration claim |
+| Duration (Minutes) - Actual Billing Mins | Vendor task-level billed-minute quantity |
+| Actual Billing Amount | Vendor task-level billed-amount claim |
 | Recording URL, optional | Canonical recording evidence source |
 
 Required validations:

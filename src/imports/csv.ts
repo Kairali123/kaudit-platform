@@ -4,9 +4,11 @@ export const REQUIRED_USAGE_HEADERS = [
   'Call Start Time',
   'Call Connected Time',
   'Call End Time',
-  'Duration (seconds) With Ringing',
-  'Duration (seconds) Without Ringing',
-  'Duration (minutes)',
+  'Duration (Seconds) With Ringing',
+  'Duration (Seconds) Without Ringing',
+  'Duration (Minutes) - Actual Billing Mins',
+  'Actual Billing Amount',
+  'Recording URL',
 ] as const
 
 export interface UsageRow {
@@ -18,6 +20,7 @@ export interface UsageRow {
   durationWithRingingSec: string
   durationWithoutRingingSec: string
   durationMinutes: string
+  billedAmount: string | null
   recordingUrl: string | null
 }
 
@@ -76,8 +79,6 @@ export function parseUsageCsv(bytes: Buffer): UsageRow[] {
   if (missing.length) {
     throw new UsageCsvError(`Missing required columns: ${missing.join(', ')}`)
   }
-  const recordingIndex =
-    index.get('Recording URL') ?? index.get('Recording Url') ?? null
   const taskIds = new Set<string>()
   return rows.map((values, rowIndex) => {
     const value = (header: (typeof REQUIRED_USAGE_HEADERS)[number]): string =>
@@ -89,9 +90,9 @@ export function parseUsageCsv(bytes: Buffer): UsageRow[] {
     }
     taskIds.add(taskId)
     for (const durationHeader of [
-      'Duration (seconds) With Ringing',
-      'Duration (seconds) Without Ringing',
-      'Duration (minutes)',
+      'Duration (Seconds) With Ringing',
+      'Duration (Seconds) Without Ringing',
+      'Duration (Minutes) - Actual Billing Mins',
     ] as const) {
       const raw = value(durationHeader)
       if (!/^\d+(?:\.\d+)?$/.test(raw)) {
@@ -100,19 +101,23 @@ export function parseUsageCsv(bytes: Buffer): UsageRow[] {
         )
       }
     }
+    const billedAmount = value('Actual Billing Amount')
+    if (billedAmount && !/^\d+(?:\.\d{1,8})?$/.test(billedAmount)) {
+      throw new UsageCsvError(
+        `Row ${rowIndex + 2}: Actual Billing Amount must be a non-negative decimal with at most 8 decimal places`,
+      )
+    }
     return {
       taskId,
       destinationNumber: value('Destination Number'),
       callStartTime: value('Call Start Time'),
       callConnectedTime: value('Call Connected Time'),
       callEndTime: value('Call End Time'),
-      durationWithRingingSec: value('Duration (seconds) With Ringing'),
-      durationWithoutRingingSec: value('Duration (seconds) Without Ringing'),
-      durationMinutes: value('Duration (minutes)'),
-      recordingUrl:
-        recordingIndex == null
-          ? null
-          : values[recordingIndex]?.trim() || null,
+      durationWithRingingSec: value('Duration (Seconds) With Ringing'),
+      durationWithoutRingingSec: value('Duration (Seconds) Without Ringing'),
+      durationMinutes: value('Duration (Minutes) - Actual Billing Mins'),
+      billedAmount: billedAmount || null,
+      recordingUrl: value('Recording URL') || null,
     }
   })
 }

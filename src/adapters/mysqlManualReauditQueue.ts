@@ -164,6 +164,7 @@ async function itemCount(
 async function expireInterruptedClaims(
   connection: PoolConnection,
   callIds?: readonly string[],
+  recoverAllProcessing = false,
 ): Promise<void> {
   if (callIds && callIds.length === 0) return
   const scope = callIds
@@ -174,8 +175,8 @@ async function expireInterruptedClaims(
             item.baseline_audit_run_id
      FROM kaudit_billing_reaudit_item item
      WHERE item.status = 'processing'
-       AND item.started_at < current_timestamp(6)
-         - INTERVAL ${MANUAL_REAUDIT_CLAIM_TIMEOUT_MINUTES} MINUTE
+       ${recoverAllProcessing ? '' : `AND item.started_at < current_timestamp(6)
+         - INTERVAL ${MANUAL_REAUDIT_CLAIM_TIMEOUT_MINUTES} MINUTE`}
        ${scope}
      ORDER BY item.created_at, item.id
      LIMIT 100
@@ -453,6 +454,7 @@ export function createMysqlManualReauditRequestRepository(
  */
 export function createMysqlManualReauditCandidateRepository(
   pool: Pool,
+  repositoryOptions: { recoverInterruptedClaims?: boolean } = {},
 ): ReauditCandidateRepository {
   return {
     async listCandidates(options) {
@@ -467,7 +469,15 @@ export function createMysqlManualReauditCandidateRepository(
       let claimed: ClaimedItemRow[] = []
       try {
         await connection.beginTransaction()
-        await expireInterruptedClaims(connection)
+        // The hosted requested-mode worker owns the same exclusive database
+        // lock as every Billing Audit worker. Once a newly dispatched recovery
+        // host has that lock, any pre-existing processing item is proven
+        // orphaned and can fail closed immediately; it is never reclaimed.
+        await expireInterruptedClaims(
+          connection,
+          undefined,
+          repositoryOptions.recoverInterruptedClaims === true,
+        )
         const [rows] = await connection.execute<ClaimedItemRow[]>(
           `SELECT item.id AS item_id, item.request_id, item.call_id,
                   item.baseline_audit_run_id

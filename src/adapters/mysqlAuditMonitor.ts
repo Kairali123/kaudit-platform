@@ -296,9 +296,19 @@ const AUDITED_JOIN = `
 const VENDOR_BILLED_MINUTES_SQL = `
   SELECT
     cost.call_id,
-    MAX(cost.minutes_decimal) AS minutes_decimal
+    MAX(CASE
+      WHEN cost.provider_sku = 'vendor_asserted_billed_minutes'
+      THEN cost.minutes_decimal
+    END) AS minutes_decimal,
+    MAX(CASE
+      WHEN cost.provider_sku = 'vendor_asserted_billed_amount'
+      THEN cost.quantity_decimal
+    END) AS amount_decimal
   FROM kaudit_provider_cost cost
-  WHERE cost.provider_sku = 'vendor_asserted_billed_minutes'
+  WHERE cost.provider_sku IN (
+      'vendor_asserted_billed_minutes',
+      'vendor_asserted_billed_amount'
+    )
     AND cost.is_final = 1
   GROUP BY cost.call_id
 `
@@ -325,6 +335,10 @@ const VENDOR_BILLED_MINUTES_SQL = `
 export function auditedFinancialSummarySql(
   scopedAuditedCallsSql: string,
 ): string {
+  const vendorCharge = `COALESCE(
+       CAST(vendor.amount_decimal AS DECIMAL(20,8)),
+       vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+     )`
   const projectedCharge = `CASE
        WHEN scoped.grace_adjusted_duration_ms IS NULL THEN NULL
        WHEN scoped.grace_adjusted_duration_ms = 0 THEN 0
@@ -335,16 +349,16 @@ export function auditedFinancialSummarySql(
      END`
   const cappedCharge = `CASE
        WHEN ${projectedCharge} IS NULL THEN NULL
-       WHEN vendor.minutes_decimal IS NULL THEN ${projectedCharge}
+       WHEN ${vendorCharge} IS NULL THEN ${projectedCharge}
        WHEN ${projectedCharge}
-         <= vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+         <= ${vendorCharge}
          THEN ${projectedCharge}
-       ELSE vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+       ELSE ${vendorCharge}
      END`
   return `SELECT
      COUNT(*) AS audited_calls,
-     SUM(vendor.minutes_decimal IS NOT NULL) AS kserve_priced_calls,
-     COALESCE(SUM(vendor.minutes_decimal * 9.5), 0) AS kserve_charge,
+     SUM((${vendorCharge}) IS NOT NULL) AS kserve_priced_calls,
+     COALESCE(SUM(${vendorCharge}), 0) AS kserve_charge,
      SUM((${cappedCharge}) IS NOT NULL)
        AS auditor_final_priced_calls,
      SUM((${cappedCharge}) IS NULL)

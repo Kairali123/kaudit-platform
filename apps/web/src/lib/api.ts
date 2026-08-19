@@ -261,6 +261,10 @@ export interface AuditMonitorRow {
 /** Admin-only POST that queues an exact, bounded, paid Billing Audit re-audit. */
 export const MANUAL_REAUDIT_ROUTE = '/api/v1/audits/re-audit'
 
+/** Restarts only the durable administrator-requested re-audit queue. */
+export const MANUAL_REAUDIT_RESUME_ROUTE =
+  '/api/v1/audits/re-audit/resume'
+
 /** The server's own ceiling on one request, restated for the selection UI. */
 export const MAX_MANUAL_REAUDIT_CALLS = 100
 
@@ -282,6 +286,10 @@ export interface ManualReauditReceipt {
     | null
   acceptedCount: number
   alreadyQueuedCount: number
+}
+
+export interface ManualReauditResumeReceipt {
+  outcome: 'dispatched'
 }
 
 export interface AuditQueueRow {
@@ -379,11 +387,13 @@ export interface BillingCategoryKpi {
   label: string
   isAllCategories: boolean
   auditedCallCount: number
+  sharePercent: string
   /** Vendor-asserted money from final billed-minute evidence. */
   kserveChargeInr: string
   kservePricedCalls: number
   /** Capped auditor amount: never greater than KServe for the same call. */
   auditorFinalChargeInr: string
+  chargeGapInr: string
   auditorFinalPricedCalls: number
   auditorUnfinalizedCalls: number
   auditorMoneyComplete: boolean
@@ -407,15 +417,71 @@ export interface BillingCategoryCall {
   category: string
   kserveChargeTimeMs: number | null
   kserveChargeTimeMinutes: string | null
+  kserveChargeInr: string
   aiAuditedDurationMs: number | null
   aiAuditedDurationMinutes: string | null
+  auditorFinalChargeInr: string | null
+  aiConfidence: string | null
+  aiAuditResult: 'Issue found' | 'No issue found'
   gapMs: number | null
   gapMinutes: string | null
   /** Presence signal for the review action; never a recording reference. */
   recordingAvailable: boolean
 }
 
-export interface BillingCategoryAnalysisData {
+export interface BillingCategoryDurationBasis {
+  kserveChargeTime: string
+  kserveChargeTimeLabel: string
+  aiAuditedDuration: string
+  aiAuditedDurationLabel: string
+  gap: string
+  gapLabel: string
+}
+
+/**
+ * The MONTH SUMMARY half of the page: the nine KPIs, the issue/no-issue
+ * summary and the Grand Total. It describes a whole bill month and is identical
+ * for every category a reader selects, so it is fetched once per month and
+ * retained while the reader clicks through the KPIs.
+ *
+ * Every KPI is `basis: 'entire_selected_scope'` — a whole-category total, never
+ * a page total. The table footer displays the selected KPI itself, so the
+ * footer and the tile are the same server-computed object and the browser never
+ * totals rows for itself.
+ */
+export interface BillingCategorySummaryData {
+  generatedAt: string
+  title: string
+  contentBoundary: string
+  scope: {
+    month: string | null
+    monthLabel: string
+  }
+  durationBasis: BillingCategoryDurationBasis
+  summary: {
+    totalAuditedCalls: number
+    issueFoundCalls: number
+    noIssueFoundCalls: number
+  }
+  categories: BillingCategoryScopeKpi[]
+  /** Audited categories plus KServe-charged calls with no recording. */
+  grandTotal: BillingCategoryKpi
+  authority: 'automated'
+}
+
+/** A KPI stated as what it is: the totals for an entire category in the month. */
+export type BillingCategoryScopeKpi = BillingCategoryKpi & {
+  basis: 'entire_selected_scope'
+}
+
+/**
+ * The TABLE PAGE half: one bounded page of audited calls for one selection.
+ *
+ * It carries no KPI, no summary and no Grand Total — those belong to the month
+ * and are read separately. The selected KPI's server-computed call count sizes
+ * the pager, so this response only states which bounded page it returned.
+ */
+export interface BillingCategoryPageData {
   generatedAt: string
   title: string
   contentBoundary: string
@@ -426,19 +492,12 @@ export interface BillingCategoryAnalysisData {
     categoryLabel: string
     pageSize: number
   }
-  durationBasis: {
-    kserveChargeTime: string
-    kserveChargeTimeLabel: string
-    aiAuditedDuration: string
-    aiAuditedDurationLabel: string
-    gap: string
-    gapLabel: string
-  }
-  categories: BillingCategoryKpi[]
+  durationBasis: BillingCategoryDurationBasis
   rows: BillingCategoryCall[]
-  /** Totals for the entire selected scope, never for the current page alone. */
-  totals: BillingCategoryKpi & { basis: 'entire_selected_scope' }
-  pagination: AuditPagination
+  pagination: {
+    page: number
+    pageSize: number
+  }
   authority: 'automated'
 }
 

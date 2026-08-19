@@ -32,13 +32,13 @@ export const ACCEPTED_AS_BILLED_RULESET = {
     'automated_validation_unresolved_at_cycle_close',
   ],
   amount:
-    'vendor_asserted_billed_minutes multiplied by INR 9.50 per minute',
+    'vendor-supplied billed amount when present; otherwise vendor billed minutes multiplied by the locked rate',
   authority:
     'cycle-close deterministic fallback; not an independent AI audit',
 } satisfies JsonValue
 
 export const ACCEPTED_AS_BILLED_RULESET_VERSION =
-  'cycle-close-fallback/1.1.0'
+  'cycle-close-fallback/1.2.0'
 export const ACCEPTED_AS_BILLED_RULESET_SHA256 =
   canonicalJsonSha256(ACCEPTED_AS_BILLED_RULESET)
 
@@ -51,6 +51,7 @@ export interface AcceptedAsBilledInput {
   claimedDurationMs: number | null
   connectedDurationMs: number | null
   vendorBilledMinutes: string
+  vendorBilledAmount?: string | null
   sourceEvidence: EvidenceHashReference
   decidedAt: string
 }
@@ -107,8 +108,11 @@ export function buildAcceptedAsBilledRecords(
   const billableDurationMs = Number(
     (minuteScale * 60_000n) / SCALE,
   )
-  const amountPaise =
-    (minuteScale * KSERVE_RATE_PER_MINUTE_PAISE) / SCALE
+  const suppliedAmountScale = input.vendorBilledAmount == null
+    ? null
+    : decimalScale8(input.vendorBilledAmount)
+  const amountPaise = (minuteScale * KSERVE_RATE_PER_MINUTE_PAISE) / SCALE
+  const legacyAmountScale = amountPaise * 1_000_000n
   if (
     !Number.isSafeInteger(billableDurationMs) ||
     amountPaise * SCALE !==
@@ -116,9 +120,11 @@ export function buildAcceptedAsBilledRecords(
   ) {
     throw new Error('Vendor quantity cannot be represented exactly')
   }
-  const amount = `${amountPaise / 100n}.${(amountPaise % 100n)
-    .toString()
-    .padStart(2, '0')}000000`
+  const amountScale = suppliedAmountScale ?? legacyAmountScale
+  const amount = fixed8(amountScale)
+  const vendorAmountSource = suppliedAmountScale == null
+    ? 'legacy_rate_derived'
+    : 'vendor_supplied'
   const evidence = [input.sourceEvidence]
   const evidenceManifestSha256 = canonicalJsonSha256(
     evidence as unknown as JsonValue,
@@ -126,6 +132,8 @@ export function buildAcceptedAsBilledRecords(
   const inputManifestSha256 = canonicalJsonSha256({
     callId: input.callId,
     vendorBilledMinutes: fixed8(minuteScale),
+    vendorBilledAmount: amount,
+    vendorAmountSource,
     claimedDurationMs: input.claimedDurationMs,
     connectedDurationMs: input.connectedDurationMs,
     fallbackReason: input.fallbackReason ?? 'no_recording',
@@ -144,8 +152,8 @@ export function buildAcceptedAsBilledRecords(
     calculationBasis: 'accepted_as_billed_unverified',
     warning:
       fallbackReason === 'automated_validation_unresolved'
-        ? 'Automated validation remained unresolved at cycle close; KServe minutes were accepted without an independently verified duration.'
-        : 'No recording was available; KServe minutes were accepted without independent verification.',
+        ? 'Automated validation remained unresolved at cycle close; the KServe claim was accepted without an independently verified duration.'
+        : 'No recording was available; the KServe claim was accepted without independent verification.',
     callId: input.callId,
     rateCardId: rateCard.id,
     rateCardVersion: rateCard.version,
@@ -158,6 +166,8 @@ export function buildAcceptedAsBilledRecords(
     evidenceManifestSha256,
     inputManifestSha256,
     vendorBilledMinutes: fixed8(minuteScale),
+    vendorBilledAmount: amount,
+    vendorAmountSource,
     billableDurationMs,
     amount,
     currency: 'INR',
@@ -200,11 +210,17 @@ export function buildAcceptedAsBilledRecords(
   const component: BillingComponentRecord = {
     componentType: 'platform',
     ruleCode: 'ACCEPTED_AS_BILLED_UNVERIFIED',
-    rawQuantity: fixed8(minuteScale),
-    rawUnit: 'minute',
-    billableQuantity: fixed8(minuteScale),
-    billingIncrement: 'vendor_0.5_min',
-    unitRate: '9.50000000',
+    rawQuantity: suppliedAmountScale == null
+      ? fixed8(minuteScale)
+      : amount,
+    rawUnit: suppliedAmountScale == null ? 'minute' : 'INR',
+    billableQuantity: suppliedAmountScale == null
+      ? fixed8(minuteScale)
+      : amount,
+    billingIncrement: suppliedAmountScale == null
+      ? 'vendor_0.5_min'
+      : 'vendor_asserted_amount',
+    unitRate: suppliedAmountScale == null ? '9.50000000' : '1.00000000',
     subtotalAmount: amount,
     taxAmount: '0.00000000',
     totalAmount: amount,

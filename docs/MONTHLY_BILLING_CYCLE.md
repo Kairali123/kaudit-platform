@@ -27,9 +27,11 @@ The supported source contract is one row per KServe task with:
 - Call Start Time
 - Call Connected Time
 - Call End Time
-- Duration (seconds) With Ringing
-- Duration (seconds) Without Ringing
-- Duration (minutes)
+- Duration (Seconds) With Ringing
+- Duration (Seconds) Without Ringing
+- Duration (Minutes) - Actual Billing Mins
+- Actual Billing Amount
+- Recording URL
 
 The implemented CSV import path is:
 
@@ -49,11 +51,14 @@ The implemented CSV import path is:
    before SQL normalization starts.
 6. Accepted rows are normalized into `kaudit_call`,
    `kaudit_call_external_reference`, call timing/provider-cost records, and
-   `kaudit_call_artifact.source_url`.
-7. A row with an optional approved `Recording URL` is committed with an
-   idempotent audit-request outbox message. The locked eight-column sheet does
-   not contain recording URLs, so those calls remain explicitly without
-   recording evidence until a separate manifest/API feed supplies one.
+   `kaudit_call_artifact.source_url`. KServe's per-row billed amount is retained
+   as a separate vendor assertion and used as the vendor claim. When that cell
+   is blank, the claim falls back to billed minutes times the locked rate. It
+   does not decide Kaudit's independently verified amount.
+7. A row with an approved `Recording URL` is committed with an idempotent
+   audit-request outbox message. The column is required by the template, but a
+   blank cell remains explicitly without recording evidence until a separate
+   manifest/API feed supplies one.
 
 Original files are content-addressed under the configured durable import store:
 `KAUDIT_IMPORT_ROOT` for the persistent local runtime, or the Kaudit Google

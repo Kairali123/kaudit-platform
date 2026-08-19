@@ -148,7 +148,9 @@ async function main(): Promise<void> {
       throw new Error('Another full-call audit worker already owns the database lock')
     }
     const candidates = requestedMode
-      ? createMysqlManualReauditCandidateRepository(pool)
+      ? createMysqlManualReauditCandidateRepository(pool, {
+          recoverInterruptedClaims: true,
+        })
       : createMysqlReauditReadRepo(pool, {
           externalTaskIds: taskIds ?? undefined,
           allowPreviouslyClassified: appendReaudit,

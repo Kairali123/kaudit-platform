@@ -6,9 +6,11 @@ import type { Pool } from 'mysql2/promise'
 import {
   KSERVE_VENDOR_RATE_PER_MINUTE,
   MONTHLY_KSERVE_BILLED_CHARGE_SQL,
+  VENDOR_BILLED_AMOUNT_SQL,
   VENDOR_BILLED_MINUTES_SQL,
   createMysqlKserveVendorBilledRepository,
   toMonthlyKserveBilledCharge,
+  vendorBilledAssertionsSql,
 } from './mysqlKserveVendorBilled.ts'
 import { KSERVE_RULESET_DOCUMENT } from '../billing/kserveRules.ts'
 
@@ -42,6 +44,29 @@ test('the basis is the vendor’s own final billed-minute evidence', () => {
   assert.match(VENDOR_BILLED_MINUTES_SQL, /MAX\(cost\.minutes_decimal\)/)
 })
 
+test('the supplied billed amount takes priority with a legacy rate fallback', () => {
+  assert.match(
+    VENDOR_BILLED_AMOUNT_SQL,
+    /provider_sku = 'vendor_asserted_billed_amount'/,
+  )
+  assert.match(VENDOR_BILLED_AMOUNT_SQL, /cost\.is_final = 1/)
+  assert.match(
+    MONTHLY_KSERVE_BILLED_CHARGE_SQL,
+    /COALESCE\(\s*amount\.amount_decimal,\s*vendor\.minutes_decimal \*/,
+  )
+})
+
+test('the combined assertion read keeps both claims in one cost pass', () => {
+  const sql = vendorBilledAssertionsSql(
+    'JOIN scoped_calls ON scoped_calls.id = cost.call_id',
+  )
+  assert.equal(sql.match(/FROM kaudit_provider_cost/g)?.length, 1)
+  assert.match(sql, /vendor_asserted_billed_minutes/)
+  assert.match(sql, /vendor_asserted_billed_amount/)
+  assert.match(sql, /JOIN scoped_calls/)
+  assert.match(sql, /cost\.is_final = 1/)
+})
+
 test('the month query covers the whole month, not only audited calls', () => {
   assert.match(
     MONTHLY_KSERVE_BILLED_CHARGE_SQL,
@@ -65,7 +90,7 @@ test('the month query covers the whole month, not only audited calls', () => {
   assert.match(MONTHLY_KSERVE_BILLED_CHARGE_SQL, /CAST\(SUM\(/)
 })
 
-test('the category analysis reads the same two constants', () => {
+test('the category analysis uses the shared one-pass assertion definition', () => {
   const category = readFileSync(
     fileURLToPath(
       new URL('./mysqlBillingCategoryAnalysis.ts', import.meta.url),
@@ -74,7 +99,7 @@ test('the category analysis reads the same two constants', () => {
   )
   assert.match(
     category,
-    /import \{[\s\S]*?KSERVE_VENDOR_RATE_PER_MINUTE,[\s\S]*?VENDOR_BILLED_MINUTES_SQL,[\s\S]*?\} from '\.\/mysqlKserveVendorBilled\.ts'/,
+    /import \{[\s\S]*?KSERVE_VENDOR_RATE_PER_MINUTE,[\s\S]*?vendorBilledAssertionsSql,[\s\S]*?\} from '\.\/mysqlKserveVendorBilled\.ts'/,
   )
   // The definition exists once. A second copy is what drift is made of.
   assert.equal(

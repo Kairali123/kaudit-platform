@@ -13,6 +13,7 @@ test('keeps no-recording calls explicit and accepted at the vendor amount', () =
     category: null,
     confidence: null,
     vendorBilledMinutes: '0.50000000',
+    vendorBilledAmount: '5.25000000',
     vendorConnectedDurationMs: 14_000,
     recordedDurationMs: null,
     conversationEndMs: null,
@@ -20,8 +21,8 @@ test('keeps no-recording calls explicit and accepted at the vendor amount', () =
     auditRunId: null,
   })
   assert.equal(result.auditResolution, 'accepted_as_billed_unverified')
-  assert.equal(result.vendorAmount, '4.75000000')
-  assert.equal(result.verifiedAmount, '4.75000000')
+  assert.equal(result.vendorAmount, '5.25000000')
+  assert.equal(result.verifiedAmount, '5.25000000')
   assert.equal(result.variance, '0.00000000')
 })
 
@@ -33,6 +34,7 @@ test('uses conversation end plus grace for provisional AI preview and sums exact
     category: 'OK',
     confidence: '0.90000000',
     vendorBilledMinutes: '3.00000000',
+    vendorBilledAmount: null,
     vendorConnectedDurationMs: 180_000,
     recordedDurationMs: 180_000,
     conversationEndMs: 61_000,

@@ -73,6 +73,7 @@ interface ReportRow extends RowDataPacket {
   confidence: string | null
   calculation_basis: string
   vendor_billed_minutes: string
+  vendor_billed_amount: string
   billable_duration_ms: number | string
   verified_amount: string
   currency: string
@@ -114,6 +115,10 @@ export async function collectMonthlyEmailReport(
        calculation.calculation_basis,
        CAST(minutes.minutes_decimal AS CHAR)
          AS vendor_billed_minutes,
+       CAST(COALESCE(
+         amount.quantity_decimal,
+         minutes.minutes_decimal * 9.5
+       ) AS CHAR) AS vendor_billed_amount,
        calculation.billable_duration_ms,
        CAST(calculation.total_amount AS CHAR)
          AS verified_amount,
@@ -140,6 +145,10 @@ export async function collectMonthlyEmailReport(
         FROM kaudit_billing_calculation newer
         WHERE newer.supersedes_calculation_id = calculation.id
       )
+     LEFT JOIN kaudit_provider_cost amount
+       ON amount.call_id = c.id
+      AND amount.provider_sku = 'vendor_asserted_billed_amount'
+      AND amount.is_final = 1
      WHERE c.billing_period_date BETWEEN ? AND ?
      ORDER BY call_reference`,
     [options.period.start, options.period.end],
@@ -164,6 +173,7 @@ export async function collectMonthlyEmailReport(
         confidence: row.confidence,
         resolution: row.calculation_basis,
         vendorBilledMinutes: row.vendor_billed_minutes,
+        vendorBilledAmount: row.vendor_billed_amount,
         verifiedBillableDurationMs: Number(
           row.billable_duration_ms,
         ),
@@ -173,4 +183,3 @@ export async function collectMonthlyEmailReport(
     ),
   })
 }
-

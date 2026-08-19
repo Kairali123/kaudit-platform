@@ -502,6 +502,32 @@ test('an interrupted paid claim fails closed and is never reclaimed', async () =
   assert.doesNotMatch(String(queuedRead?.sql), /status = 'processing'/)
 })
 
+test('an exclusive recovery worker immediately terminalizes an orphaned claim', async () => {
+  const fake = claimPool([
+    {
+      match: /FROM kaudit_billing_reaudit_item item\s+WHERE item.status = 'processing'/,
+      rows: CLAIMED,
+    },
+    {
+      match: /FROM kaudit_billing_reaudit_item item\s+WHERE item.status = 'queued'/,
+      rows: [],
+    },
+  ])
+
+  const candidates = await createMysqlManualReauditCandidateRepository(
+    fake.pool,
+    { recoverInterruptedClaims: true },
+  ).listCandidates({ limit: 25, includePreviouslyClassified: true })
+
+  assert.deepEqual(candidates, [])
+  const interruptedRead = fake.find(/WHERE item.status = 'processing'/)
+  assert.doesNotMatch(String(interruptedRead?.sql), /INTERVAL 30 MINUTE/)
+  const settle = fake
+    .all(/UPDATE kaudit_billing_reaudit_item/)
+    .find((entry) => entry.parameters[0] === 'failed')
+  assert.equal(settle?.parameters[2], 'REAUDIT_WORKER_INTERRUPTED')
+})
+
 test('a claim marks its request running exactly once', async () => {
   const fake = claimPool()
   await createMysqlManualReauditCandidateRepository(fake.pool).listCandidates({

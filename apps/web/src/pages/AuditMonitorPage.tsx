@@ -24,11 +24,13 @@ import {
   getJson,
   postJson,
   MANUAL_REAUDIT_ROUTE,
+  MANUAL_REAUDIT_RESUME_ROUTE,
   MAX_MANUAL_REAUDIT_CALLS,
   type AuditMonitorData,
   type AuditMonitorRow,
   type AuditPagination,
   type ManualReauditReceipt,
+  type ManualReauditResumeReceipt,
   type Profile,
   type Tile,
 } from '../lib/api'
@@ -218,6 +220,17 @@ export function AuditMonitorPage() {
       setReceipt(result)
       setSelected([])
       setIdempotencyKey(newIdempotencyKey())
+      void client.invalidateQueries({ queryKey: ['audit-monitor'] })
+      void client.invalidateQueries({ queryKey: ['audit-workers'] })
+    },
+  })
+  const resumeReAudits = useMutation({
+    mutationFn: () =>
+      postJson<ManualReauditResumeReceipt>(
+        MANUAL_REAUDIT_RESUME_ROUTE,
+        {},
+      ),
+    onSuccess: () => {
       void client.invalidateQueries({ queryKey: ['audit-monitor'] })
       void client.invalidateQueries({ queryKey: ['audit-workers'] })
     },
@@ -449,6 +462,22 @@ export function AuditMonitorPage() {
                 <CheckCircle2 size={14} aria-hidden /> {receiptMessage(receipt)}
               </span>
             )}
+            {resumeReAudits.isPending && (
+              <span className="reaudit-message pending">
+                <RefreshCw size={14} aria-hidden /> Resuming queued re-audits…
+              </span>
+            )}
+            {!resumeReAudits.isPending && resumeReAudits.error && (
+              <span className="reaudit-message error">
+                <AlertTriangle size={14} aria-hidden />
+                {(resumeReAudits.error as Error).message}
+              </span>
+            )}
+            {resumeReAudits.isSuccess && (
+              <span className="reaudit-message success">
+                <CheckCircle2 size={14} aria-hidden /> Requested re-audit queue resumed.
+              </span>
+            )}
             {overLimit && (
               <span className="reaudit-message error">
                 <AlertTriangle size={14} aria-hidden /> Select at most{' '}
@@ -456,20 +485,32 @@ export function AuditMonitorPage() {
               </span>
             )}
           </div>
-          <button
-            type="button"
-            className="button-primary"
-            disabled={reAudit.isPending || selected.length === 0 || overLimit}
-            title={
-              selected.length === 0
-                ? 'Select audited calls to re-audit'
-                : 'Queue a paid re-audit of the selected calls'
-            }
-            onClick={() => reAudit.mutate()}
-          >
-            <RefreshCw size={16} aria-hidden />
-            Re-audit selected
-          </button>
+          <div className="reaudit-actions">
+            <button
+              type="button"
+              className="button-secondary"
+              disabled={resumeReAudits.isPending || resumeReAudits.isSuccess}
+              title="Restart processing for the existing requested re-audit queue"
+              onClick={() => resumeReAudits.mutate()}
+            >
+              <RefreshCw size={16} aria-hidden />
+              Resume queued re-audits
+            </button>
+            <button
+              type="button"
+              className="button-primary"
+              disabled={reAudit.isPending || selected.length === 0 || overLimit}
+              title={
+                selected.length === 0
+                  ? 'Select audited calls to re-audit'
+                  : 'Queue a paid re-audit of the selected calls'
+              }
+              onClick={() => reAudit.mutate()}
+            >
+              <RefreshCw size={16} aria-hidden />
+              Re-audit selected
+            </button>
+          </div>
         </section>
       )}
 

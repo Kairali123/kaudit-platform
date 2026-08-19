@@ -13,15 +13,12 @@ import { readStoredDecimal } from '../billing/kserveSettlement.ts'
  *   * the quantity is `kaudit_provider_cost` rows with the
  *     `vendor_asserted_billed_minutes` SKU marked final — the provider's own
  *     billing evidence, and the same rows the category analysis already prices;
- *   * the rate is the contract rate per billed minute from the locked KServe
- *     ruleset. It is stated once, below, as the SQL literal every KServe
- *     evidence surface uses.
+ *   * the amount is KServe's own supplied per-log amount when present; and
+ *   * only a blank amount falls back to the contract rate per billed minute.
  *
  * No rounding rule, minute ceiling, short-call flat, or wrap-up grace from the
- * locked billing ruleset is reproduced here, and none may be added: this module
- * multiplies the vendor's asserted minutes by the contract rate and does
- * nothing else. Reinterpreting the vendor's own claim would make it no longer
- * the vendor's claim.
+ * locked billing ruleset is reproduced here. Reinterpreting a supplied amount
+ * would make it no longer the vendor's claim.
  *
  * READ-ONLY over Kaudit-owned `kaudit_*` tables. Nothing here writes, locks,
  * alters, or references the external `ai_voice_leads_received` source table.
@@ -34,15 +31,63 @@ import { readStoredDecimal } from '../billing/kserveSettlement.ts'
  * of the same assertion, not additional minutes, and summing them would inflate
  * the vendor's own claim.
  */
-export const VENDOR_BILLED_MINUTES_SQL = `
+export function vendorBilledMinutesSql(scopeJoin = ''): string {
+  return `
   SELECT
     cost.call_id,
     MAX(cost.minutes_decimal) AS minutes_decimal
   FROM kaudit_provider_cost cost
+  ${scopeJoin}
   WHERE cost.provider_sku = 'vendor_asserted_billed_minutes'
     AND cost.is_final = 1
-  GROUP BY cost.call_id
-`
+  GROUP BY cost.call_id`
+}
+
+export const VENDOR_BILLED_MINUTES_SQL = vendorBilledMinutesSql()
+
+/** Vendor-supplied billed amount, one final assertion per call. */
+export function vendorBilledAmountSql(scopeJoin = ''): string {
+  return `
+  SELECT
+    cost.call_id,
+    MAX(cost.quantity_decimal) AS amount_decimal
+  FROM kaudit_provider_cost cost
+  ${scopeJoin}
+  WHERE cost.provider_sku = 'vendor_asserted_billed_amount'
+    AND cost.is_final = 1
+  GROUP BY cost.call_id`
+}
+
+export const VENDOR_BILLED_AMOUNT_SQL = vendorBilledAmountSql()
+
+/**
+ * Both vendor assertions in one provider-cost pass.
+ *
+ * Category Analysis needs minutes and amount together for the same scoped
+ * calls. Keeping the combined statement here preserves the shared KServe
+ * evidence definition while avoiding two grouped scans of provider cost.
+ */
+export function vendorBilledAssertionsSql(scopeJoin = ''): string {
+  return `
+  SELECT
+    cost.call_id,
+    MAX(CASE
+      WHEN cost.provider_sku = 'vendor_asserted_billed_minutes'
+      THEN cost.minutes_decimal
+    END) AS minutes_decimal,
+    MAX(CASE
+      WHEN cost.provider_sku = 'vendor_asserted_billed_amount'
+      THEN cost.quantity_decimal
+    END) AS amount_decimal
+  FROM kaudit_provider_cost cost
+  ${scopeJoin}
+  WHERE cost.provider_sku IN (
+      'vendor_asserted_billed_minutes',
+      'vendor_asserted_billed_amount'
+    )
+    AND cost.is_final = 1
+  GROUP BY cost.call_id`
+}
 
 /**
  * The KServe contract rate per billed minute, as the SQL literal.
@@ -56,7 +101,9 @@ export const VENDOR_BILLED_MINUTES_SQL = `
 export const KSERVE_VENDOR_RATE_PER_MINUTE = '9.5'
 
 /**
- * The vendor's billed charge for a COMPLETE bill month.
+ * The vendor's billed charge for a COMPLETE bill month. New-format imports
+ * use KServe's supplied amount. The rate calculation remains only as a legacy
+ * fallback for calls imported before that field became mandatory.
  *
  * Deliberately NOT restricted to audited calls: this is what the vendor billed
  * for the month, so every call in the month that carries final vendor
@@ -72,12 +119,18 @@ export const MONTHLY_KSERVE_BILLED_CHARGE_SQL = `SELECT
      COUNT(*) AS billed_calls,
      CAST(SUM(vendor.minutes_decimal) AS CHAR) AS billed_minutes,
      CAST(
-       SUM(vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}) AS CHAR
+       SUM(COALESCE(
+         amount.amount_decimal,
+         vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+       )) AS CHAR
      ) AS billed_charge_inr
    FROM kaudit_call c
    JOIN (
      ${VENDOR_BILLED_MINUTES_SQL}
-   ) vendor ON vendor.call_id = c.id
+  ) vendor ON vendor.call_id = c.id
+   LEFT JOIN (
+     ${VENDOR_BILLED_AMOUNT_SQL}
+   ) amount ON amount.call_id = c.id
    WHERE c.billing_period_date BETWEEN ? AND ?`
 
 /**

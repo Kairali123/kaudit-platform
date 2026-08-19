@@ -70,6 +70,7 @@ try {
       claimedDurationMs: candidate.claimedDurationMs,
       connectedDurationMs: candidate.connectedDurationMs,
       vendorBilledMinutes: candidate.vendorBilledMinutes,
+      vendorBilledAmount: candidate.vendorBilledAmount,
       sourceEvidence: {
         kind: 'call_manifest',
         referenceId: candidate.evidenceObjectId,

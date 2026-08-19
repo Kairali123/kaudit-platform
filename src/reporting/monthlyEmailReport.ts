@@ -11,6 +11,7 @@ export interface MonthlyReportInputRow {
   confidence: string | null
   resolution: string
   vendorBilledMinutes: string
+  vendorBilledAmount?: string | null
   verifiedBillableDurationMs: number
   verifiedAmount: string
   currency: string
@@ -114,10 +115,9 @@ function minutesFromMs(milliseconds: number): string {
   )
 }
 
-function vendorAmount(minutes: string): string {
+function fallbackVendorAmount(minutes: string): string {
   return fromScaled(
-    (requiredScaled(minutes, 'vendorBilledMinutes') *
-      KSERVE_RATE) /
+    (requiredScaled(minutes, 'vendorBilledMinutes') * KSERVE_RATE) /
       SCALE,
   )
 }
@@ -168,7 +168,11 @@ export function buildMonthlyEmailReport(options: {
   settlement?: MonthlyReportSettlement | null
 }): MonthlyEmailReport {
   const rows = options.rows.map((row): MonthlyReportRow => {
-    const claimed = vendorAmount(row.vendorBilledMinutes)
+    const claimed = row.vendorBilledAmount == null
+      ? fallbackVendorAmount(row.vendorBilledMinutes)
+      : fromScaled(
+          requiredScaled(row.vendorBilledAmount, 'vendorBilledAmount'),
+        )
     const verified = requiredScaled(
       row.verifiedAmount,
       'verifiedAmount',
@@ -257,4 +261,3 @@ export function reportContentSha256(
     sourceManifestSha256: report.sourceManifestSha256,
   } as unknown as JsonValue)
 }
-

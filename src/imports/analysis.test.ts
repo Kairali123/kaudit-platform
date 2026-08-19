@@ -5,9 +5,9 @@ import {
   normalizeInvoiceExtraction,
 } from './analysis.ts'
 
-const csv = Buffer.from(`Task ID,Destination Number,Call Start Time,Call Connected Time,Call End Time,Duration (seconds) With Ringing,Duration (seconds) Without Ringing,Duration (minutes),Recording URL
-T001,9000000001,01/05/2026 09:00:00,01/05/2026 09:00:03,01/05/2026 09:00:30,30,27,0.5,https://recordings.example.test/a.ogg
-T002,9000000002,31/05/2026 18:00:00,31/05/2026 18:00:02,31/05/2026 18:01:00,60,58,1,
+const csv = Buffer.from(`Task ID,Destination Number,Call Start Time,Call Connected Time,Call End Time,Duration (Seconds) With Ringing,Duration (Seconds) Without Ringing,Duration (Minutes) - Actual Billing Mins,Actual Billing Amount,Recording URL
+T001,9000000001,01/05/2026 09:00:00,01/05/2026 09:00:03,01/05/2026 09:00:30,30,27,0.5,4.75,https://recordings.example.test/a.ogg
+T002,9000000002,31/05/2026 18:00:00,31/05/2026 18:00:02,31/05/2026 18:01:00,60,58,1,9.50,
 `)
 
 test('derives an editable usage period and counts missing recordings deterministically', () => {
@@ -24,9 +24,10 @@ test('derives an editable usage period and counts missing recordings determinist
       'Call Start Time',
       'Call Connected Time',
       'Call End Time',
-      'Duration (seconds) With Ringing',
-      'Duration (seconds) Without Ringing',
-      'Duration (minutes)',
+      'Duration (Seconds) With Ringing',
+      'Duration (Seconds) Without Ringing',
+      'Duration (Minutes) - Actual Billing Mins',
+      'Actual Billing Amount',
       'Recording URL',
     ],
     warnings: [

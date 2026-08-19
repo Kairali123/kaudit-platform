@@ -17,6 +17,7 @@ interface PreviewRow extends RowDataPacket {
   category: string | null
   confidence: string | null
   vendor_billed_minutes: string
+  vendor_billed_amount: string | null
   vendor_connected_duration_ms: number | string | null
   recorded_duration_ms: number | string | null
   conversation_end_ms: number | string | null
@@ -42,6 +43,7 @@ export async function collectCyclePreviewInputs(
          LIMIT 1
        ) AS CHAR) AS confidence,
        CAST(minutes.minutes_decimal AS CHAR) AS vendor_billed_minutes,
+       CAST(amount.quantity_decimal AS CHAR) AS vendor_billed_amount,
        ROUND(connected.quantity_decimal * 1000)
          AS vendor_connected_duration_ms,
        ma.decoded_duration_ms AS recorded_duration_ms,
@@ -58,6 +60,10 @@ export async function collectCyclePreviewInputs(
       AND minutes.is_final = 1
      JOIN kaudit_evidence_object usage_evidence
        ON usage_evidence.id = minutes.source_evidence_object_id
+     LEFT JOIN kaudit_provider_cost amount
+       ON amount.call_id = c.id
+      AND amount.provider_sku = 'vendor_asserted_billed_amount'
+      AND amount.is_final = 1
      LEFT JOIN kaudit_provider_cost connected
        ON connected.call_id = c.id
       AND connected.provider_sku = 'duration_without_ringing_sec'
@@ -93,6 +99,7 @@ export async function collectCyclePreviewInputs(
     category: row.category,
     confidence: row.confidence,
     vendorBilledMinutes: row.vendor_billed_minutes,
+    vendorBilledAmount: row.vendor_billed_amount,
     vendorConnectedDurationMs:
       row.vendor_connected_duration_ms == null
         ? null

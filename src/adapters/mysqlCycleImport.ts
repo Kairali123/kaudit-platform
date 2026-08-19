@@ -6,6 +6,7 @@ import type {
 } from 'mysql2/promise'
 import { normalizeRecordingUrl } from '../backfill/normalizeRecordingUrl.ts'
 import { parseUsageCsv } from '../imports/csv.ts'
+import type { UsageRow } from '../imports/csv.ts'
 import type {
   CycleImportService,
   ImportResult,
@@ -61,6 +62,37 @@ export interface CycleImportConfig {
 class ImportInputError extends Error {
   readonly code = 'INVALID_IMPORT'
   readonly status = 400
+}
+
+export function usageProviderCostClaims(row: UsageRow) {
+  return [
+    {
+      providerSku: 'duration_with_ringing_sec',
+      quantity: row.durationWithRingingSec,
+      quantityUnit: 'second',
+      minutes: null,
+    },
+    {
+      providerSku: 'duration_without_ringing_sec',
+      quantity: row.durationWithoutRingingSec,
+      quantityUnit: 'second',
+      minutes: null,
+    },
+    {
+      providerSku: 'vendor_asserted_billed_minutes',
+      quantity: row.durationMinutes,
+      quantityUnit: 'minute',
+      minutes: row.durationMinutes,
+    },
+    ...(row.billedAmount == null
+      ? []
+      : [{
+          providerSku: 'vendor_asserted_billed_amount',
+          quantity: row.billedAmount,
+          quantityUnit: 'currency',
+          minutes: null,
+        }] as const),
+  ] as const
 }
 
 function dateOnly(value: string, name: string): string {
@@ -360,11 +392,7 @@ export function createMysqlCycleImportService(
               endedAt,
             ],
           )
-          for (const cost of [
-            ['duration_with_ringing_sec', row.durationWithRingingSec, 'second', null],
-            ['duration_without_ringing_sec', row.durationWithoutRingingSec, 'second', null],
-            ['vendor_asserted_billed_minutes', row.durationMinutes, 'minute', row.durationMinutes],
-          ] as const) {
+          for (const cost of usageProviderCostClaims(row)) {
             await connection.execute(
               `INSERT INTO kaudit_provider_cost
                  (id, call_id, call_leg_id, source_evidence_object_id,
@@ -378,16 +406,16 @@ export function createMysqlCycleImportService(
                 callId,
                 legId,
                 evidenceId,
-                cost[0],
-                cost[1],
-                cost[2],
-                cost[3],
+                cost.providerSku,
+                cost.quantity,
+                cost.quantityUnit,
+                cost.minutes,
                 startedAt,
-                `${row.taskId}:${cost[0]}`,
+                `${row.taskId}:${cost.providerSku}`,
                 canonicalJson({
                   source: 'monthly_usage_csv',
                   taskId: row.taskId,
-                  providerSku: cost[0],
+                  providerSku: cost.providerSku,
                 }),
               ],
             )

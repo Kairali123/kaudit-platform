@@ -1,5 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFile } from 'node:fs/promises'
+import path from 'node:path'
 import { DatabaseSync } from 'node:sqlite'
 import type { Pool } from 'mysql2/promise'
 import {
@@ -8,6 +10,7 @@ import {
   categoryTotalsSql,
   createMysqlBillingCategoryAnalysisRepository,
   durationGapMs,
+  noRecordingTotalsSql,
   toCategoryCallRow,
   toCategoryTotalsRow,
 } from './mysqlBillingCategoryAnalysis.ts'
@@ -66,6 +69,8 @@ interface SyntheticCall {
   endedAt?: string | null
   /** Vendor-asserted final billed minutes, or null for none recorded. */
   billedMinutes?: string | null
+  /** Vendor-supplied final billed amount, or null for rate fallback. */
+  billedAmount?: string | null
   /** Latest completed media analysis, or null when the call is unaudited. */
   decodedDurationMs?: number | null
   conversationEndMs?: number | null
@@ -74,6 +79,7 @@ interface SyntheticCall {
   taskReference?: string | null
   /** Several task references, in insertion order, with explicit ids. */
   taskReferences?: SyntheticTaskReference[]
+  confirmationStatus?: 'confirmed' | 'rejected' | 'model_output' | null
   /**
    * Explicit artifacts. When present these REPLACE the single default
    * artifact, so a fixture can attach evidence to a chosen artifact.
@@ -126,6 +132,7 @@ const SCHEMA = `
     call_id TEXT NOT NULL,
     provider_sku TEXT NOT NULL,
     minutes_decimal TEXT,
+    quantity_decimal TEXT,
     is_final INTEGER NOT NULL DEFAULT 1
   );
   CREATE TABLE kaudit_billing_calculation (
@@ -141,6 +148,14 @@ const SCHEMA = `
     call_id TEXT NOT NULL,
     reference_type TEXT NOT NULL,
     external_id TEXT NOT NULL
+  );
+  CREATE TABLE kaudit_audit_finding (
+    id TEXT PRIMARY KEY,
+    call_id TEXT NOT NULL,
+    finding_code TEXT NOT NULL,
+    confirmation_status TEXT NOT NULL,
+    confidence TEXT,
+    created_at TEXT NOT NULL
   );
 `
 
@@ -223,6 +238,19 @@ function synthetic(fixture: {
       call.startedAt ?? null,
       call.endedAt ?? null,
     )
+    if (call.category !== null && call.confirmationStatus !== null) {
+      db.prepare(
+        `INSERT INTO kaudit_audit_finding
+           (id, call_id, finding_code, confirmation_status, confidence,
+            created_at)
+         VALUES (?, ?, ?, ?, '0.95000000', '2026-08-03 00:00:00')`,
+      ).run(
+        `finding-${call.id}`,
+        call.id,
+        call.category,
+        call.confirmationStatus ?? 'confirmed',
+      )
+    }
     for (const artifact of artifactsOf(call)) {
       db.prepare(
         `INSERT INTO kaudit_call_artifact
@@ -262,6 +290,13 @@ function synthetic(fixture: {
            (call_id, provider_sku, minutes_decimal, is_final)
          VALUES (?, 'vendor_asserted_billed_minutes', ?, 1)`,
       ).run(call.id, call.billedMinutes)
+    }
+    if (call.billedAmount != null) {
+      db.prepare(
+        `INSERT INTO kaudit_provider_cost
+           (call_id, provider_sku, quantity_decimal, is_final)
+         VALUES (?, 'vendor_asserted_billed_amount', ?, 1)`,
+      ).run(call.id, call.billedAmount)
     }
     for (const reference of taskReferencesOf(call, nextReferenceId)) {
       db.prepare(
@@ -336,6 +371,23 @@ function callsOf(
   }
 }
 
+function noRecordingTotalsOf(fixture: Parameters<typeof synthetic>[0]) {
+  const db = synthetic(fixture)
+  try {
+    const statement = noRecordingTotalsSql({
+      periodStart: '2026-08-01',
+      periodEnd: '2026-08-31',
+    })
+    const sqliteSql = statement.sql.replace('STRAIGHT_JOIN', 'JOIN')
+    const row = db.prepare(sqliteSql).get(...(statement.params as string[]))
+    return toCategoryTotalsRow(
+      row as Parameters<typeof toCategoryTotalsRow>[0],
+    )
+  } finally {
+    db.close()
+  }
+}
+
 /** Two audited minutes billed, two audited minutes measured, no gap. */
 const AUDITED_CALL: SyntheticCall = {
   id: 'call-synthetic-1',
@@ -378,6 +430,8 @@ test('each category reports its own audited count and capped auditor amount', ()
     ['NOT_CONNECTED', 'PRODUCT_ENQUIRY'],
   )
   const enquiry = totals[1]
+  assert.equal(enquiry.issueFoundCount, 2)
+  assert.equal(enquiry.noIssueFoundCount, 0)
   assert.equal(enquiry.auditedCallCount, 2)
   assert.equal(enquiry.kservePricedCalls, 2)
   assert.equal(Number(enquiry.kserveChargeInr), 57)
@@ -390,6 +444,39 @@ test('each category reports its own audited count and capped auditor amount', ()
   // auditor amount is capped at the vendor charge for that call.
   assert.equal(Number(notConnected.auditorFinalChargeInr), 9.5)
   assert.equal(notConnected.auditorUnfinalizedCalls, 0)
+})
+
+test('AI outcome categories populate the issue summary', () => {
+  const totals = totalsOf({
+    calls: [
+      { ...AUDITED_CALL, confirmationStatus: 'confirmed' },
+      {
+        ...AUDITED_CALL,
+        id: 'call-synthetic-rejected',
+        taskReference: 'SYNTHETIC-TASK-REJECTED',
+        confirmationStatus: 'rejected',
+      },
+      {
+        ...AUDITED_CALL,
+        id: 'call-synthetic-unresolved',
+        taskReference: 'SYNTHETIC-TASK-UNRESOLVED',
+        confirmationStatus: 'model_output',
+      },
+    ],
+  })
+  assert.equal(totals[0].auditedCallCount, 3)
+  assert.equal(totals[0].issueFoundCount, 3)
+  assert.equal(totals[0].noIssueFoundCount, 0)
+})
+
+test('OK is reported as no issue found', () => {
+  const totals = totalsOf({
+    calls: [{ ...AUDITED_CALL, category: 'OK' }],
+  })
+  assert.equal(totals[0].issueFoundCount, 0)
+  assert.equal(totals[0].noIssueFoundCount, 1)
+  const rows = callsOf({ calls: [{ ...AUDITED_CALL, category: 'OK' }] })
+  assert.equal(rows[0].aiAuditResult, 'No issue found')
 })
 
 test('billing calculations do not change the capped auditor amount', () => {
@@ -418,6 +505,14 @@ test('billing calculations do not change the capped auditor amount', () => {
   assert.equal(Number(totals[0].auditorFinalChargeInr), 28.5)
 })
 
+test('a supplied vendor amount overrides the billed-minutes calculation', () => {
+  const totals = totalsOf({
+    calls: [{ ...AUDITED_CALL, billedAmount: '20.00000000' }],
+  })
+  assert.equal(Number(totals[0].kserveChargeInr), 20)
+  assert.equal(Number(totals[0].auditorFinalChargeInr), 20)
+})
+
 test('the auditor amount keeps the lower audited projection when it is below KServe', () => {
   const totals = totalsOf({
     calls: [
@@ -444,6 +539,48 @@ test('billed minutes and the grace-adjusted audited duration define the gap', ()
   assert.equal(totals[0].aiAuditedDurationMs, 121_000)
   assert.equal(totals[0].gapMs, 59_000)
   assert.equal(totals[0].comparableCalls, 1)
+})
+
+test('aggregate gap is the displayed original total minus audited total', () => {
+  const totals = totalsOf({
+    calls: [
+      AUDITED_CALL,
+      {
+        ...AUDITED_CALL,
+        id: 'call-synthetic-missing-duration',
+        taskReference: 'SYNTHETIC-TASK-MISSING-DURATION',
+        conversationEndMs: null,
+      },
+    ],
+  })
+  assert.equal(totals[0].kserveChargeTimeMs, 360_000)
+  assert.equal(totals[0].aiAuditedDurationMs, 121_000)
+  assert.equal(totals[0].gapMs, 239_000)
+})
+
+test('No Recording keeps KServe time and supplied amount with zero audit', () => {
+  const total = noRecordingTotalsOf({
+    calls: [
+      {
+        ...AUDITED_CALL,
+        recordingUrl: null,
+        billedMinutes: '2.50000000',
+        billedAmount: '21.25000000',
+      },
+      {
+        ...AUDITED_CALL,
+        id: 'call-with-recording',
+        taskReference: 'SYNTHETIC-TASK-WITH-RECORDING',
+      },
+    ],
+  })
+  assert.equal(total.category, 'NO_RECORDING')
+  assert.equal(total.auditedCallCount, 1)
+  assert.equal(total.kserveChargeTimeMs, 150_000)
+  assert.equal(total.aiAuditedDurationMs, 0)
+  assert.equal(total.gapMs, 150_000)
+  assert.equal(Number(total.kserveChargeInr), 21.25)
+  assert.equal(Number(total.auditorFinalChargeInr), 0)
 })
 
 test('a duration nobody recorded stays null instead of becoming a zero', () => {
@@ -623,7 +760,7 @@ test('duplicate transcripts, analyses and final artifacts yield one call', () =>
 // Rows
 // ---------------------------------------------------------------------------
 
-test('a row carries the task reference, stored times, and durations only', () => {
+test('a row carries the approved table facts only', () => {
   const [row] = callsOf({ calls: [AUDITED_CALL] })
   assert.equal(row.callReference, 'SYNTHETIC-TASK-1')
   // The stored wall clock is returned as stored: no offset is invented, and no
@@ -633,7 +770,11 @@ test('a row carries the task reference, stored times, and durations only', () =>
   assert.equal(row.callEndAt, '2026-08-04 09:18:10')
   assert.equal(row.category, 'PRODUCT_ENQUIRY')
   assert.equal(row.kserveChargeTimeMs, 180_000)
+  assert.equal(Number(row.kserveChargeInr), 28.5)
   assert.equal(row.aiAuditedDurationMs, 121_000)
+  assert.equal(Number(row.auditorFinalChargeInr), 28.5)
+  assert.equal(row.aiConfidence, '0.95000000')
+  assert.equal(row.aiAuditResult, 'Issue found')
   assert.equal(row.gapMs, 59_000)
   assert.equal(row.recordingAvailable, true)
   // Nothing that identifies evidence or an internal record is on the row.
@@ -811,6 +952,84 @@ test('paging stays total when start times and references tie', () => {
 })
 
 // ---------------------------------------------------------------------------
+// The pager's denominator
+// ---------------------------------------------------------------------------
+
+/**
+ * The read model no longer counts a page's scope, because the per-category
+ * `auditedCallCount` the month summary already reports IS that count. That is
+ * only true while the totals statement and the page statement select the same
+ * population, so the equality is proven against the two statements themselves
+ * rather than asserted in a comment.
+ *
+ * The fixture holds the ways the two could drift: a second category, a call
+ * whose media and transcript sit on different artifacts (audited by neither
+ * statement), and a call outside the month.
+ */
+test('the per-category totals count exactly what a page pages over', () => {
+  const calls: SyntheticCall[] = [
+    { ...AUDITED_CALL, id: 'call-a', taskReference: 'TASK-A' },
+    { ...AUDITED_CALL, id: 'call-b', taskReference: 'TASK-B' },
+    {
+      ...AUDITED_CALL,
+      id: 'call-c',
+      category: 'NOT_CONNECTED',
+      taskReference: 'TASK-C',
+    },
+    // Not audited: media on one artifact, transcript on another.
+    SPLIT_EVIDENCE_CALL,
+    // Outside the month.
+    {
+      ...AUDITED_CALL,
+      id: 'call-other-month',
+      billingPeriodDate: '2026-07-01',
+    },
+  ]
+  const fixture = { calls }
+  const totals = totalsOf(fixture)
+  for (const row of totals) {
+    assert.equal(
+      row.auditedCallCount,
+      callsOf(fixture, { category: row.category, limit: 100 }).length,
+      row.category,
+    )
+  }
+  // The all-categories selection pages over the sum of the per-category KPIs,
+  // which is how the 'all' KPI is folded — so the same equality holds there.
+  assert.equal(
+    totals.reduce((sum, row) => sum + row.auditedCallCount, 0),
+    callsOf(fixture, { limit: 100 }).length,
+  )
+  assert.equal(callsOf(fixture, { limit: 100 }).length, 3)
+  // A category the month does not hold has no KPI row and no page rows, so a
+  // pager sized from an absent KPI cannot promise a page that does not exist.
+  assert.equal(
+    totals.some((row) => row.category === 'VOICEMAIL'),
+    false,
+  )
+  assert.equal(callsOf(fixture, { category: 'VOICEMAIL', limit: 100 }).length, 0)
+})
+
+/**
+ * No count statement survives anywhere in the read model. A table page is ONE
+ * repository read, and a reinstated count would show up here before it could
+ * show up as a second query on an admin page.
+ */
+test('the read model issues no scope-count statement at all', async () => {
+  const source = await readFile(
+    path.join(import.meta.dirname, 'mysqlBillingCategoryAnalysis.ts'),
+    'utf8',
+  )
+  for (const removed of ['countCalls', 'total_rows', 'CallCountDataRow']) {
+    assert.equal(source.includes(removed), false, removed)
+  }
+  // The only COUNT aggregates left are the two MONTH statements: the
+  // per-category totals and the no-recording aggregate. Neither is per page.
+  const perPage = categoryCallsSql(PERIOD_FILTERS)
+  assert.equal(/COUNT\(/i.test(perPage), false)
+})
+
+// ---------------------------------------------------------------------------
 // Statement shape
 // ---------------------------------------------------------------------------
 
@@ -839,14 +1058,30 @@ test('the statements never select evidence, prompts, or transcript text', () => 
   }
 })
 
-test('no per-row correlated lookup is repeated for every displayed call', () => {
+test('shared evidence relations are joined once and confidence is read once', () => {
   const sql = categoryCallsSql(PERIOD_FILTERS)
   // Each relation is joined exactly once as a grouped or ranked derived table.
-  assert.equal(sql.match(/vendor_asserted_billed_minutes/g)?.length, 1)
+  assert.equal(sql.match(/FROM kaudit_provider_cost/g)?.length, 1)
   assert.equal(sql.match(/kaudit_call_external_reference/g)?.length, 1)
   assert.equal(sql.match(/kaudit_media_analysis/g)?.length, 1)
   assert.equal(sql.match(/kaudit_transcript/g)?.length, 1)
   assert.equal(sql.match(/kaudit_billing_calculation/g)?.length ?? 0, 0)
+  assert.equal(sql.match(/SELECT finding\.confidence/g)?.length, 1)
+})
+
+test('No Recording starts from grouped vendor facts before the month join', () => {
+  const { sql } = noRecordingTotalsSql({
+    periodStart: '2026-08-01',
+    periodEnd: '2026-08-31',
+  })
+  assert.equal(sql.match(/FROM kaudit_provider_cost/g)?.length, 1)
+  assert.equal(sql.match(/kaudit_call_artifact/g)?.length, 1)
+  assert.match(sql, /vendor_asserted_billed_minutes/)
+  assert.match(sql, /vendor_asserted_billed_amount/)
+  assert.equal(/NOT EXISTS/.test(sql), false)
+  assert.match(sql, /GROUP BY cost\.call_id/)
+  assert.match(sql, /STRAIGHT_JOIN kaudit_call c ON c\.id = vendor\.call_id/)
+  assert.match(sql, /recording\.id IS NULL/)
 })
 
 test('the page order ends on a unique key that is never projected', () => {
@@ -856,8 +1091,6 @@ test('the page order ends on a unique key that is never projected', () => {
     /ORDER BY call_started_at DESC, call_reference ASC, c\.id ASC/,
   )
   // The tie-break is an ordering key only: no internal id is selected.
-  const projection = sql.slice(0, sql.indexOf('FROM kaudit_call c'))
-  assert.equal(/\bc\.id\b/.test(projection), false)
   assert.equal(/\sAS\s+(call_)?id\b/i.test(sql), false)
   assert.equal(/\bc\.id\s+AS\s/i.test(sql), false)
 })
@@ -882,13 +1115,31 @@ test('the gap keeps its sign and stays null when either side is missing', () => 
   assert.equal(durationGapMs(180_000, null), null)
 })
 
-test('the repository scopes both reads and never mutates', async () => {
+test('the repository scopes all reads and never mutates', async () => {
   const statements: string[] = []
   const parameters: unknown[][] = []
   const pool = {
     async query(sql: string, params: unknown[]) {
       statements.push(sql)
       parameters.push(params)
+      if (sql.includes("'NO_RECORDING' AS category")) {
+        return [[{
+          category: 'NO_RECORDING',
+          audited_call_count: 0,
+          issue_found_count: 0,
+          no_issue_found_count: 0,
+          kserve_priced_calls: 0,
+          kserve_charge_inr: '0',
+          auditor_final_priced_calls: 0,
+          auditor_unfinalized_calls: 0,
+          auditor_final_charge_inr: '0',
+          kserve_charge_time_ms: 0,
+          ai_audited_duration_ms: 0,
+          ai_audited_duration_calls: 0,
+          comparable_calls: 0,
+          gap_ms: 0,
+        }]]
+      }
       return [[]]
     },
     async execute() {
@@ -900,6 +1151,10 @@ test('the repository scopes both reads and never mutates', async () => {
     periodStart: '2026-08-01',
     periodEnd: '2026-08-31',
   })
+  await repository.listNoRecordingTotals({
+    periodStart: '2026-08-01',
+    periodEnd: '2026-08-31',
+  })
   await repository.listCalls({
     periodStart: '2026-08-01',
     periodEnd: '2026-08-31',
@@ -908,10 +1163,14 @@ test('the repository scopes both reads and never mutates', async () => {
     offset: 50,
   })
 
-  assert.equal(statements.length, 2)
-  for (const sql of statements) assert.match(sql, /^SELECT/)
+  assert.equal(statements.length, 3)
+  for (const sql of statements) assert.match(sql, /^(?:SELECT|WITH)/)
   assert.deepEqual(parameters[0], ['2026-08-01', '2026-08-31'])
   assert.deepEqual(parameters[1], [
+    '2026-08-01',
+    '2026-08-31',
+  ])
+  assert.deepEqual(parameters[2], [
     '2026-08-01',
     '2026-08-31',
     'PRODUCT_ENQUIRY',

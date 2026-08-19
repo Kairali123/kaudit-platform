@@ -89,7 +89,7 @@ test('requested mode drains the durable queue and never widens the general one',
   // It reads the admin request queue, not the intake reader.
   assert.match(
     billingWorker,
-    /requestedMode\s*\n?\s*\? createMysqlManualReauditCandidateRepository\(pool\)/,
+    /requestedMode\s*\n?\s*\? createMysqlManualReauditCandidateRepository\(pool, \{[\s\S]{0,100}recoverInterruptedClaims: true/,
   )
   assert.match(billingWorker, /manualRequest: requestedMode/)
   // It is an exact one-shot, so a paused queue does not block it.

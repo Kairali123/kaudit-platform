@@ -7,6 +7,7 @@ interface CandidateRow extends RowDataPacket {
   audit_run_id: string | null
   fallback_reason: 'no_recording' | 'automated_validation_unresolved'
   vendor_billed_minutes: string
+  vendor_billed_amount: string | null
   claimed_duration_ms: number | string | null
   connected_duration_ms: number | string | null
   evidence_object_id: string
@@ -30,6 +31,7 @@ export interface AcceptedAsBilledCandidate {
     | 'no_recording'
     | 'automated_validation_unresolved'
   vendorBilledMinutes: string
+  vendorBilledAmount: string | null
   claimedDurationMs: number | null
   connectedDurationMs: number | null
   evidenceObjectId: string
@@ -91,6 +93,7 @@ export async function listAcceptedAsBilledCandidates(
          ELSE 'no_recording'
        END AS fallback_reason,
        CAST(minutes.minutes_decimal AS CHAR) AS vendor_billed_minutes,
+       CAST(amount.quantity_decimal AS CHAR) AS vendor_billed_amount,
        ROUND(with_ringing.quantity_decimal * 1000) AS claimed_duration_ms,
        ROUND(connected.quantity_decimal * 1000) AS connected_duration_ms,
        evidence.id AS evidence_object_id,
@@ -102,6 +105,10 @@ export async function listAcceptedAsBilledCandidates(
       AND minutes.is_final = 1
      JOIN kaudit_evidence_object evidence
        ON evidence.id = minutes.source_evidence_object_id
+     LEFT JOIN kaudit_provider_cost amount
+       ON amount.call_id = c.id
+      AND amount.provider_sku = 'vendor_asserted_billed_amount'
+      AND amount.is_final = 1
      LEFT JOIN kaudit_provider_cost with_ringing
        ON with_ringing.call_id = c.id
       AND with_ringing.provider_sku = 'duration_with_ringing_sec'
@@ -155,6 +162,7 @@ export async function listAcceptedAsBilledCandidates(
     auditRunId: row.audit_run_id,
     fallbackReason: row.fallback_reason,
     vendorBilledMinutes: row.vendor_billed_minutes,
+    vendorBilledAmount: row.vendor_billed_amount,
     claimedDurationMs: integerOrNull(row.claimed_duration_ms),
     connectedDurationMs: integerOrNull(row.connected_duration_ms),
     evidenceObjectId: row.evidence_object_id,

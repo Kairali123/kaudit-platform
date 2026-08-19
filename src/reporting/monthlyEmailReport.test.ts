@@ -22,6 +22,7 @@ test('builds fixed-precision monthly variance without floating point money', () 
         confidence: '0.90000000',
         resolution: 'independent_conversation_end',
         vendorBilledMinutes: '1.00000000',
+        vendorBilledAmount: '10.00000000',
         verifiedBillableDurationMs: 30_000,
         verifiedAmount: '4.75000000',
         currency: 'INR',
@@ -32,17 +33,18 @@ test('builds fixed-precision monthly variance without floating point money', () 
         confidence: null,
         resolution: 'accepted_as_billed_unverified',
         vendorBilledMinutes: '1.00000000',
+        vendorBilledAmount: null,
         verifiedBillableDurationMs: 60_000,
         verifiedAmount: '9.50000000',
         currency: 'INR',
       },
     ],
   })
-  assert.equal(report.summary.vendorUsageAmount, '19')
+  assert.equal(report.summary.vendorUsageAmount, '19.5')
   assert.equal(report.summary.verifiedBillableRevenue, '14.25')
   assert.equal(report.summary.revenueVarianceVsInvoice, '4.75')
   assert.equal(report.rows[0]?.verifiedBillableMinutes, '0.5')
-  assert.equal(report.rows[0]?.variance, '4.75')
+  assert.equal(report.rows[0]?.variance, '5.25')
   assert.equal(
     reportContentSha256(report),
     reportContentSha256({
@@ -51,4 +53,3 @@ test('builds fixed-precision monthly variance without floating point money', () 
     }),
   )
 })
-

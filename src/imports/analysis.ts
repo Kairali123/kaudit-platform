@@ -170,7 +170,7 @@ export function analyzeUsageCsv(
     rowCount: rows.length,
     recordingUrlCount,
     missingRecordingUrlCount: rows.length - recordingUrlCount,
-    recognizedColumns: [...REQUIRED_USAGE_HEADERS, 'Recording URL'],
+    recognizedColumns: [...REQUIRED_USAGE_HEADERS],
     warnings,
   }
 }

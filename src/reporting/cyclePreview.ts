@@ -13,6 +13,7 @@ export interface CyclePreviewInputRow {
   category: string | null
   confidence: string | null
   vendorBilledMinutes: string
+  vendorBilledAmount?: string | null
   vendorConnectedDurationMs: number | null
   recordedDurationMs: number | null
   conversationEndMs: number | null
@@ -69,7 +70,9 @@ function amountFromMinutes(minutes: string): string {
 export function buildCyclePreviewRow(
   row: CyclePreviewInputRow,
 ): CyclePreviewRow {
-  const vendorAmount = amountFromMinutes(row.vendorBilledMinutes)
+  const vendorAmount = row.vendorBilledAmount == null
+    ? amountFromMinutes(row.vendorBilledMinutes)
+    : fixed8(scale8(row.vendorBilledAmount))
   if (!row.recordingAvailable) {
     return {
       callReference: row.callReference,

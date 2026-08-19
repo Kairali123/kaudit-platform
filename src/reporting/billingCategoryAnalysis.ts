@@ -1,6 +1,7 @@
 import type {
-  BillingCategoryAnalysisPort,
   BillingCategoryCallRow,
+  BillingCategoryPagePort,
+  BillingCategorySummaryPort,
   BillingCategoryTotalsRow,
 } from '../adapters/mysqlBillingCategoryAnalysis.ts'
 import type { BillingMonthScope } from './billingMonth.ts'
@@ -9,8 +10,28 @@ import type { BillingMonthScope } from './billingMonth.ts'
  * Presentation layer for the Billing Audit CATEGORY ANALYSIS page.
  *
  * It parses a narrow request, asks the dedicated read model for already-scoped
- * aggregates, and folds them into a DTO for the admin page. It is pure apart
- * from the two repository calls: no SQL, no worker, no model call, no write.
+ * aggregates, and folds them into DTOs for the admin page. It is pure apart
+ * from the repository calls: no SQL, no worker, no model call, no write.
+ *
+ * TWO responses, because they change on two different rhythms:
+ *
+ *   * the MONTH SUMMARY — the nine KPIs, the issue/no-issue counts and the
+ *     Grand Total — describes a whole bill month and does not move when a
+ *     reader picks a category or turns a page; and
+ *   * the TABLE PAGE — one bounded page of audited calls — changes on every
+ *     selection, and costs exactly ONE repository read.
+ *
+ * Folding them into one response made every KPI click re-derive a month of
+ * per-category money, durations and shares to render twenty-five rows. Splitting
+ * them keeps each read proportional to what actually changed; nothing about the
+ * figures themselves differs, because both halves are still folded from the same
+ * scoped aggregates by the same fixed-precision arithmetic below.
+ *
+ * The split is only worth having if the cheap half stays cheap, so the page
+ * response does NOT restate the size of the scope it pages over. That figure is
+ * the selected KPI's `auditedCallCount`, already on the month summary and
+ * counted over the same population, so a second per-page count would buy a
+ * number the reader is holding at the price of doubling every table request.
  *
  * Boundaries restated here because this is the layer that faces a browser:
  *
@@ -32,7 +53,22 @@ import type { BillingMonthScope } from './billingMonth.ts'
 
 export const BILLING_CATEGORY_ANALYSIS_TITLE = 'Category analysis'
 
+/**
+ * The TABLE route: one bounded page of audited calls for one selection, served
+ * by ONE repository read. It carries no month aggregate and no scope count —
+ * the count is the KPI the summary route already reported.
+ */
 export const BILLING_CATEGORY_ANALYSIS_ROUTE = '/api/v1/billing/categories'
+
+/**
+ * The MONTH SUMMARY route: the KPIs, the issue/no-issue counts and the Grand
+ * Total for one bill month. Scoped by month alone — no category, no page — so
+ * one read serves every selection a reader makes while the month is open. It
+ * carries the same per-call-free aggregates the page already displayed and
+ * takes the SAME administrator-only gate as the table route.
+ */
+export const BILLING_CATEGORY_SUMMARY_ROUTE =
+  '/api/v1/billing/categories/summary'
 
 /**
  * The browser page that renders it. Named beside its API route because the two
@@ -48,6 +84,29 @@ export const BILLING_CATEGORY_CONTENT_BOUNDARY =
 
 /** The selection that means "every category in the month". */
 export const ALL_CATEGORIES = 'all'
+
+export const BILLING_CATEGORY_CATALOG = [
+  {
+    category: 'INCORRECT_CALL_DURATION',
+    label: 'Incorrect call duration recording',
+  },
+  { category: 'AGENT_FAILURE', label: 'Agent failure' },
+  {
+    category: 'INACTIVE_CALL',
+    label: 'Inactive call detection failure',
+  },
+  {
+    category: 'AI_CONVERSATION_HANDLING',
+    label: 'AI conversation handling failure',
+  },
+  { category: 'VOICEMAIL', label: 'Voicemail call' },
+  { category: 'TIME_DURATION', label: 'Time duration' },
+  { category: 'AI_TO_AI', label: 'AI to AI conversation' },
+  {
+    category: 'CONNECT_NOT_FRUITFUL',
+    label: 'Connect but not fruitful',
+  },
+] as const
 
 export const DEFAULT_PAGE_SIZE = 25
 export const MIN_PAGE_SIZE = 10
@@ -186,6 +245,19 @@ export function sumMoney(values: readonly string[]): string {
   )
 }
 
+/** Exact fixed-precision subtraction for a displayed monetary gap. */
+export function subtractMoney(minuend: string, subtrahend: string): string {
+  return unscaledMoney(scaledMoney(minuend) - scaledMoney(subtrahend))
+}
+
+/** A count's share of the month, rounded to two decimal places. */
+export function percentageOf(count: number, total: number): string {
+  if (total === 0) return '0.00'
+  const scaled = (BigInt(count) * 10_000n + BigInt(total) / 2n) / BigInt(total)
+  const digits = scaled.toString().padStart(3, '0')
+  return `${digits.slice(0, -2)}.${digits.slice(-2)}`
+}
+
 /**
  * Milliseconds as minutes with two places, half away from zero, in integer
  * arithmetic. The sign is preserved so a negative gap still reads as negative,
@@ -235,11 +307,15 @@ export interface BillingCategoryKpi {
   label: string
   isAllCategories: boolean
   auditedCallCount: number
+  /** Share of all KPI calls in the selected month. */
+  sharePercent: string
   /** Vendor-asserted money from final billed-minute evidence. */
   kserveChargeInr: string
   kservePricedCalls: number
   /** Capped auditor amount: never greater than KServe for the same call. */
   auditorFinalChargeInr: string
+  /** Vendor charge minus capped auditor charge. */
+  chargeGapInr: string
   auditorFinalPricedCalls: number
   /** Audited calls with no priceable audited duration: no auditor money. */
   auditorUnfinalizedCalls: number
@@ -251,7 +327,7 @@ export interface BillingCategoryKpi {
   aiAuditedDurationMs: number | null
   aiAuditedDurationMinutes: string | null
   aiAuditedDurationCalls: number
-  /** KServe billed minus AI-audited, over comparable calls only. Signed. */
+  /** Aggregate KServe billed total minus aggregate AI-audited total. Signed. */
   gapMs: number | null
   gapMinutes: string | null
   comparableCalls: number
@@ -265,19 +341,29 @@ export interface BillingCategoryCall {
   category: string
   kserveChargeTimeMs: number | null
   kserveChargeTimeMinutes: string | null
+  kserveChargeInr: string
   aiAuditedDurationMs: number | null
   aiAuditedDurationMinutes: string | null
+  auditorFinalChargeInr: string | null
+  aiConfidence: string | null
+  aiAuditResult: 'Issue found' | 'No issue found'
   gapMs: number | null
   gapMinutes: string | null
   /** Presence signal for the review action. Never a URL. */
   recordingAvailable: boolean
 }
 
+/**
+ * Which page this response IS — not how many exist.
+ *
+ * The size of the selected scope is the KPI's `auditedCallCount` on the month
+ * summary, so it is not restated here and not counted again per page. What the
+ * page must state is which slice it actually returned, so a reader that asked
+ * for one page and is still holding another can say which one is on screen.
+ */
 export interface BillingCategoryPagination {
   page: number
   pageSize: number
-  totalRows: number
-  totalPages: number
 }
 
 /**
@@ -309,7 +395,56 @@ export const BILLING_CATEGORY_DURATION_BASIS: BillingCategoryDurationBasis = {
     'preserved: negative means the audit measured more time than was billed.',
 }
 
-export interface BillingCategoryAnalysisDto {
+/**
+ * The month-level response: everything on the page that describes the WHOLE
+ * bill month and is therefore identical for every category a reader selects.
+ *
+ * It carries no rows, no page and no category selection, so a reader who clicks
+ * through all nine KPIs reads it once. Each KPI already reports the totals for
+ * its entire category, which is what the table footer displays for the selected
+ * scope — the footer and the tile are literally the same server-computed object,
+ * so they cannot disagree, and no total is ever re-derived in a browser. The
+ * same KPI's `auditedCallCount` is what sizes the table's pager, which is why
+ * the page response does not count its own scope again.
+ */
+export interface BillingCategorySummaryDto {
+  generatedAt: string
+  title: typeof BILLING_CATEGORY_ANALYSIS_TITLE
+  contentBoundary: typeof BILLING_CATEGORY_CONTENT_BOUNDARY
+  scope: {
+    month: string | null
+    monthLabel: string
+  }
+  durationBasis: BillingCategoryDurationBasis
+  summary: {
+    totalAuditedCalls: number
+    issueFoundCalls: number
+    noIssueFoundCalls: number
+  }
+  /**
+   * The management KPIs, plus the audited all-categories selection. Each is
+   * `basis: 'entire_selected_scope'`: a KPI is a whole-category total, never a
+   * page total, whether it is read as a tile or as the table footer.
+   */
+  categories: BillingCategoryScopeKpi[]
+  /** Audited categories plus KServe-charged calls with no recording. */
+  grandTotal: BillingCategoryKpi
+  authority: 'automated'
+}
+
+/** A KPI stated as what it is: the totals for an entire category in the month. */
+export type BillingCategoryScopeKpi = BillingCategoryKpi & {
+  basis: 'entire_selected_scope'
+}
+
+/**
+ * The page-level response: one bounded page of audited calls for one selection.
+ *
+ * Deliberately narrow. It does not restate the KPIs, the summary or the Grand
+ * Total, because those belong to the month and not to a page — restating them
+ * is what forced a month-wide recomputation on every click.
+ */
+export interface BillingCategoryPageDto {
   generatedAt: string
   title: typeof BILLING_CATEGORY_ANALYSIS_TITLE
   contentBoundary: typeof BILLING_CATEGORY_CONTENT_BOUNDARY
@@ -321,14 +456,8 @@ export interface BillingCategoryAnalysisDto {
     pageSize: number
   }
   durationBasis: BillingCategoryDurationBasis
-  /** One KPI per available category, plus the all-categories selection. */
-  categories: BillingCategoryKpi[]
   rows: BillingCategoryCall[]
-  /**
-   * Totals for the ENTIRE selected scope, not for the current page. It is the
-   * selected KPI itself, so a footer can never disagree with the tile above it.
-   */
-  totals: BillingCategoryKpi & { basis: 'entire_selected_scope' }
+  /** Which page these rows are. The scope's size is the KPI's call count. */
   pagination: BillingCategoryPagination
   authority: 'automated'
 }
@@ -338,11 +467,33 @@ export interface BillingCategoryAnalysisDto {
 // ---------------------------------------------------------------------------
 
 const ALL_CATEGORIES_LABEL = 'All categories'
+export const NO_RECORDING_CATEGORY = 'NO_RECORDING'
+const NO_RECORDING_LABEL = 'No Recording'
+
+/**
+ * Display labels for every selection the page can make, resolved without a
+ * query. The table response needs the label of the selection it is describing,
+ * and reading it from the catalog keeps that heading identical to the KPI tile's
+ * without making a page read the month's aggregates to learn its own name.
+ */
+const CATEGORY_LABELS = new Map<string, string>([
+  [ALL_CATEGORIES, ALL_CATEGORIES_LABEL],
+  ...BILLING_CATEGORY_CATALOG.map(
+    ({ category, label }) => [category, label] as [string, string],
+  ),
+  [NO_RECORDING_CATEGORY, NO_RECORDING_LABEL],
+])
+
+/** A category not in the catalog is displayed as its own code, never guessed. */
+export function categoryLabelOf(category: string): string {
+  return CATEGORY_LABELS.get(category) ?? category
+}
 
 function kpiFrom(
   category: string,
   label: string,
   isAllCategories: boolean,
+  allAuditedCallCount: number,
   totals: {
     auditedCallCount: number
     kserveChargeInr: string
@@ -362,9 +513,17 @@ function kpiFrom(
     label,
     isAllCategories,
     auditedCallCount: totals.auditedCallCount,
+    sharePercent: percentageOf(
+      totals.auditedCallCount,
+      allAuditedCallCount,
+    ),
     kserveChargeInr: fixedMoney(totals.kserveChargeInr),
     kservePricedCalls: totals.kservePricedCalls,
     auditorFinalChargeInr: fixedMoney(totals.auditorFinalChargeInr),
+    chargeGapInr: subtractMoney(
+      totals.kserveChargeInr,
+      totals.auditorFinalChargeInr,
+    ),
     auditorFinalPricedCalls: totals.auditorFinalPricedCalls,
     auditorUnfinalizedCalls: totals.auditorUnfinalizedCalls,
     auditorMoneyComplete: totals.auditorUnfinalizedCalls === 0,
@@ -382,8 +541,10 @@ function kpiFrom(
 
 export function toCategoryKpi(
   row: BillingCategoryTotalsRow,
+  allAuditedCallCount: number = row.auditedCallCount,
+  label: string = row.category,
 ): BillingCategoryKpi {
-  return kpiFrom(row.category, row.category, false, row)
+  return kpiFrom(row.category, label, false, allAuditedCallCount, row)
 }
 
 /**
@@ -396,8 +557,9 @@ export function toAllCategoriesKpi(
 ): BillingCategoryKpi {
   const sum = (pick: (row: BillingCategoryTotalsRow) => number): number =>
     rows.reduce((total, row) => total + pick(row), 0)
-  return kpiFrom(ALL_CATEGORIES, ALL_CATEGORIES_LABEL, true, {
-    auditedCallCount: sum((row) => row.auditedCallCount),
+  const auditedCallCount = sum((row) => row.auditedCallCount)
+  return kpiFrom(ALL_CATEGORIES, ALL_CATEGORIES_LABEL, true, auditedCallCount, {
+    auditedCallCount,
     kserveChargeInr: sumMoney(rows.map((row) => row.kserveChargeInr)),
     kservePricedCalls: sum((row) => row.kservePricedCalls),
     auditorFinalChargeInr: sumMoney(
@@ -418,8 +580,12 @@ export function toAllCategoriesKpi(
 }
 
 /** An empty selection: real zero counts, but no invented durations or money. */
-function emptyKpi(category: string, label: string): BillingCategoryKpi {
-  return kpiFrom(category, label, category === ALL_CATEGORIES, {
+function emptyKpi(
+  category: string,
+  label: string,
+  allAuditedCallCount = 0,
+): BillingCategoryKpi {
+  return kpiFrom(category, label, category === ALL_CATEGORIES, allAuditedCallCount, {
     auditedCallCount: 0,
     kserveChargeInr: '0',
     kservePricedCalls: 0,
@@ -445,24 +611,18 @@ export function toCategoryCall(
     category: row.category,
     kserveChargeTimeMs: row.kserveChargeTimeMs,
     kserveChargeTimeMinutes: minutesFromMs(row.kserveChargeTimeMs),
+    kserveChargeInr: fixedMoney(row.kserveChargeInr),
     aiAuditedDurationMs: row.aiAuditedDurationMs,
     aiAuditedDurationMinutes: minutesFromMs(row.aiAuditedDurationMs),
+    auditorFinalChargeInr:
+      row.auditorFinalChargeInr == null
+        ? null
+        : fixedMoney(row.auditorFinalChargeInr),
+    aiConfidence: row.aiConfidence,
+    aiAuditResult: row.aiAuditResult,
     gapMs: row.gapMs,
     gapMinutes: minutesFromMs(row.gapMs),
     recordingAvailable: row.recordingAvailable,
-  }
-}
-
-export function paginationOf(
-  page: number,
-  pageSize: number,
-  totalRows: number,
-): BillingCategoryPagination {
-  return {
-    page,
-    pageSize,
-    totalRows,
-    totalPages: Math.max(1, Math.ceil(totalRows / pageSize)),
   }
 }
 
@@ -470,45 +630,52 @@ export function paginationOf(
 // Report
 // ---------------------------------------------------------------------------
 
-/**
- * Builds the category-analysis DTO.
- *
- * Two reads only: the month's per-category totals, and one page of calls. The
- * page's total row count is taken from the selected category's own totals rather
- * than from a third count query, so the footer, the tile and the pager can never
- * describe three different scopes.
- */
-export async function buildBillingCategoryAnalysis(
-  repository: BillingCategoryAnalysisPort,
-  query: BillingCategoryAnalysisQuery,
-  month: BillingMonthScope | null,
-  now: Date = new Date(),
-): Promise<BillingCategoryAnalysisDto> {
-  const scope = {
+function monthScope(month: BillingMonthScope | null): {
+  periodStart: string | null
+  periodEnd: string | null
+} {
+  return {
     periodStart: month?.start ?? null,
     periodEnd: month?.end ?? null,
   }
-  const [totalsRows, callRows] = await Promise.all([
+}
+
+/**
+ * Builds the MONTH SUMMARY DTO: the nine KPIs, the issue/no-issue summary and
+ * the Grand Total for one bill month.
+ *
+ * Two reads only — audited per-category totals and the no-recording aggregate —
+ * and neither depends on a category or a page, so this is the read a reader
+ * makes once per month rather than once per click. Every KPI reports the totals
+ * for its whole category, which is why the table footer can display the selected
+ * KPI directly instead of asking for a second, separately-derived total.
+ */
+export async function buildBillingCategorySummary(
+  repository: BillingCategorySummaryPort,
+  month: BillingMonthScope | null,
+  now: Date = new Date(),
+): Promise<BillingCategorySummaryDto> {
+  const scope = monthScope(month)
+  const [totalsRows, noRecordingRow] = await Promise.all([
     repository.listCategoryTotals(scope),
-    repository.listCalls({
-      ...scope,
-      category: query.category,
-      limit: query.pageSize,
-      offset: (query.page - 1) * query.pageSize,
-    }),
+    repository.listNoRecordingTotals(scope),
   ])
+  const allCategories = toAllCategoriesKpi(totalsRows)
+  const populationCount =
+    allCategories.auditedCallCount + noRecordingRow.auditedCallCount
+  const totalsByCategory = new Map(
+    totalsRows.map((row) => [row.category, row] as const),
+  )
   const categories = [
-    toAllCategoriesKpi(totalsRows),
-    ...totalsRows.map(toCategoryKpi),
+    allCategories,
+    ...BILLING_CATEGORY_CATALOG.map(({ category, label }) => {
+      const row = totalsByCategory.get(category)
+      return row
+        ? toCategoryKpi(row, populationCount, label)
+        : emptyKpi(category, label, populationCount)
+    }),
+    toCategoryKpi(noRecordingRow, populationCount, NO_RECORDING_LABEL),
   ]
-  const selectedCategory = query.category ?? ALL_CATEGORIES
-  const selected =
-    categories.find(
-      (candidate) => candidate.category === selectedCategory,
-    ) ??
-    // A category that holds nothing this month is still a legitimate
-    // selection; it reports an empty scope rather than another category's.
-    emptyKpi(selectedCategory, selectedCategory)
   return {
     generatedAt: now.toISOString(),
     title: BILLING_CATEGORY_ANALYSIS_TITLE,
@@ -516,19 +683,65 @@ export async function buildBillingCategoryAnalysis(
     scope: {
       month: month?.month ?? null,
       monthLabel: month?.label ?? 'All periods',
-      category: selected.category,
-      categoryLabel: selected.label,
+    },
+    durationBasis: BILLING_CATEGORY_DURATION_BASIS,
+    summary: {
+      totalAuditedCalls: allCategories.auditedCallCount,
+      issueFoundCalls: totalsRows.reduce(
+        (total, row) => total + row.issueFoundCount,
+        0,
+      ),
+      noIssueFoundCalls: totalsRows.reduce(
+        (total, row) => total + row.noIssueFoundCount,
+        0,
+      ),
+    },
+    categories: categories.map((kpi) => ({
+      ...kpi,
+      basis: 'entire_selected_scope' as const,
+    })),
+    grandTotal: toAllCategoriesKpi([...totalsRows, noRecordingRow]),
+    authority: 'automated',
+  }
+}
+
+/**
+ * Builds the TABLE PAGE DTO: one bounded page of audited calls.
+ *
+ * ONE read — the bounded page itself — and it is proportional to the page, not
+ * to the month. There is no companion count: the size of the selected scope is
+ * the KPI's `auditedCallCount`, which the month summary already reported for
+ * every category and which counts the same population this page reads from.
+ * Counting it again here would double every table request for a figure the
+ * reader is already holding.
+ */
+export async function buildBillingCategoryPage(
+  repository: BillingCategoryPagePort,
+  query: BillingCategoryAnalysisQuery,
+  month: BillingMonthScope | null,
+  now: Date = new Date(),
+): Promise<BillingCategoryPageDto> {
+  const callRows = await repository.listCalls({
+    ...monthScope(month),
+    category: query.category,
+    limit: query.pageSize,
+    offset: (query.page - 1) * query.pageSize,
+  })
+  const category = query.category ?? ALL_CATEGORIES
+  return {
+    generatedAt: now.toISOString(),
+    title: BILLING_CATEGORY_ANALYSIS_TITLE,
+    contentBoundary: BILLING_CATEGORY_CONTENT_BOUNDARY,
+    scope: {
+      month: month?.month ?? null,
+      monthLabel: month?.label ?? 'All periods',
+      category,
+      categoryLabel: categoryLabelOf(category),
       pageSize: query.pageSize,
     },
     durationBasis: BILLING_CATEGORY_DURATION_BASIS,
-    categories,
     rows: callRows.map(toCategoryCall),
-    totals: { ...selected, basis: 'entire_selected_scope' },
-    pagination: paginationOf(
-      query.page,
-      query.pageSize,
-      selected.auditedCallCount,
-    ),
+    pagination: { page: query.page, pageSize: query.pageSize },
     authority: 'automated',
   }
 }

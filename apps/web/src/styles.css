@@ -194,7 +194,7 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .82rem; }
 /*
  * Administrator-selected re-audit. One flat bar above the audited table — a
  * sibling of the table section, never a card inside one — carrying the count,
- * the submission state and the single action.
+ * the submission state and the queue/selection actions.
  */
 .reaudit-bar {
   display: grid;
@@ -219,19 +219,29 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .82rem; }
 .reaudit-message.pending { color: var(--muted); }
 .reaudit-message.success { color: var(--green); }
 .reaudit-message.error { color: var(--red); }
-.reaudit-bar > button {
+.reaudit-actions {
+  display: flex; align-items: center; justify-content: flex-end;
+  gap: 8px; flex-wrap: wrap;
+}
+.reaudit-actions button {
   display: inline-flex; align-items: center; justify-content: center; gap: 7px;
   min-width: 168px; min-height: 38px; padding: 8px 12px;
-  border: 1px solid var(--green); border-radius: 6px;
-  color: #fff; background: var(--green); font-weight: 750; cursor: pointer;
+  border-radius: 6px; font-weight: 750; cursor: pointer;
 }
-.reaudit-bar > button:disabled { opacity: .55; cursor: not-allowed; }
+.reaudit-actions .button-primary {
+  border: 1px solid var(--green); color: #fff; background: var(--green);
+}
+.reaudit-actions .button-secondary {
+  border: 1px solid var(--teal); color: var(--teal); background: var(--paper);
+}
+.reaudit-actions button:disabled { opacity: .55; cursor: not-allowed; }
 .select-cell { width: 34px; text-align: center; }
 .select-cell input { width: 15px; height: 15px; cursor: pointer; accent-color: var(--teal); }
 .select-cell input:disabled { cursor: not-allowed; opacity: .45; }
 @media (max-width: 900px) {
   .reaudit-bar { grid-template-columns: minmax(0, 1fr); }
-  .reaudit-bar > button { width: 100%; }
+  .reaudit-actions { justify-content: stretch; }
+  .reaudit-actions button { width: 100%; }
 }
 
 .audit-worker-control {
@@ -408,11 +418,55 @@ dl small { color: var(--muted); font-size: .6rem; }
 }
 .audit-table .table-scroll { overflow: auto; }
 .audit-table table { min-width: 1650px; }
-/* Selectable category KPI: the metric card itself, made pressable. */
-.category-kpi { font: inherit; text-align: left; cursor: pointer; }
-.category-kpi[aria-pressed='true'] { border-color: var(--teal); box-shadow: inset 0 0 0 2px var(--teal); }
+/* Management category KPIs: fixed audit outcomes plus no-recording billing. */
+.category-summary {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px;
+  margin-bottom: 20px; padding: 16px 20px; background: var(--canvas); border-radius: 8px;
+}
+.category-summary div { min-width: 0; text-align: center; }
+.category-summary span { display: block; color: var(--muted); font-size: .72rem; }
+.category-summary strong { display: block; margin-top: 4px; font-size: 1.55rem; font-variant-numeric: tabular-nums; }
+.category-summary .danger, .category-grand-total .danger { color: var(--red); }
+.category-summary .success { color: var(--green); }
+.category-kpi-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.category-kpi {
+  display: block; min-width: 0; min-height: 246px; padding: 16px 18px;
+  color: var(--ink); font: inherit; text-align: left; cursor: pointer;
+  background: var(--paper); border: 1px solid var(--line); border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(21,45,52,.045);
+}
+.category-kpi.warn { border-top: 2px solid var(--amber); }
+.category-kpi[aria-pressed='true'] { border-color: var(--teal); box-shadow: inset 0 0 0 1px var(--teal); }
 .category-kpi:focus-visible { outline: 3px solid rgba(19,124,114,.25); outline-offset: 2px; }
-.category-table table { min-width: 1180px; }
+.category-kpi:disabled { opacity: 1; cursor: default; }
+.category-kpi-name { display: block; font-size: .92rem; font-weight: 750; }
+.category-kpi-description { display: block; min-height: 42px; margin-top: 6px; color: var(--muted); font-size: .72rem; line-height: 1.5; }
+.category-kpi-top-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 8px 0 10px; }
+.category-kpi-top-row > strong { font-size: 1.65rem; line-height: 1; font-variant-numeric: tabular-nums; }
+.category-kpi-top-row > span { padding: 3px 8px; color: var(--muted); font-size: .7rem; background: var(--canvas); border-radius: 6px; }
+.category-kpi-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
+.category-kpi-metrics.amounts { margin-top: 8px; border-top-style: dashed; }
+.category-kpi-metrics > span { min-width: 0; }
+.category-kpi-metrics small, .category-kpi-metrics strong { display: block; overflow-wrap: anywhere; }
+.category-kpi-metrics small { color: var(--muted); font-size: .66rem; }
+.category-kpi-metrics strong { margin-top: 2px; font-size: .72rem; font-variant-numeric: tabular-nums; }
+.category-kpi-metrics .gap { color: var(--red); }
+.category-kpi-note { display: block; margin-top: 8px; color: var(--amber); font-size: .66rem; }
+.category-kpi-reset { margin: 0 0 10px auto; padding: 0; color: var(--teal); font: inherit; font-size: .72rem; font-weight: 750; background: transparent; border: 0; cursor: pointer; }
+.category-kpi-reset:focus-visible { outline: 3px solid rgba(19,124,114,.25); outline-offset: 3px; }
+.category-grand-total { margin-top: 20px; padding: 20px; background: var(--canvas); border-radius: 8px; }
+.category-grand-total h2 { margin: 0 0 12px; color: var(--muted); font-size: .78rem; }
+.category-grand-time { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.category-grand-amount { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 12px; margin-top: 16px; padding-top: 16px; border-top: 1px dashed var(--line); }
+.category-grand-time span, .category-grand-amount span { min-width: 0; }
+.category-grand-total small, .category-grand-total strong { display: block; overflow-wrap: anywhere; }
+.category-grand-total small { color: var(--muted); font-size: .7rem; }
+.category-grand-total strong { margin-top: 4px; font-size: 1.28rem; font-variant-numeric: tabular-nums; }
+.category-grand-amount strong { font-size: 1.08rem; }
+.category-table table { min-width: 1600px; }
+/* Result count, and the in-flight marker beside it while an uncached page of
+   rows is fetched and the previous page is still on screen. */
+.table-heading-status { display: inline-flex; align-items: center; gap: 8px; }
 /* Monthly KServe settlement: a compact record-and-review block, not a page. */
 .settlement { display: grid; gap: 14px; }
 .settlement .section-title { margin-bottom: 0; }
@@ -469,6 +523,7 @@ dl small { color: var(--muted); font-size: .6rem; }
 .audit-table th:not(:first-child), .audit-table td:not(:first-child) { text-align: left; }
 .cell-sub { display: block; margin-top: 4px; color: var(--muted); font-size: .62rem; }
 .cell-warn { color: var(--red); font-weight: 750; }
+.cell-success { color: var(--green); font-weight: 750; }
 .integrity-dot { display: inline-block; width: 7px; height: 7px; margin-right: 6px; border-radius: 50%; }
 .integrity-dot.good { background: var(--green); }
 .integrity-dot.missing { background: var(--amber); }
@@ -725,6 +780,8 @@ dl small { color: var(--muted); font-size: .6rem; }
   .link-grid { grid-template-columns: 1fr; }
   .permission-panel { grid-template-columns: 1fr; }
   .audit-control-bar { grid-template-columns: 1fr; }
+  .category-kpi-grid { grid-template-columns: 1fr; }
+  .category-grand-time { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .import-grid, .form-grid { grid-template-columns: 1fr; }
   .user-form-grid { grid-template-columns: 1fr; }
   .user-form-grid label:nth-child(3) { grid-column: auto; }
@@ -732,6 +789,7 @@ dl small { color: var(--muted); font-size: .6rem; }
 }
 @media (max-width: 500px) {
   .metric-grid, .skeleton-grid { grid-template-columns: 1fr; }
+  .category-summary, .category-grand-time, .category-grand-amount { grid-template-columns: 1fr; }
   .gate-list article { grid-template-columns: 22px 1fr; }
   .gate-list article > span { grid-column: 2; }
   .snapshot-card header { flex-direction: column; }
