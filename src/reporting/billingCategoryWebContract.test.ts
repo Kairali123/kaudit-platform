@@ -232,6 +232,7 @@ test('the page reports capped auditor money and missing-duration calls', async (
 
 test('the KPI area renders the management design including No Recording', async () => {
   const source = await webSource(PAGE)
+  const styles = await webSource('styles.css')
   const server = await readFile(
     path.resolve(import.meta.dirname, 'billingCategoryAnalysis.ts'),
     'utf8',
@@ -242,7 +243,12 @@ test('the KPI area renders the management design including No Recording', async 
   assert.match(source, /kpi\.sharePercent/)
   assert.match(source, /kpi\.chargeGapInr/)
   assert.match(source, /selectable=\{isSelectable\(kpi\.category\)\}/)
+  assert.match(source, /data-category=\{kpi\.category\}/)
   assert.match(source, /KServe billed the log, but no recording URL was provided/)
+  assert.match(styles, /grid-template-areas:\s*"incorrect agent"\s*"inactive conversation"\s*"voicemail duration"\s*"ai-to-ai connect"\s*"no-recording no-recording"/)
+  assert.match(styles, /grid-auto-rows:\s*270px/)
+  assert.match(styles, /\[data-category='NO_RECORDING'\]\s*\{\s*grid-area:\s*no-recording/)
+  assert.match(styles, /grid-template-rows:\s*38px 52px 38px 40px 50px 18px/)
   for (const label of [
     'Original',
     'Audited',

@@ -428,30 +428,51 @@ dl small { color: var(--muted); font-size: .6rem; }
 .category-summary strong { display: block; margin-top: 4px; font-size: 1.55rem; font-variant-numeric: tabular-nums; }
 .category-summary .danger, .category-grand-total .danger { color: var(--red); }
 .category-summary .success { color: var(--green); }
-.category-kpi-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 14px; }
+.category-kpi-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-areas:
+    "incorrect agent"
+    "inactive conversation"
+    "voicemail duration"
+    "ai-to-ai connect"
+    "no-recording no-recording";
+  grid-auto-rows: 270px;
+  gap: 14px;
+}
 .category-kpi {
-  display: block; min-width: 0; min-height: 246px; padding: 16px 18px;
+  display: grid; grid-template-rows: 38px 52px 38px 40px 50px 18px;
+  min-width: 0; height: 100%; padding: 16px 18px;
   color: var(--ink); font: inherit; text-align: left; cursor: pointer;
   background: var(--paper); border: 1px solid var(--line); border-radius: 8px;
   box-shadow: 0 8px 24px rgba(21,45,52,.045);
 }
+.category-kpi[data-category='INCORRECT_CALL_DURATION'] { grid-area: incorrect; }
+.category-kpi[data-category='AGENT_FAILURE'] { grid-area: agent; }
+.category-kpi[data-category='INACTIVE_CALL'] { grid-area: inactive; }
+.category-kpi[data-category='AI_CONVERSATION_HANDLING'] { grid-area: conversation; }
+.category-kpi[data-category='VOICEMAIL'] { grid-area: voicemail; }
+.category-kpi[data-category='TIME_DURATION'] { grid-area: duration; }
+.category-kpi[data-category='AI_TO_AI'] { grid-area: ai-to-ai; }
+.category-kpi[data-category='CONNECT_NOT_FRUITFUL'] { grid-area: connect; }
+.category-kpi[data-category='NO_RECORDING'] { grid-area: no-recording; }
 .category-kpi.warn { border-top: 2px solid var(--amber); }
 .category-kpi[aria-pressed='true'] { border-color: var(--teal); box-shadow: inset 0 0 0 1px var(--teal); }
 .category-kpi:focus-visible { outline: 3px solid rgba(19,124,114,.25); outline-offset: 2px; }
 .category-kpi:disabled { opacity: 1; cursor: default; }
-.category-kpi-name { display: block; font-size: .92rem; font-weight: 750; }
-.category-kpi-description { display: block; min-height: 42px; margin-top: 6px; color: var(--muted); font-size: .72rem; line-height: 1.5; }
-.category-kpi-top-row { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; margin: 8px 0 10px; }
+.category-kpi-name { display: block; align-self: start; font-size: .92rem; font-weight: 750; }
+.category-kpi-description { display: block; align-self: start; margin-top: 4px; color: var(--muted); font-size: .72rem; line-height: 1.5; }
+.category-kpi-top-row { display: flex; align-self: center; align-items: baseline; justify-content: space-between; gap: 12px; }
 .category-kpi-top-row > strong { font-size: 1.65rem; line-height: 1; font-variant-numeric: tabular-nums; }
 .category-kpi-top-row > span { padding: 3px 8px; color: var(--muted); font-size: .7rem; background: var(--canvas); border-radius: 6px; }
-.category-kpi-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; padding-top: 8px; border-top: 1px solid var(--line); }
-.category-kpi-metrics.amounts { margin-top: 8px; border-top-style: dashed; }
+.category-kpi-metrics { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; align-content: start; padding-top: 8px; border-top: 1px solid var(--line); }
+.category-kpi-metrics.amounts { border-top-style: dashed; }
 .category-kpi-metrics > span { min-width: 0; }
 .category-kpi-metrics small, .category-kpi-metrics strong { display: block; overflow-wrap: anywhere; }
 .category-kpi-metrics small { color: var(--muted); font-size: .66rem; }
 .category-kpi-metrics strong { margin-top: 2px; font-size: .72rem; font-variant-numeric: tabular-nums; }
 .category-kpi-metrics .gap { color: var(--red); }
-.category-kpi-note { display: block; margin-top: 8px; color: var(--amber); font-size: .66rem; }
+.category-kpi-note { display: block; align-self: end; color: var(--amber); font-size: .66rem; }
 .category-kpi-reset { margin: 0 0 10px auto; padding: 0; color: var(--teal); font: inherit; font-size: .72rem; font-weight: 750; background: transparent; border: 0; cursor: pointer; }
 .category-kpi-reset:focus-visible { outline: 3px solid rgba(19,124,114,.25); outline-offset: 3px; }
 .category-grand-total { margin-top: 20px; padding: 20px; background: var(--canvas); border-radius: 8px; }
@@ -780,7 +801,19 @@ dl small { color: var(--muted); font-size: .6rem; }
   .link-grid { grid-template-columns: 1fr; }
   .permission-panel { grid-template-columns: 1fr; }
   .audit-control-bar { grid-template-columns: 1fr; }
-  .category-kpi-grid { grid-template-columns: 1fr; }
+  .category-kpi-grid {
+    grid-template-columns: 1fr;
+    grid-template-areas:
+      "incorrect"
+      "agent"
+      "inactive"
+      "conversation"
+      "voicemail"
+      "duration"
+      "ai-to-ai"
+      "connect"
+      "no-recording";
+  }
   .category-grand-time { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .import-grid, .form-grid { grid-template-columns: 1fr; }
   .user-form-grid { grid-template-columns: 1fr; }
@@ -790,6 +823,8 @@ dl small { color: var(--muted); font-size: .6rem; }
 @media (max-width: 500px) {
   .metric-grid, .skeleton-grid { grid-template-columns: 1fr; }
   .category-summary, .category-grand-time, .category-grand-amount { grid-template-columns: 1fr; }
+  .category-kpi-grid { grid-auto-rows: 294px; }
+  .category-kpi { grid-template-rows: 42px 64px 38px 44px 56px 18px; padding: 16px; }
   .gate-list article { grid-template-columns: 22px 1fr; }
   .gate-list article > span { grid-column: 2; }
   .snapshot-card header { flex-direction: column; }

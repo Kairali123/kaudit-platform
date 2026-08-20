@@ -201,6 +201,7 @@ function CategoryCard({
       onPointerEnter={selectable ? onPrefetch : undefined}
       onFocus={selectable ? onPrefetch : undefined}
       onClick={onSelect}
+      data-category={kpi.category}
       className={`category-kpi ${
         kpi.auditorMoneyComplete ? 'good' : 'warn'
       }${selected ? ' selected' : ''}`}
