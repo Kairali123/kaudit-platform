@@ -11,13 +11,13 @@ import {
   MAX_MANUAL_REAUDIT_ATTEMPTS,
   manualReauditDigest,
   manualReauditId,
-  manualReauditRowStatus,
+  manualReauditRowLifecycle,
   safeManualReauditErrorCode,
   type ManualReauditItemStatus,
   type ManualReauditReceipt,
   type ManualReauditRequestPort,
   type ManualReauditRequestStatus,
-  type ManualReauditRowStatus,
+  type ManualReauditRowLifecycle,
 } from '../reaudit/manualRequests.ts'
 import type { ReauditCandidate } from '../reaudit/types.ts'
 import type { ReauditCandidateRepository } from '../reaudit/worker.ts'
@@ -83,6 +83,8 @@ interface CostRow extends RowDataPacket {
 interface RowStatusRow extends RowDataPacket {
   call_id: string
   status: ManualReauditItemStatus
+  created_at: Date | string
+  completed_at: Date | string | null
 }
 
 interface LatestRunRow extends RowDataPacket {
@@ -712,39 +714,64 @@ export async function settleManualReauditItem(
 /**
  * The monitor's per-row read, for the calls ON SCREEN only.
  *
- * Returns nothing but `queued` or `processing` per internal call id. The
- * caller maps those onto displayed rows and never publishes the key. Absence
+ * Returns only privacy-safe lifecycle and completion time per internal call id.
+ * The caller maps those onto displayed rows and never publishes the key. Absence
  * of the tables — a deployment where migration 0015 has not been applied yet —
  * reports every row as having no re-audit state rather than failing the page.
  */
 export async function readManualReauditRowStatuses(
   pool: Pool,
   callIds: readonly string[],
-): Promise<Map<string, ManualReauditRowStatus>> {
-  const statuses = new Map<string, ManualReauditRowStatus>()
+): Promise<Map<string, ManualReauditRowLifecycle>> {
+  const statuses = new Map<string, ManualReauditRowLifecycle>()
   if (callIds.length === 0) return statuses
   try {
     const [rows] = await pool.query<RowStatusRow[]>(
-      `SELECT item.call_id, item.status
+      `SELECT item.call_id, item.status, item.created_at, item.completed_at
        FROM kaudit_billing_reaudit_item item
-       WHERE (
-         item.status = 'queued'
-         OR (
-           item.status = 'processing'
-           AND item.started_at >= current_timestamp(6)
-             - INTERVAL ${MANUAL_REAUDIT_CLAIM_TIMEOUT_MINUTES} MINUTE
+       WHERE item.status IN ('queued','processing','completed','failed')
+         AND item.call_id IN (${placeholders(callIds.length)})
+         AND NOT EXISTS (
+           SELECT 1
+           FROM kaudit_billing_reaudit_item newer
+           WHERE newer.call_id = item.call_id
+             AND newer.status IN ('queued','processing','completed','skipped','failed')
+             AND (
+               newer.created_at > item.created_at
+               OR (
+                 newer.created_at = item.created_at
+                 AND newer.id > item.id
+               )
+             )
          )
-       )
-         AND item.call_id IN (${placeholders(callIds.length)})`,
+         AND (
+           item.status <> 'processing'
+           OR item.started_at >= current_timestamp(6)
+             - INTERVAL ${MANUAL_REAUDIT_CLAIM_TIMEOUT_MINUTES} MINUTE
+         )`,
       [...callIds],
     )
-    const byCall = new Map<string, ManualReauditItemStatus[]>()
+    const byCall = new Map<
+      string,
+      {
+        status: ManualReauditItemStatus
+        createdAt: Date | string
+        completedAt: Date | string | null
+      }[]
+    >()
     for (const row of rows) {
-      byCall.set(row.call_id, [...(byCall.get(row.call_id) ?? []), row.status])
+      byCall.set(row.call_id, [
+        ...(byCall.get(row.call_id) ?? []),
+        {
+          status: row.status,
+          createdAt: row.created_at,
+          completedAt: row.completed_at,
+        },
+      ])
     }
-    for (const [callId, itemStatuses] of byCall) {
-      const status = manualReauditRowStatus(itemStatuses)
-      if (status) statuses.set(callId, status)
+    for (const [callId, items] of byCall) {
+      const lifecycle = manualReauditRowLifecycle(items)
+      if (lifecycle) statuses.set(callId, lifecycle)
     }
   } catch (error) {
     // Migration 0015 is additive. Until it is applied the monitor reports no

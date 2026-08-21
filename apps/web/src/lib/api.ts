@@ -245,11 +245,12 @@ export interface AuditMonitorRow {
   lastEvidenceVerifiedAt: string | null
   auditedAt: string | null
   /**
-   * Whether an administrator-requested re-audit is already live for this row.
-   * The server exposes these two words and nothing else — no request id, queue
-   * item, baseline run, attempt count, or internal call id.
+   * Latest visible administrator-requested re-audit lifecycle for this row.
+   * The server exposes lifecycle and completion date only — no request id,
+   * queue item, baseline run, attempt count, error code, or internal call id.
    */
   reAuditStatus: ManualReauditRowStatus | null
+  reAuditCompletedAt: string | null
   aiUsage: {
     inputTokens: number | null
     outputTokens: number | null
@@ -268,7 +269,11 @@ export const MANUAL_REAUDIT_RESUME_ROUTE =
 /** The server's own ceiling on one request, restated for the selection UI. */
 export const MAX_MANUAL_REAUDIT_CALLS = 100
 
-export type ManualReauditRowStatus = 'queued' | 'processing'
+export type ManualReauditRowStatus =
+  | 'queued'
+  | 'processing'
+  | 'completed'
+  | 'failed'
 
 /**
  * What the re-audit endpoint returns. Mirrors the server DTO in

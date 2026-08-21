@@ -190,6 +190,8 @@ code { font-family: "SFMono-Regular", Consolas, monospace; font-size: .82rem; }
 .status-badge.faulted { color: var(--red); background: var(--red-soft); }
 .status-badge.queued { color: var(--amber); background: var(--amber-soft); }
 .status-badge.processing { color: var(--teal); background: #e8f2f5; }
+.status-badge.completed { color: var(--green); background: var(--green-soft); }
+.status-badge.failed { color: var(--red); background: var(--red-soft); }
 
 /*
  * Administrator-selected re-audit. One flat bar above the audited table — a
@@ -404,6 +406,10 @@ dl small { color: var(--muted); font-size: .6rem; }
 .button.secondary { color: var(--red); border-color: #dba6a2; }
 .icon-button { display: grid; place-items: center; padding: 6px; color: inherit; background: transparent; border: 0; cursor: pointer; }
 .status-badge svg { margin-right: 5px; }
+.status-badge .cell-sub {
+  flex-basis: 100%; margin: 3px 0 0 18px; text-transform: none;
+  letter-spacing: 0; white-space: normal;
+}
 .audit-control-bar {
   display: grid; grid-template-columns: minmax(300px, 1fr) 210px 180px;
   gap: 12px; align-items: end; padding: 15px 17px;

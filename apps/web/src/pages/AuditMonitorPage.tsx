@@ -73,12 +73,27 @@ function rowStatus(row: AuditMonitorRow): string {
  * that is silently reported back as already queued.
  */
 function reAuditLocked(row: AuditMonitorRow): boolean {
-  return row.reAuditStatus != null
+  return row.reAuditStatus === 'queued' || row.reAuditStatus === 'processing'
 }
 
 function reAuditLabel(row: AuditMonitorRow): string {
   if (row.reAuditStatus === 'processing') return 'Re-auditing'
-  return row.reAuditStatus === 'queued' ? 'Re-audit queued' : ''
+  if (row.reAuditStatus === 'queued') return 'Re-audit queued'
+  if (row.reAuditStatus === 'completed') return 'Re-audited'
+  return row.reAuditStatus === 'failed' ? 'Re-audit failed' : ''
+}
+
+function reAuditIcon(row: AuditMonitorRow) {
+  if (row.reAuditStatus === 'processing') {
+    return <RefreshCw size={13} aria-hidden />
+  }
+  if (row.reAuditStatus === 'completed') {
+    return <CheckCircle2 size={13} aria-hidden />
+  }
+  if (row.reAuditStatus === 'failed') {
+    return <AlertTriangle size={13} aria-hidden />
+  }
+  return <Clock3 size={13} aria-hidden />
 }
 
 /**
@@ -614,12 +629,17 @@ export function AuditMonitorPage() {
                   <td>
                     {row.reAuditStatus ? (
                       <span className={`status-badge ${row.reAuditStatus}`}>
-                        {row.reAuditStatus === 'processing' ? (
-                          <RefreshCw size={13} aria-hidden />
-                        ) : (
-                          <Clock3 size={13} aria-hidden />
-                        )}
+                        {reAuditIcon(row)}
                         {reAuditLabel(row)}
+                        {(row.reAuditStatus === 'completed' ||
+                          row.reAuditStatus === 'failed') && (
+                          <small className="cell-sub">
+                            {date(row.reAuditCompletedAt)}
+                            {row.reAuditStatus === 'failed'
+                              ? ' · Previous audit retained'
+                              : ''}
+                          </small>
+                        )}
                       </span>
                     ) : (
                       '—'

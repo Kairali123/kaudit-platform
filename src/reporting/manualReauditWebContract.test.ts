@@ -43,10 +43,15 @@ test('the client mirrors the server route and its ceiling exactly', async () => 
   )
 })
 
-test('the row type carries the two safe lifecycle words and nothing more', async () => {
+test('the row type carries safe lifecycle fields and nothing more', async () => {
   const source = await webSource('lib/api.ts')
+  const rowType = /interface AuditMonitorRow \{([\s\S]*?)\n\}/.exec(
+    source,
+  )?.[1]
+  assert.ok(rowType)
   assert.match(source, /reAuditStatus: ManualReauditRowStatus \| null/)
-  assert.match(source, /type ManualReauditRowStatus = 'queued' \| 'processing'/)
+  assert.match(source, /reAuditCompletedAt: string \| null/)
+  assert.match(source, /'queued'[\s\S]{0,80}'processing'[\s\S]{0,80}'completed'[\s\S]{0,80}'failed'/)
   // The queue's internals are never modelled in the browser.
   for (const forbidden of [
     'baselineAuditRunId',
@@ -54,9 +59,10 @@ test('the row type carries the two safe lifecycle words and nothing more', async
     'internalCallId',
     'reAuditAttemptCount',
     'reAuditErrorCode',
+    'lastErrorCode',
   ]) {
     assert.equal(
-      new RegExp(`${forbidden}\\??:`).test(source),
+      new RegExp(`${forbidden}\\??:`).test(rowType),
       false,
       `${forbidden} must not appear in the web client contract`,
     )
@@ -125,11 +131,14 @@ test('one retry key covers a draft and is replaced only after a success', async 
   )
 })
 
-test('select-all covers this page only, and a row in flight cannot be selected', async () => {
+test('select-all covers this page only, and only live rows cannot be selected', async () => {
   const source = await webSource('pages/AuditMonitorPage.tsx')
   assert.match(source, /const selectable = data\.rows\s*\n?\s*\.filter\(\(row\) => !reAuditLocked\(row\)\)/)
   assert.match(source, /function reAuditLocked\(row: AuditMonitorRow\): boolean/)
-  assert.match(source, /return row\.reAuditStatus != null/)
+  assert.match(
+    source,
+    /return row\.reAuditStatus === 'queued' \|\| row\.reAuditStatus === 'processing'/,
+  )
   assert.match(source, /const toggleAll = \(\)/)
   assert.match(source, /disabled=\{reAuditLocked\(row\)\}/)
   assert.match(
@@ -175,6 +184,10 @@ test('pending, success, and error are all visible states', async () => {
   assert.match(source, /receipt && \(/)
   // And the per-row state is rendered from the server's own word.
   assert.match(source, /row\.reAuditStatus === 'processing'/)
+  assert.match(source, /row\.reAuditStatus === 'completed'/)
+  assert.match(source, /row\.reAuditStatus === 'failed'/)
+  assert.match(source, /Previous audit retained/)
+  assert.match(source, /date\(row\.reAuditCompletedAt\)/)
   assert.match(source, /function reAuditLabel\(row: AuditMonitorRow\): string/)
 })
 

@@ -104,13 +104,21 @@ export type ManualReauditItemStatus =
   (typeof MANUAL_REAUDIT_ITEM_STATUSES)[number]
 
 /**
- * The ONLY per-row re-audit state the monitor exposes.
+ * The ONLY per-row re-audit lifecycle the monitor exposes.
  *
  * Deliberately not the item id, the request id, the baseline run, the attempt
- * count, or the error code: the page needs to know that a row is spoken for,
- * and nothing else.
+ * count, or the error code.
  */
-export type ManualReauditRowStatus = 'queued' | 'processing'
+export type ManualReauditRowStatus =
+  | 'queued'
+  | 'processing'
+  | 'completed'
+  | 'failed'
+
+export interface ManualReauditRowLifecycle {
+  status: ManualReauditRowStatus
+  completedAt: Date | string | null
+}
 
 export interface ManualReauditRequestInput {
   callReferences: string[]
@@ -257,14 +265,35 @@ export function safeManualReauditErrorCode(value: unknown): string {
 }
 
 /**
- * The single status a monitor row reports, given every active item for it.
+ * The latest lifecycle a monitor row reports.
  *
- * `processing` wins: a row with work already in flight must not offer itself
- * for selection as though it were merely waiting.
+ * Skipped items are intentionally not displayed, but a newer skipped item still
+ * suppresses older visible terminal state.
  */
-export function manualReauditRowStatus(
-  statuses: readonly ManualReauditItemStatus[],
-): ManualReauditRowStatus | null {
-  if (statuses.includes('processing')) return 'processing'
-  return statuses.includes('queued') ? 'queued' : null
+export function manualReauditRowLifecycle(
+  items: readonly {
+    status: ManualReauditItemStatus
+    createdAt: Date | string
+    completedAt?: Date | string | null
+  }[],
+): ManualReauditRowLifecycle | null {
+  const latest = [...items].sort(
+    (left, right) =>
+      new Date(right.createdAt).getTime() -
+        new Date(left.createdAt).getTime() ||
+      String(right.createdAt).localeCompare(String(left.createdAt)),
+  )[0]
+  if (
+    !latest ||
+    !['queued', 'processing', 'completed', 'failed'].includes(latest.status)
+  ) {
+    return null
+  }
+  return {
+    status: latest.status as ManualReauditRowStatus,
+    completedAt:
+      latest.status === 'completed' || latest.status === 'failed'
+        ? latest.completedAt ?? null
+        : null,
+  }
 }

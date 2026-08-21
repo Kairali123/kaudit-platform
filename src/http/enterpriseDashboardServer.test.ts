@@ -90,6 +90,7 @@ async function withServer(
   runtimeConfig: RuntimeConfig = config,
   verifier: TokenVerifier | null = null,
   accessRepository: AccessRepository = access,
+  poolOverride?: Pool,
 ): Promise<void> {
   const pool = {
     async query() {
@@ -98,7 +99,7 @@ async function withServer(
   } as unknown as Pool
   const server = createEnterpriseDashboardServer({
     config: runtimeConfig,
-    pool,
+    pool: poolOverride ?? pool,
     access: accessRepository,
     audit,
     verifier,
@@ -537,5 +538,126 @@ test('audit monitor is admin-only and excludes raw content fields', async () => 
     config,
     null,
     adminAccess,
+  )
+})
+
+test('audit monitor API exposes terminal re-audit lifecycle without queue internals', async () => {
+  const adminAccess: AccessRepository = {
+    ...access,
+    async findByEmail(email) {
+      return {
+        id: 'admin-1',
+        email,
+        status: 'active',
+        maxSensitivityTier: 'K3',
+        roles: ['admin'],
+      }
+    },
+  }
+  const pool = {
+    async query(sql: string) {
+      if (sql.includes('auditor_final_charge')) {
+        return [[{
+          audited_calls: 1,
+          kserve_priced_calls: 0,
+          kserve_charge: '0.00000000',
+          auditor_final_priced_calls: 0,
+          auditor_unfinalized_calls: 1,
+          auditor_final_charge: '0.00000000',
+        }], []]
+      }
+      if (sql.includes('grace_adjusted_duration_ms')) {
+        return [[{
+          internal_call_id: 'call-synthetic-1',
+          call_reference: 'synthetic-task-1',
+          billing_period_date: '2026-08-01',
+          category: 'TIME_DURATION',
+          outcome_taxonomy_version: 'v2',
+          confidence: '0.95000000',
+          confirmation_status: 'model_output',
+          language: 'english',
+          provider_name: 'synthetic-asr',
+          model_name: 'synthetic-model',
+          model_version: '1',
+          engine_version: 'kairali-independent-reaudit/2.1.0',
+          decoded_duration_ms: 190_000,
+          speech_ms: 80_000,
+          conversation_end_ms: 61_000,
+          grace_adjusted_duration_ms: 121_000,
+          vendor_connected_duration_ms: 180_000,
+          evidence_sha256: 'f'.repeat(64),
+          last_verified_at: '2026-08-02 00:00:00',
+          audited_at: '2026-08-20 09:00:00',
+          ai_input_tokens: 100,
+          ai_output_tokens: 50,
+          ai_total_tokens: 150,
+          ai_audio_seconds: 190,
+        }], []]
+      }
+      if (sql.includes('kaudit_billing_reaudit_item')) {
+        return [[{
+          call_id: 'call-synthetic-1',
+          status: 'failed',
+          created_at: '2026-08-20 09:00:00',
+          completed_at: '2026-08-20 09:05:00',
+        }], []]
+      }
+      return [[], []]
+    },
+  } as unknown as Pool
+
+  await withServer(
+    {
+      async record() {},
+      async readiness() {
+        return true
+      },
+    },
+    async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/v1/audits`, {
+        headers: { cookie: localCookie() },
+      })
+      assert.equal(response.status, 200)
+      const body = await response.json() as {
+        rows: Array<Record<string, unknown>>
+      }
+      assert.equal(body.rows[0]?.reAuditStatus, 'failed')
+      assert.match(String(body.rows[0]?.reAuditCompletedAt), /^2026-08-20T/)
+      const serialized = JSON.stringify(body)
+      const rowSerialized = JSON.stringify(body.rows[0])
+      const keys = new Set<string>()
+      const visit = (value: unknown): void => {
+        if (Array.isArray(value)) {
+          value.forEach(visit)
+        } else if (value && typeof value === 'object') {
+          for (const [key, item] of Object.entries(value)) {
+            keys.add(key)
+            visit(item)
+          }
+        }
+      }
+      visit(body)
+      assert.equal(serialized.includes('call-synthetic-1'), false)
+      for (const forbidden of [
+        'requestId',
+        'itemId',
+        'baselineAuditRunId',
+        'lastErrorCode',
+      ]) {
+        assert.equal(rowSerialized.includes(forbidden), false)
+      }
+      for (const forbidden of [
+        'sourceUrl',
+        'recordingUrl',
+        'transcript',
+      ]) {
+        assert.equal(keys.has(forbidden), false)
+      }
+    },
+    undefined,
+    config,
+    null,
+    adminAccess,
+    pool,
   )
 })

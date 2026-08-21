@@ -8,7 +8,7 @@ import {
   manualReauditDigest,
   manualReauditId,
   manualReauditOutboxMessageId,
-  manualReauditRowStatus,
+  manualReauditRowLifecycle,
   parseManualReauditRequest,
   safeManualReauditErrorCode,
 } from './manualRequests.ts'
@@ -197,10 +197,50 @@ test('only a bounded code is stored against a failed item', () => {
   }
 })
 
-test('a row in flight reports processing, never merely queued', () => {
-  assert.equal(manualReauditRowStatus(['queued']), 'queued')
-  assert.equal(manualReauditRowStatus(['processing']), 'processing')
-  assert.equal(manualReauditRowStatus(['queued', 'processing']), 'processing')
-  assert.equal(manualReauditRowStatus([]), null)
-  assert.equal(manualReauditRowStatus(['completed', 'skipped']), null)
+test('a row reports the newest privacy-safe re-audit lifecycle item', () => {
+  const completedAt = '2026-08-20T10:00:00.000Z'
+  assert.deepEqual(
+    manualReauditRowLifecycle([
+      {
+        status: 'completed',
+        createdAt: '2026-08-20T09:00:00.000Z',
+        completedAt,
+      },
+    ]),
+    { status: 'completed', completedAt },
+  )
+  assert.deepEqual(
+    manualReauditRowLifecycle([
+      {
+        status: 'failed',
+        createdAt: '2026-08-20T09:00:00.000Z',
+        completedAt,
+      },
+      { status: 'queued', createdAt: '2026-08-20T11:00:00.000Z' },
+    ]),
+    { status: 'queued', completedAt: null },
+  )
+  assert.deepEqual(
+    manualReauditRowLifecycle([
+      { status: 'queued', createdAt: '2026-08-20T09:00:00.000Z' },
+      { status: 'processing', createdAt: '2026-08-20T11:00:00.000Z' },
+    ]),
+    { status: 'processing', completedAt: null },
+  )
+  assert.equal(manualReauditRowLifecycle([]), null)
+  assert.equal(
+    manualReauditRowLifecycle([
+      {
+        status: 'failed',
+        createdAt: '2026-08-20T08:00:00.000Z',
+        completedAt,
+      },
+      {
+        status: 'skipped',
+        createdAt: '2026-08-20T09:00:00.000Z',
+        completedAt,
+      },
+    ]),
+    null,
+  )
 })

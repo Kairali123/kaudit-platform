@@ -41,13 +41,14 @@ export interface AuditMonitorRow {
   lastEvidenceVerifiedAt: string | null
   auditedAt: string | null
   /**
-   * Whether an administrator-requested re-audit is already live for this row.
+   * Latest visible administrator-requested re-audit lifecycle for this row.
    *
    * The ONLY re-audit state this DTO carries: no request id, no queue item, no
    * baseline run, no attempt count, no error code, and no internal call id. The
    * page needs to know that a row is spoken for, and nothing else.
    */
   reAuditStatus: ManualReauditRowStatus | null
+  reAuditCompletedAt: string | null
   aiUsage: {
     inputTokens: number | null
     outputTokens: number | null
@@ -975,10 +976,14 @@ export async function collectAuditMonitor(
         evidenceHashRecorded: Boolean(row.evidence_sha256),
         lastEvidenceVerifiedAt: isoDate(row.last_verified_at),
         auditedAt: isoDate(row.audited_at),
-        reAuditStatus:
-          (row.internal_call_id &&
-            reAuditStatuses.get(row.internal_call_id)) ||
-          null,
+        reAuditStatus: row.internal_call_id
+          ? reAuditStatuses.get(row.internal_call_id)?.status ?? null
+          : null,
+        reAuditCompletedAt: row.internal_call_id
+          ? isoDate(
+              reAuditStatuses.get(row.internal_call_id)?.completedAt ?? null,
+            )
+          : null,
         aiUsage: {
           inputTokens: nullableNumber(row.ai_input_tokens),
           outputTokens: nullableNumber(row.ai_output_tokens),

@@ -435,30 +435,45 @@ test('a call the monitor cannot price reports zero auditor money, not a projecti
 // Per-row re-audit state
 // ---------------------------------------------------------------------------
 
-test('a row carries only its re-audit lifecycle word, never a queue internal', async () => {
+test('a row carries only safe re-audit lifecycle fields, never a queue internal', async () => {
   const fake = fakePool([
     { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },
     { match: 'grace_adjusted_duration_ms', rows: [AUDITED_ROW] },
     {
       match: 'kaudit_billing_reaudit_item',
-      rows: [{ call_id: 'call-synthetic-1', status: 'processing' }],
+      rows: [
+        {
+          call_id: 'call-synthetic-1',
+          status: 'failed',
+          created_at: '2026-08-20 09:00:00',
+          completed_at: '2026-08-20 09:05:00',
+        },
+      ],
     },
   ])
   const data = await collectAuditMonitor(fake.pool, QUERY)
   const row = data.rows[0]
 
-  assert.equal(row.reAuditStatus, 'processing')
+  assert.equal(row.reAuditStatus, 'failed')
+  assert.match(row.reAuditCompletedAt ?? '', /^2026-08-20T/)
   // The internal key used to join the queue never reaches the DTO.
   assert.equal('internal_call_id' in row, false)
   assert.equal('internalCallId' in row, false)
   const body = JSON.stringify(data)
   assert.equal(body.includes('call-synthetic-1'), false)
-  for (const internal of ['requestId', 'itemId', 'baselineAuditRunId', 'brr_', 'bri_']) {
+  for (const internal of [
+    'requestId',
+    'itemId',
+    'baselineAuditRunId',
+    'lastErrorCode',
+    'brr_',
+    'bri_',
+  ]) {
     assert.equal(body.includes(internal), false)
   }
 })
 
-test('a row with no live re-audit reports null rather than a stale word', async () => {
+test('a row with no re-audit lifecycle reports null rather than a stale word', async () => {
   const fake = fakePool([
     { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },
     { match: 'grace_adjusted_duration_ms', rows: [AUDITED_ROW] },
@@ -466,10 +481,11 @@ test('a row with no live re-audit reports null rather than a stale word', async 
   ])
   const data = await collectAuditMonitor(fake.pool, QUERY)
   assert.equal(data.rows[0].reAuditStatus, null)
+  assert.equal(data.rows[0].reAuditCompletedAt, null)
   // Only the calls actually on screen are asked about.
   const lookup = fake.find('kaudit_billing_reaudit_item') ?? ''
-  assert.match(lookup, /item.status = 'queued'/)
-  assert.match(lookup, /item.status = 'processing'/)
+  assert.match(lookup, /item.status IN \('queued','processing','completed','failed'\)/)
+  assert.match(lookup, /NOT EXISTS \(/)
 })
 
 test('an unapplied re-audit migration still renders the audited rows', async () => {
@@ -484,5 +500,6 @@ test('an unapplied re-audit migration still renders the audited rows', async () 
 
   assert.equal(data.rows.length, 1)
   assert.equal(data.rows[0].reAuditStatus, null)
+  assert.equal(data.rows[0].reAuditCompletedAt, null)
   assert.equal(data.rows[0].category, 'TIME_DURATION')
 })
