@@ -1,6 +1,7 @@
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import { createVercelDashboardHandler } from '../src/vercel/dashboardFunction.ts'
 
+
 /**
  * Vercel Node Function entry point for the authenticated web/API application.
  *
