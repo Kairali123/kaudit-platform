@@ -1,6 +1,17 @@
 name: Kaudit audit worker
 
 on:
+  workflow_call:
+    inputs:
+      system:
+        description: Audit system
+        required: true
+        type: string
+      mode:
+        description: Billing audit run mode
+        required: false
+        default: new
+        type: string
   workflow_dispatch:
     inputs:
       system:
@@ -102,6 +113,7 @@ jobs:
             else
               KAUDIT_AUDIT_MODE=EXECUTE \
               KAUDIT_AUDIT_BATCH=10 \
+              KAUDIT_AUDIT_CONCURRENCY=10 \
               KAUDIT_AUDIT_WATCH=false \
               KAUDIT_AUDIT_DRAIN=true \
               npm run audit:worker

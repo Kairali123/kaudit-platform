@@ -54,6 +54,7 @@ async function main(): Promise<void> {
     )
   }
   const batchSize = integer('KAUDIT_AUDIT_BATCH', 10, 1, 100)
+  const requestedConcurrency = integer('KAUDIT_AUDIT_CONCURRENCY', 1, 1, 10)
   const pollMs = integer('KAUDIT_AUDIT_POLL_MS', 15_000, 1_000, 60_000)
   const watch = enabled('KAUDIT_AUDIT_WATCH')
   const drain = enabled('KAUDIT_AUDIT_DRAIN')
@@ -123,6 +124,7 @@ async function main(): Promise<void> {
   const targetedOneShot =
     requestedMode ||
     (appendReaudit && taskIds !== null && taskIds.length > 0 && !watch && !drain)
+  const concurrency = targetedOneShot ? 1 : requestedConcurrency
   const allowedHosts = required('KAUDIT_ALLOWED_RECORDING_HOSTS')
     .split(',')
     .map((value) => value.trim())
@@ -136,7 +138,7 @@ async function main(): Promise<void> {
     user: config.database.user,
     password: config.database.password,
     ...(ssl ? { ssl } : {}),
-    connectionLimit: 4,
+    connectionLimit: Math.max(4, concurrency + 2),
     connectTimeout: 30_000,
   })
   const lockConnection = await pool.getConnection()
@@ -199,6 +201,7 @@ async function main(): Promise<void> {
           results,
           includePreviouslyClassified: appendReaudit || requestedMode,
           batchSize,
+          concurrency,
           shouldContinue: async () =>
             !shutdownRequested &&
             (targetedOneShot ||

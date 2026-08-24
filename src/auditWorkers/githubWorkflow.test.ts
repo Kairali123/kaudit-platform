@@ -6,6 +6,10 @@ const workflow = readFileSync(
   new URL('../../.github/workflows/audit-worker.yml', import.meta.url),
   'utf8',
 )
+const scheduledWorkflow = readFileSync(
+  new URL('../../.github/workflows/scheduled-audit-workers.yml', import.meta.url),
+  'utf8',
+)
 
 test('hosted worker is manual, bounded, and serialized per audit system', () => {
   assert.match(workflow, /workflow_dispatch:/)
@@ -20,6 +24,7 @@ test('hosted worker is manual, bounded, and serialized per audit system', () => 
 
 test('hosted worker drains through existing CLIs and never runs a model test', () => {
   assert.match(workflow, /KAUDIT_AUDIT_DRAIN=true/)
+  assert.match(workflow, /KAUDIT_AUDIT_CONCURRENCY=10/)
   assert.match(workflow, /npm run audit:worker/)
   assert.match(workflow, /KAUDIT_CALL_AUDIT_DRAIN=true/)
   assert.match(workflow, /npm run callaudit:worker/)
@@ -64,6 +69,10 @@ test('requested re-audit mode is billing-only, bounded, and queue-driven', () =>
   assert.match(
     workflow,
     /KAUDIT_AUDIT_REQUESTED_MODE=true[\s\S]{0,200}KAUDIT_AUDIT_BATCH=1/,
+  )
+  assert.doesNotMatch(
+    workflow,
+    /KAUDIT_AUDIT_REQUESTED_MODE=true[\s\S]{0,200}KAUDIT_AUDIT_CONCURRENCY=/,
   )
   assert.match(
     workflow,
@@ -110,4 +119,19 @@ test('Call Audit starts at the approved July 2026 UTC boundary', () => {
 test('disabled database TLS cannot retain dormant CA material', () => {
   assert.match(workflow, /if \[\[ "\$DB_TLS_MODE" == "disabled" \]\]/)
   assert.match(workflow, /unset DB_SSL_CA_PEM/)
+})
+
+test('scheduled workers prioritize Billing Audit while still running Call Audit', () => {
+  assert.match(scheduledWorkflow, /name: Kaudit scheduled audit workers/)
+  assert.match(scheduledWorkflow, /cron: '47 \*\/6 \* \* \*'/)
+  assert.match(scheduledWorkflow, /cron: '17 \*\/12 \* \* \*'/)
+  assert.match(
+    scheduledWorkflow,
+    /billing-audit:[\s\S]{0,160}system: billing[\s\S]{0,80}mode: new/,
+  )
+  assert.match(
+    scheduledWorkflow,
+    /call-audit:[\s\S]{0,160}system: call[\s\S]{0,80}mode: new/,
+  )
+  assert.match(scheduledWorkflow, /secrets: inherit/)
 })

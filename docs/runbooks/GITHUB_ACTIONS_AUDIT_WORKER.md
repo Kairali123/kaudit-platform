@@ -6,9 +6,10 @@ GitHub-hosted worker from the Billing Audit or Call Audit report. The worker
 drains currently eligible database work and exits when it is idle, paused,
 faulted, or near its host deadline.
 
-It is not a continuous worker. New Call Audit source changes that arrive after a
-job exits wait for the next administrator Run action. GitHub-hosted usage is also
-bounded by the repository owner's Actions allowance.
+It is not a persistent process. New source changes that arrive after a job exits
+wait for either the next administrator Run action or the next scheduled
+workflow. GitHub-hosted usage is also bounded by the repository owner's Actions
+allowance.
 
 ## Security boundary
 
@@ -80,6 +81,21 @@ cannot provision repository secrets. Initial secret setup requires a separate,
 temporary fine-grained token with repository **Secrets: write**. Keep that
 provisioning token out of Vercel and tracked files, remove its local copy as soon
 as the secret names are verified, and revoke it after setup.
+
+## Scheduled operation
+
+The repository also contains `.github/workflows/scheduled-audit-workers.yml`.
+It calls the same hosted worker workflow with inherited repository secrets:
+
+- Billing Audit runs every 6 hours at minute 47 UTC and drains new eligible
+  billing calls until idle or near the GitHub job deadline.
+- Call Audit runs every 12 hours at minute 17 UTC.
+
+The normal Billing Audit drain sets `KAUDIT_AUDIT_CONCURRENCY=10` and
+`KAUDIT_AUDIT_BATCH=10`. That means up to ten claimed calls can be in provider
+work at the same time, while the MySQL advisory lock still allows only one
+Billing Audit worker process. Targeted and administrator-requested Billing
+re-audits stay sequential unless an operator deliberately changes the workflow.
 
 ## Operation
 
