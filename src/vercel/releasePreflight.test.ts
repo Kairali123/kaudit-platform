@@ -616,6 +616,28 @@ test('the recording proxy with an allow-list passes and is reported', () => {
   assert.deepEqual(report.optionalFeatures, ['recordingProxy'])
 })
 
+test('a strongly shaped GAS import secret enables only GAS usage import', () => {
+  const secret = 'synthetic-gas-import-secret-32-characters'
+  const report = evaluate({
+    ...productionEnv(),
+    KAUDIT_GAS_IMPORT_SECRET: secret,
+  })
+  assert.equal(report.ok, true)
+  assert.deepEqual(report.optionalFeatures, ['gasUsageImport'])
+  assert.equal(formatPreflightReport(report).includes(secret), false)
+})
+
+test('a malformed GAS import secret is refused by variable name only', () => {
+  const report = evaluate({
+    ...productionEnv(),
+    KAUDIT_GAS_IMPORT_SECRET: 'short',
+  })
+  assert.deepEqual(codes(report), ['FEATURE_CONFIG_INCOMPLETE'])
+  assert.deepEqual(variablesFor(report, 'FEATURE_CONFIG_INCOMPLETE'), [
+    'KAUDIT_GAS_IMPORT_SECRET',
+  ])
+})
+
 test('the hosted worker dispatcher requires its complete closed configuration', () => {
   const report = evaluate({
     ...productionEnv(),

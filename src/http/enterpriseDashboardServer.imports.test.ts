@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHmac } from 'node:crypto'
 import type { AddressInfo } from 'node:net'
 import type { Pool } from 'mysql2/promise'
 import type { AccessRepository } from '../auth/types.ts'
@@ -10,6 +11,9 @@ import {
   issueLocalSession,
 } from '../auth/localSession.ts'
 import { createEnterpriseDashboardServer } from './enterpriseDashboardServer.ts'
+import { gasImportSigningPayload } from '../imports/gasImportAuth.ts'
+import { sha256Hex } from '../lib/hash.ts'
+import type { CycleImportService } from '../imports/types.ts'
 
 /**
  * Import endpoints on a runtime that has no cycle import service.
@@ -280,4 +284,102 @@ test('authorization is still checked before availability', async () => {
     const body = (await response.json()) as Record<string, unknown>
     assert.notEqual(body.code, 'IMPORT_NOT_AVAILABLE')
   })
+})
+
+test('a signed GAS request reaches usage import without a browser session', async () => {
+  const events: AuditEvent[] = []
+  const bytes = Buffer.from('synthetic,csv')
+  const timestamp = String(Date.now())
+  const secret = 'synthetic-gas-import-secret-32-characters'
+  const filename = 'synthetic-usage.csv'
+  const periodStart = '2026-06-01'
+  const periodEnd = '2026-06-30'
+  const bodySha256 = sha256Hex(bytes)
+  const signature = createHmac('sha256', secret).update(
+    gasImportSigningPayload({
+      method: 'POST',
+      pathname: '/api/v1/imports/usage',
+      timestamp,
+      bodySha256,
+      filename,
+      periodStart,
+      periodEnd,
+    }),
+  ).digest('hex')
+  let importCalls = 0
+  const imports = {
+    async status() { throw new Error('not used') },
+    async importInvoice() { throw new Error('not used') },
+    async importUsage(request) {
+      importCalls += 1
+      assert.deepEqual(request.bytes, bytes)
+      return {
+        outcome: 'imported' as const,
+        referenceId: 'synthetic-batch',
+        received: 1,
+        accepted: 1,
+        duplicates: 0,
+        auditJobsQueued: 0,
+        missingRecordingUrls: 1,
+      }
+    },
+  } satisfies CycleImportService
+  const server = createEnterpriseDashboardServer({
+    config,
+    pool: { async query() { return [[{ one: 1 }], []] } } as unknown as Pool,
+    access,
+    audit: {
+      async record(event) { events.push(event) },
+      async readiness() { return true },
+    },
+    verifier: null,
+    imports,
+    gasImportSecret: secret,
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  try {
+    const address = server.address() as AddressInfo
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/v1/imports/usage`,
+      {
+        method: 'POST',
+        body: bytes,
+        headers: {
+          'x-kaudit-filename': filename,
+          'x-kaudit-period-start': periodStart,
+          'x-kaudit-period-end': periodEnd,
+          'x-kaudit-content-sha256': bodySha256,
+          'x-kaudit-import-timestamp': timestamp,
+          'x-kaudit-import-signature': signature,
+        },
+      },
+    )
+    assert.equal(response.status, 200)
+    assert.equal((await response.json() as { accepted: number }).accepted, 1)
+    const event = events.find((item) => item.action === 'usage_import.create')
+    assert.equal(event?.outcome, 'success')
+    assert.equal(event?.actorUserId, null)
+    assert.equal(event?.actorEmail, 'gas-import@kaudit.invalid')
+
+    const tampered = await fetch(
+      `http://127.0.0.1:${address.port}/api/v1/imports/usage`,
+      {
+        method: 'POST',
+        body: Buffer.from('changed,csv'),
+        headers: {
+          'x-kaudit-filename': filename,
+          'x-kaudit-period-start': periodStart,
+          'x-kaudit-period-end': periodEnd,
+          'x-kaudit-content-sha256': bodySha256,
+          'x-kaudit-import-timestamp': timestamp,
+          'x-kaudit-import-signature': signature,
+        },
+      },
+    )
+    assert.equal(tampered.status, 401)
+    assert.equal(importCalls, 1)
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => error ? reject(error) : resolve()))
+  }
 })

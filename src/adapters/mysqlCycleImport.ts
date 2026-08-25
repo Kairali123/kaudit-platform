@@ -7,6 +7,7 @@ import type {
 import { normalizeRecordingUrl } from '../backfill/normalizeRecordingUrl.ts'
 import { parseUsageCsv } from '../imports/csv.ts'
 import type { UsageRow } from '../imports/csv.ts'
+import { sha256Hex } from '../lib/hash.ts'
 import type {
   CycleImportService,
   ImportResult,
@@ -16,7 +17,6 @@ import type {
 import type { ImportObjectStore } from '../imports/objectStore.ts'
 import { safeImportFilename } from '../imports/objectStore.ts'
 import { canonicalJson } from '../messaging/canonicalJson.ts'
-import { createMysqlOutboxWriter } from './mysqlOutbox.ts'
 
 interface SourceRow extends RowDataPacket {
   id: string
@@ -28,7 +28,7 @@ interface DuplicateRow extends RowDataPacket {
 }
 
 interface ExternalReferenceRow extends RowDataPacket {
-  call_id: string
+  external_id: string
 }
 
 interface BatchRow extends RowDataPacket {
@@ -58,6 +58,8 @@ export interface CycleImportConfig {
   sourceConnectionId: string | null
   allowedRecordingHosts: string[]
 }
+
+export const USAGE_IMPORT_WRITE_BATCH_SIZE = 500
 
 class ImportInputError extends Error {
   readonly code = 'INVALID_IMPORT'
@@ -127,6 +129,38 @@ function sqlDateTime(value: string, name: string): string | null {
   throw new ImportInputError(
     `${name} must be YYYY-MM-DD HH:mm:ss or DD/MM/YYYY HH:mm:ss`,
   )
+}
+
+function chunks<T>(values: readonly T[], size: number): T[][] {
+  const result: T[][] = []
+  for (let index = 0; index < values.length; index += size) {
+    result.push(values.slice(index, index + size))
+  }
+  return result
+}
+
+async function bulkInsert(
+  connection: PoolConnection,
+  sql: string,
+  rows: ReadonlyArray<ReadonlyArray<string | number | null>>,
+): Promise<void> {
+  if (rows.length === 0) return
+  const tuple = `(${rows[0]?.map(() => '?').join(', ')})`
+  await connection.execute(
+    `${sql} VALUES ${rows.map(() => tuple).join(', ')}`,
+    rows.flat(),
+  )
+}
+
+interface PreparedUsageRow {
+  row: UsageRow
+  callId: string
+  legId: string
+  artifactId: string
+  startedAt: string | null
+  connectedAt: string | null
+  endedAt: string | null
+  sourceUrl: string | null
 }
 
 async function resolveSource(
@@ -238,6 +272,34 @@ export function createMysqlCycleImportService(
       const periodStart = dateOnly(request.periodStart, 'periodStart')
       const periodEnd = dateOnly(request.periodEnd, 'periodEnd')
       const rows = parseUsageCsv(request.bytes)
+      const preparedRows: PreparedUsageRow[] = rows.map((row) => {
+        let sourceUrl: string | null = null
+        if (row.recordingUrl) {
+          const normalized = normalizeRecordingUrl(
+            row.recordingUrl,
+            config.allowedRecordingHosts,
+          )
+          if (!normalized.ok || !normalized.s3Url) {
+            throw new ImportInputError(
+              `Task ${row.taskId}: recording URL is not an approved canonical source`,
+            )
+          }
+          sourceUrl = normalized.s3Url
+        }
+        return {
+          row,
+          callId: randomUUID(),
+          legId: randomUUID(),
+          artifactId: randomUUID(),
+          startedAt: sqlDateTime(row.callStartTime, 'Call Start Time'),
+          connectedAt: sqlDateTime(
+            row.callConnectedTime,
+            'Call Connected Time',
+          ),
+          endedAt: sqlDateTime(row.callEndTime, 'Call End Time'),
+          sourceUrl,
+        }
+      })
       const preserved = await config.objectStore.preserve({
         bytes: request.bytes,
         filename: request.filename,
@@ -315,145 +377,159 @@ export function createMysqlCycleImportService(
         let duplicates = 0
         let queued = 0
         let missingRecordingUrls = 0
-        for (const row of rows) {
+        for (const batch of chunks(preparedRows, USAGE_IMPORT_WRITE_BATCH_SIZE)) {
+          const taskIds = batch.map(({ row }) => row.taskId)
           const [existing] =
             await connection.execute<ExternalReferenceRow[]>(
-              `SELECT call_id
+              `SELECT external_id
                FROM kaudit_call_external_reference
                WHERE provider_name = 'kserve'
                  AND reference_type = 'task_id'
-                 AND external_id = ? FOR UPDATE`,
-              [row.taskId],
+                 AND external_id IN (${taskIds.map(() => '?').join(', ')})
+               FOR UPDATE`,
+              taskIds,
             )
-          if (existing[0]) {
-            duplicates += 1
-            continue
-          }
-          const callId = randomUUID()
-          const artifactId = randomUUID()
-          const startedAt = sqlDateTime(row.callStartTime, 'Call Start Time')
-          const connectedAt = sqlDateTime(
-            row.callConnectedTime,
-            'Call Connected Time',
-          )
-          const endedAt = sqlDateTime(row.callEndTime, 'Call End Time')
-          let sourceUrl: string | null = null
-          if (row.recordingUrl) {
-            const normalized = normalizeRecordingUrl(
-              row.recordingUrl,
-              config.allowedRecordingHosts,
-            )
-            if (!normalized.ok || !normalized.s3Url) {
-              throw new ImportInputError(
-                `Task ${row.taskId}: recording URL is not an approved canonical source`,
-              )
-            }
-            sourceUrl = normalized.s3Url
-          } else {
-            missingRecordingUrls += 1
-          }
-          await connection.execute(
+          const existingIds = new Set(existing.map((item) => item.external_id))
+          const pending = batch.filter(({ row }) => !existingIds.has(row.taskId))
+          duplicates += batch.length - pending.length
+          if (pending.length === 0) continue
+
+          await bulkInsert(
+            connection,
             `INSERT INTO kaudit_call
                (id, vendor_account_id, logical_call_key, direction,
                 sensitivity_tier, subject_jurisdiction_code,
                 source_started_at, source_ended_at, billing_period_date,
-                processing_status)
-             VALUES (?, ?, ?, 'outbound', 'K1', 'IN', ?, ?, ?, 'ingested')`,
-            [
-              callId,
+                processing_status)`,
+            pending.map((item) => [
+              item.callId,
               source.vendor_account_id,
-              `kserve-task:${row.taskId}`,
-              startedAt,
-              endedAt,
+              `kserve-task:${item.row.taskId}`,
+              'outbound',
+              'K1',
+              'IN',
+              item.startedAt,
+              item.endedAt,
               periodStart,
-            ],
+              'ingested',
+            ]),
           )
-          await connection.execute(
+          await bulkInsert(
+            connection,
             `INSERT INTO kaudit_call_external_reference
                (id, call_id, provider_type, provider_name, reference_type,
-                external_id, source_evidence_object_id)
-             VALUES (?, ?, 'voice_vendor', 'kserve', 'task_id', ?, ?)`,
-            [randomUUID(), callId, row.taskId, evidenceId],
+                external_id, source_evidence_object_id)`,
+            pending.map((item) => [
+              randomUUID(),
+              item.callId,
+              'voice_vendor',
+              'kserve',
+              'task_id',
+              item.row.taskId,
+              evidenceId,
+            ]),
           )
-          const legId = randomUUID()
-          await connection.execute(
+          await bulkInsert(
+            connection,
             `INSERT INTO kaudit_call_leg
                (id, call_id, leg_type, provider_name, external_leg_id,
                 direction, from_party_type, to_party_type, initiated_at,
-                answered_at, ended_at, sequence_no)
-             VALUES (?, ?, 'primary', 'kserve', ?, 'outbound', 'agent',
-                     'customer', ?, ?, ?, 1)`,
-            [
-              legId,
-              callId,
-              row.taskId,
-              startedAt,
-              connectedAt,
-              endedAt,
-            ],
+                answered_at, ended_at, sequence_no)`,
+            pending.map((item) => [
+              item.legId,
+              item.callId,
+              'primary',
+              'kserve',
+              item.row.taskId,
+              'outbound',
+              'agent',
+              'customer',
+              item.startedAt,
+              item.connectedAt,
+              item.endedAt,
+              1,
+            ]),
           )
-          for (const cost of usageProviderCostClaims(row)) {
-            await connection.execute(
-              `INSERT INTO kaudit_provider_cost
-                 (id, call_id, call_leg_id, source_evidence_object_id,
-                  provider_name, component_type, provider_sku,
-                  quantity_decimal, quantity_unit, minutes_decimal, currency,
-                  cost_occurred_at, is_final, source_cost_id, raw_json)
-               VALUES (?, ?, ?, ?, 'kserve', 'platform', ?, ?, ?, ?, 'INR',
-                       ?, 1, ?, ?)`,
-              [
+          await bulkInsert(
+            connection,
+            `INSERT INTO kaudit_provider_cost
+               (id, call_id, call_leg_id, source_evidence_object_id,
+                provider_name, component_type, provider_sku,
+                quantity_decimal, quantity_unit, minutes_decimal, currency,
+                cost_occurred_at, is_final, source_cost_id, raw_json)`,
+            pending.flatMap((item) =>
+              usageProviderCostClaims(item.row).map((cost) => [
                 randomUUID(),
-                callId,
-                legId,
+                item.callId,
+                item.legId,
                 evidenceId,
+                'kserve',
+                'platform',
                 cost.providerSku,
                 cost.quantity,
                 cost.quantityUnit,
                 cost.minutes,
-                startedAt,
-                `${row.taskId}:${cost.providerSku}`,
+                'INR',
+                item.startedAt,
+                1,
+                `${item.row.taskId}:${cost.providerSku}`,
                 canonicalJson({
                   source: 'monthly_usage_csv',
-                  taskId: row.taskId,
+                  taskId: item.row.taskId,
                   providerSku: cost.providerSku,
                 }),
-              ],
-            )
-          }
-          await connection.execute(
+              ]),
+            ),
+          )
+          await bulkInsert(
+            connection,
             `INSERT INTO kaudit_call_artifact
                (id, call_id, call_leg_id, artifact_type,
                 provider_artifact_id, provider_status, fetch_status,
-                audio_processing_status, is_final, source_url)
-             VALUES (?, ?, ?, 'recording', ?, ?, ?, 'pending', 1, ?)`,
-            [
-              artifactId,
-              callId,
-              legId,
-              row.taskId,
-              sourceUrl ? 'available' : 'not_provided',
-              sourceUrl ? 'pending' : 'unavailable',
-              sourceUrl,
-            ],
+                audio_processing_status, is_final, source_url)`,
+            pending.map((item) => [
+              item.artifactId,
+              item.callId,
+              item.legId,
+              'recording',
+              item.row.taskId,
+              item.sourceUrl ? 'available' : 'not_provided',
+              item.sourceUrl ? 'pending' : 'unavailable',
+              'pending',
+              1,
+              item.sourceUrl,
+            ]),
           )
-          if (sourceUrl) {
-            const outbox = createMysqlOutboxWriter(connection)
-            await outbox.enqueue({
-              messageId: `audit-requested:${callId}:${preserved.sha256}`,
-              aggregateType: 'call',
-              aggregateId: callId,
-              eventType: 'call.audit_requested',
-              correlationId: request.correlationId,
-              payload: {
-                callId,
-                artifactId,
+          const auditable = pending.filter((item) => item.sourceUrl)
+          await bulkInsert(
+            connection,
+            `INSERT INTO kaudit_outbox_message
+               (id, message_id, aggregate_type, aggregate_id, event_type,
+                payload_json, payload_sha256, correlation_id, attempts, status)`,
+            auditable.map((item) => {
+              const payloadJson = canonicalJson({
+                callId: item.callId,
+                artifactId: item.artifactId,
                 sourceEnvelopeId: envelopeId,
                 sourceEvidenceSha256: preserved.sha256,
-              },
-            })
-            queued += 1
-          }
-          accepted += 1
+              })
+              return [
+                randomUUID(),
+                `audit-requested:${item.callId}:${preserved.sha256}`,
+                'call',
+                item.callId,
+                'call.audit_requested',
+                payloadJson,
+                sha256Hex(payloadJson),
+                request.correlationId,
+                0,
+                'pending',
+              ]
+            }),
+          )
+          accepted += pending.length
+          queued += auditable.length
+          missingRecordingUrls += pending.length - auditable.length
         }
         await connection.execute(
           `UPDATE kaudit_source_envelope

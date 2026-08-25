@@ -55,6 +55,7 @@ export type PreflightErrorCode =
 /** Optional capabilities that were deliberately switched on. Fixed identifiers. */
 export type OptionalFeatureId =
   | 'callAuditRuleTest'
+  | 'gasUsageImport'
   | 'recordingProxy'
   | 'oidcBrowserFlow'
   | 'auditWorkerDispatch'
@@ -181,6 +182,7 @@ export const REPORTABLE_VARIABLES: readonly string[] = Object.freeze([
   'KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN',
   'KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID',
   'KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID',
+  'KAUDIT_GAS_IMPORT_SECRET',
   'KAUDIT_CALL_AUDIT_RULE_TEST_ENABLED',
   'KAUDIT_UNPOD_PROXY_BASE',
   'KAUDIT_ALLOWED_RECORDING_HOSTS',
@@ -411,6 +413,15 @@ export function evaluateVercelReleasePreflight(
     }
     if (invalidGoogleDrive.length > 0) {
       fail('FEATURE_CONFIG_INCOMPLETE', ...invalidGoogleDrive)
+    }
+  }
+
+  const gasImportSecret = env.KAUDIT_GAS_IMPORT_SECRET?.trim() || ''
+  if (gasImportSecret) {
+    if (!/^[A-Za-z0-9._~-]{32,256}$/.test(gasImportSecret)) {
+      fail('FEATURE_CONFIG_INCOMPLETE', 'KAUDIT_GAS_IMPORT_SECRET')
+    } else {
+      optionalFeatures.push('gasUsageImport')
     }
   }
 

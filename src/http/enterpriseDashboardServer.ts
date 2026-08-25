@@ -58,6 +58,7 @@ import {
 } from '../identity/userAdministration.ts'
 import type { CycleImportService } from '../imports/types.ts'
 import type { ImportAnalysisService } from '../imports/analysis.ts'
+import { verifyGasImportSignature } from '../imports/gasImportAuth.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
 import {
   collectBilling,
@@ -226,6 +227,8 @@ interface Dependencies {
    */
   oidcAuthorizationClient?: OidcAuthorizationClient
   imports?: CycleImportService
+  /** Dedicated HMAC secret for the usage-import-only GAS service principal. */
+  gasImportSecret?: string
   importAnalysis?: ImportAnalysisService
   recordingFetcher?: UrlFetcher
   allowedRecordingHosts?: string[]
@@ -529,6 +532,66 @@ async function authenticate(
   )
 }
 
+function requestHeaderValue(
+  request: IncomingMessage,
+  name: string,
+): string {
+  const value = request.headers[name]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function authenticateGasUsageImport(
+  request: IncomingMessage,
+  pathname: string,
+  dependencies: Dependencies,
+): AuthContext | null {
+  if (
+    request.method !== 'POST' ||
+    pathname !== '/api/v1/imports/usage'
+  ) return null
+  const signature = requestHeaderValue(
+    request,
+    'x-kaudit-import-signature',
+  )
+  const timestamp = requestHeaderValue(
+    request,
+    'x-kaudit-import-timestamp',
+  )
+  const bodySha256 = requestHeaderValue(
+    request,
+    'x-kaudit-content-sha256',
+  )
+  const attempted = Boolean(signature || timestamp || bodySha256)
+  if (!attempted) return null
+  const secret = dependencies.gasImportSecret
+  const valid = Boolean(secret) && verifyGasImportSignature({
+    secret: secret as string,
+    signature,
+    nowMs: Date.now(),
+    method: request.method,
+    pathname,
+    timestamp,
+    bodySha256,
+    filename: requestHeaderValue(request, 'x-kaudit-filename'),
+    periodStart: requestHeaderValue(request, 'x-kaudit-period-start'),
+    periodEnd: requestHeaderValue(request, 'x-kaudit-period-end'),
+  })
+  if (!valid) {
+    throw new AuthFailure(401, 'AUTH_INVALID', 'Authentication token is invalid')
+  }
+  return {
+    user: {
+      id: 'gas-import-service',
+      email: 'gas-import@kaudit.invalid',
+      status: 'active',
+      maxSensitivityTier: 'K0',
+      roles: ['admin'],
+    },
+    issuer: 'kaudit-gas-import',
+    subject: 'usage-import',
+  }
+}
+
 /**
  * What the browser flow needs, or null when this deployment does not run it.
  *
@@ -815,7 +878,10 @@ async function auditAccess(
 ): Promise<void> {
   if (dependencies.config.auth.mode === 'preview') return
   await timeAudit(() => dependencies.audit.record({
-    actorUserId: context?.user.id ?? null,
+    actorUserId:
+      context?.issuer === 'kaudit-gas-import'
+        ? null
+        : context?.user.id ?? null,
     actorEmail: context?.user.email ?? null,
     action,
     resourceType,
@@ -2419,7 +2485,11 @@ export function createEnterpriseDashboardServer(
 
     let context: AuthContext | null = null
     try {
-      context = await authenticate(request, dependencies)
+      context = authenticateGasUsageImport(
+        request,
+        url.pathname,
+        dependencies,
+      ) ?? await authenticate(request, dependencies)
       if (isAuditWorkerPost) {
         requirePermission(context, 'audit:control')
         const body = await readJsonBody(
@@ -2861,6 +2931,19 @@ export function createEnterpriseDashboardServer(
           return
         }
         const bytes = await readRequestBody(request)
+        if (
+          context.issuer === 'kaudit-gas-import' &&
+          sha256Hex(bytes) !== requestHeaderValue(
+            request,
+            'x-kaudit-content-sha256',
+          )
+        ) {
+          throw new AuthFailure(
+            401,
+            'AUTH_INVALID',
+            'Authentication token is invalid',
+          )
+        }
         const filename = header(request, 'x-kaudit-filename')
         let body: unknown
         if (IMPORT_ANALYSIS_ROUTES.has(url.pathname)) {

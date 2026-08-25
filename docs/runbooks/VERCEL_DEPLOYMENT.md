@@ -207,6 +207,18 @@ write. The workflow and its separate worker secrets are described in
 `docs/runbooks/GITHUB_ACTIONS_AUDIT_WORKER.md`. Provider responses and token values
 are never returned or logged.
 
+**Optional Google Apps Script usage import**
+
+```
+KAUDIT_GAS_IMPORT_SECRET
+```
+
+Set this only when the signed GAS integration is used. It must be a dedicated
+32-256 character URL-safe secret and must match the Apps Script Property of the
+same name. It authorizes only `POST /api/v1/imports/usage`; it is not a database,
+Drive, browser-session, or GitHub credential. See
+`docs/runbooks/GAS_USAGE_IMPORT.md` for setup and retry behavior.
+
 Do **not** set `KAUDIT_IMPORT_ROOT`, `KAUDIT_SECURE_PORT`, `KAUDIT_DEV_USER_EMAIL`,
 `KAUDIT_LOCAL_PASSWORD_HASH`, or `KAUDIT_LOCAL_SESSION_SECRET` on Vercel. The function
 binds no port and production rejects local password mode.
