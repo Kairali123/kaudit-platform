@@ -1753,6 +1753,16 @@ const BOUNDED_UNAVAILABLE_TITLES: Readonly<Record<string, string>> = {
   IMPORT_NOT_AVAILABLE: 'Imports are not available on this server',
   IMPORT_ANALYSIS_NOT_CONFIGURED:
     'Import analysis is not configured on this server',
+  GOOGLE_DRIVE_IMPORT_CONFIGURATION_FAILED:
+    'Import storage is temporarily unavailable',
+  GOOGLE_DRIVE_IMPORT_TOKEN_FAILED:
+    'Import storage is temporarily unavailable',
+  GOOGLE_DRIVE_IMPORT_LOOKUP_FAILED:
+    'Import storage is temporarily unavailable',
+  GOOGLE_DRIVE_IMPORT_UPLOAD_SESSION_FAILED:
+    'Import storage is temporarily unavailable',
+  GOOGLE_DRIVE_IMPORT_UPLOAD_FAILED:
+    'Import storage is temporarily unavailable',
   USER_ADMIN_UNAVAILABLE:
     'User administration is not available on this server',
   AUDIT_WORKER_DISPATCH_NOT_CONFIGURED:
@@ -3225,6 +3235,15 @@ export function createEnterpriseDashboardServer(
        * driver message exists on the error to leak.
        */
       const reauditFailure = error instanceof ManualReauditError
+      const shaped = error as {
+        status?: number
+        code?: string
+        message?: string
+      }
+      const boundedUnavailableFailure =
+        shaped.status === 503 &&
+        typeof shaped.code === 'string' &&
+        shaped.code in BOUNDED_UNAVAILABLE_TITLES
       const safeLog = {
         level: authFailure ? 'warn' : 'error',
         event: authFailure
@@ -3232,8 +3251,9 @@ export function createEnterpriseDashboardServer(
           : 'dashboard_request_failed',
         code: authFailure
           ? error.code
-          : userAdminFailure || settlementFailure || reauditFailure
-            ? error.code
+          : userAdminFailure || settlementFailure || reauditFailure ||
+              boundedUnavailableFailure
+            ? shaped.code
             : 'INTERNAL_ERROR',
         correlationId: correlation,
         occurredAt: new Date().toISOString(),
@@ -3274,11 +3294,6 @@ export function createEnterpriseDashboardServer(
           correlation,
         )
       } else {
-        const shaped = error as {
-          status?: number
-          code?: string
-          message?: string
-        }
         const unavailableTitle =
           typeof shaped.code === 'string'
             ? BOUNDED_UNAVAILABLE_TITLES[shaped.code]

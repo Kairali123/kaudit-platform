@@ -187,7 +187,35 @@ test('Google Drive import store rejects incomplete Shared Drive configuration', 
         refreshToken: 'refresh-token',
         sharedDriveId: '',
       }),
-    /Import storage is unavailable/,
+    (error: unknown) =>
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'GOOGLE_DRIVE_IMPORT_CONFIGURATION_FAILED',
+  )
+})
+
+test('Google Drive import store distinguishes token failures without provider prose', async () => {
+  const store = createGoogleDriveImportObjectStore(
+    {
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      refreshToken: 'refresh-token',
+      sharedDriveId: 'shared_drive_0123456789',
+    },
+    async () => jsonResponse({ error: 'synthetic-provider-detail' }, { status: 400 }),
+  )
+
+  await assert.rejects(
+    () => store.preserve({
+      bytes: Buffer.from('synthetic bytes'),
+      filename: 'usage.csv',
+      mediaType: 'text/csv',
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'GOOGLE_DRIVE_IMPORT_TOKEN_FAILED' &&
+      !error.message.includes('synthetic-provider-detail'),
   )
 })
 
@@ -218,7 +246,10 @@ test('Google Drive import store discards malformed provider IDs', async () => {
         filename: 'usage.csv',
         mediaType: 'text/csv',
       }),
-    /Import storage is unavailable/,
+    (error: unknown) =>
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'GOOGLE_DRIVE_IMPORT_LOOKUP_FAILED',
   )
 })
 
@@ -257,6 +288,51 @@ test('Google Drive import store rejects unsafe resumable upload URLs', async () 
         filename: 'invoice.pdf',
         mediaType: 'application/pdf',
       }),
-    /Import storage is unavailable/,
+    (error: unknown) =>
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'GOOGLE_DRIVE_IMPORT_UPLOAD_SESSION_FAILED',
+  )
+})
+
+test('Google Drive import store distinguishes failed upload bytes', async () => {
+  const store = createGoogleDriveImportObjectStore(
+    {
+      clientId: 'client-id',
+      clientSecret: 'client-secret',
+      refreshToken: 'refresh-token',
+      sharedDriveId: 'shared_drive_0123456789',
+    },
+    async (url) => {
+      const href = url.toString()
+      if (href === 'https://oauth2.googleapis.com/token') {
+        return jsonResponse({ access_token: 'synthetic-access-token', expires_in: 3600 })
+      }
+      if (href.startsWith('https://www.googleapis.com/drive/v3/files?')) {
+        return jsonResponse({ files: [] })
+      }
+      if (href.startsWith('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true')) {
+        return new Response(null, {
+          status: 200,
+          headers: {
+            location: 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=session_2',
+          },
+        })
+      }
+      return jsonResponse({ error: 'synthetic-provider-detail' }, { status: 403 })
+    },
+  )
+
+  await assert.rejects(
+    () => store.preserve({
+      bytes: Buffer.from('synthetic bytes'),
+      filename: 'usage.csv',
+      mediaType: 'text/csv',
+    }),
+    (error: unknown) =>
+      error instanceof Error &&
+      'code' in error &&
+      error.code === 'GOOGLE_DRIVE_IMPORT_UPLOAD_FAILED' &&
+      !error.message.includes('synthetic-provider-detail'),
   )
 })

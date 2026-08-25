@@ -307,12 +307,19 @@ test('a signed GAS request reaches usage import without a browser session', asyn
     }),
   ).digest('hex')
   let importCalls = 0
+  let storageUnavailable = false
   const imports = {
     async status() { throw new Error('not used') },
     async importInvoice() { throw new Error('not used') },
     async importUsage(request) {
       importCalls += 1
       assert.deepEqual(request.bytes, bytes)
+      if (storageUnavailable) {
+        throw Object.assign(new Error('synthetic provider prose'), {
+          status: 503,
+          code: 'GOOGLE_DRIVE_IMPORT_LOOKUP_FAILED',
+        })
+      }
       return {
         outcome: 'imported' as const,
         referenceId: 'synthetic-batch',
@@ -378,6 +385,31 @@ test('a signed GAS request reaches usage import without a browser session', asyn
     )
     assert.equal(tampered.status, 401)
     assert.equal(importCalls, 1)
+
+    storageUnavailable = true
+    const unavailable = await fetch(
+      `http://127.0.0.1:${address.port}/api/v1/imports/usage`,
+      {
+        method: 'POST',
+        body: bytes,
+        headers: {
+          'x-kaudit-filename': filename,
+          'x-kaudit-period-start': periodStart,
+          'x-kaudit-period-end': periodEnd,
+          'x-kaudit-content-sha256': bodySha256,
+          'x-kaudit-import-timestamp': timestamp,
+          'x-kaudit-import-signature': signature,
+        },
+      },
+    )
+    assert.equal(unavailable.status, 503)
+    const unavailableRaw = await unavailable.text()
+    assert.equal(unavailableRaw.includes('synthetic provider prose'), false)
+    assert.equal(
+      (JSON.parse(unavailableRaw) as { code: string }).code,
+      'GOOGLE_DRIVE_IMPORT_LOOKUP_FAILED',
+    )
+    assert.equal(importCalls, 2)
   } finally {
     await new Promise<void>((resolve, reject) =>
       server.close((error) => error ? reject(error) : resolve()))
