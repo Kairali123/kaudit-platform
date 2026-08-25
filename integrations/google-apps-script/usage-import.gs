@@ -43,12 +43,15 @@ function submitPendingKauditUsage() {
       return;
     }
 
-    const data = sheet.getRange(
+    const sourceRange = sheet.getRange(
       KAUDIT_USAGE_IMPORT.headerRow + 1,
       1,
       rowCount,
       KAUDIT_USAGE_IMPORT.statusColumn,
-    ).getDisplayValues();
+    );
+    const data = sourceRange.getDisplayValues();
+    const rawData = sourceRange.getValues();
+    const spreadsheetTimeZone = SpreadsheetApp.getActive().getSpreadsheetTimeZone();
     let submitted = 0;
     let batches = 0;
     let statusesChanged = false;
@@ -58,7 +61,11 @@ function submitPendingKauditUsage() {
       const indexes = pendingKauditUsageIndexes_(data);
       if (indexes.length === 0) break;
       const csv = kauditUsageCsv_(indexes.map(function(index) {
-        return data[index].slice(0, KAUDIT_USAGE_IMPORT.sourceColumnCount);
+        return canonicalKauditUsageRow_(
+          rawData[index],
+          data[index],
+          spreadsheetTimeZone,
+        );
       }));
       const receipt = sendKauditUsageBatch_(config, csv);
       if (!receipt.ok || receipt.received !== indexes.length) {
@@ -141,6 +148,7 @@ function sendKauditUsageBatch_(config, csv) {
     console.log(JSON.stringify({
       event: 'kaudit_usage_batch_failed',
       httpStatus: response.getResponseCode(),
+      errorCode: kauditProblemCode_(response),
     }));
     return { ok: false, received: 0 };
   }
@@ -158,6 +166,46 @@ function sendKauditUsageBatch_(config, csv) {
       accounted === received,
     received: received,
   };
+}
+
+function canonicalKauditUsageRow_(rawRow, displayRow, timeZone) {
+  return [
+    String(displayRow[0] || '').trim(),
+    String(displayRow[1] || '').trim(),
+    canonicalKauditDateTime_(rawRow[2], displayRow[2], timeZone),
+    canonicalKauditDateTime_(rawRow[3], displayRow[3], timeZone),
+    canonicalKauditDateTime_(rawRow[4], displayRow[4], timeZone),
+    canonicalKauditNumber_(rawRow[5], displayRow[5], 12),
+    canonicalKauditNumber_(rawRow[6], displayRow[6], 12),
+    canonicalKauditNumber_(rawRow[7], displayRow[7], 12),
+    canonicalKauditNumber_(rawRow[8], displayRow[8], 8),
+    String(displayRow[9] || '').trim(),
+  ];
+}
+
+function canonicalKauditDateTime_(rawValue, displayValue, timeZone) {
+  if (Object.prototype.toString.call(rawValue) === '[object Date]' &&
+      !isNaN(rawValue.getTime())) {
+    return Utilities.formatDate(rawValue, timeZone, 'yyyy-MM-dd HH:mm:ss');
+  }
+  return String(displayValue || '').trim();
+}
+
+function canonicalKauditNumber_(rawValue, displayValue, decimalPlaces) {
+  if (typeof rawValue === 'number' && isFinite(rawValue) && rawValue >= 0) {
+    return rawValue.toFixed(decimalPlaces).replace(/\.?0+$/, '');
+  }
+  return String(displayValue == null ? '' : displayValue).trim();
+}
+
+function kauditProblemCode_(response) {
+  try {
+    const problem = JSON.parse(response.getContentText());
+    const code = String(problem.code || '');
+    return /^[A-Z][A-Z0-9_]{1,79}$/.test(code) ? code : 'UNAVAILABLE';
+  } catch (error) {
+    return 'UNAVAILABLE';
+  }
 }
 
 function readKauditUsageConfig_() {

@@ -25,5 +25,14 @@ test('GAS usage import keeps credentials out of source and SQL out of GAS', () =
 test('GAS usage import logs status only and never logs response prose', () => {
   assert.match(script, /submittedThisRun/)
   assert.match(script, /pendingRows/)
+  assert.match(script, /errorCode:\s*kauditProblemCode_/)
+  assert.match(script, /\^\[A-Z\]\[A-Z0-9_\]/)
   assert.doesNotMatch(script, /console\.log\([^\n]*getContentText/)
+})
+
+test('GAS usage import sends canonical raw values instead of formatted sheet values', () => {
+  assert.match(script, /sourceRange\.getValues\(\)/)
+  assert.match(script, /getSpreadsheetTimeZone\(\)/)
+  assert.match(script, /Utilities\.formatDate\([^)]*'yyyy-MM-dd HH:mm:ss'/s)
+  assert.match(script, /canonicalKauditNumber_/)
 })
