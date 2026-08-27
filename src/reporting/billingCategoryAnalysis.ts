@@ -78,8 +78,9 @@ export const BILLING_CATEGORY_SUMMARY_ROUTE =
 export const BILLING_CATEGORY_ANALYSIS_PAGE_ROUTE = '/billing/categories'
 
 export const BILLING_CATEGORY_CONTENT_BOUNDARY =
-  'Admin-only category analysis. Task references, stored call times, and ' +
-  'duration metadata only — recordings, transcripts, evidence hashes, and ' +
+  'Admin-only category analysis. Task references, stored call times, duration ' +
+  'metadata, and bounded AI category remarks only — recordings, transcripts, ' +
+  'evidence hashes, and ' +
   'internal identifiers stay server-side behind the restricted review route.'
 
 /** The selection that means "every category in the month". */
@@ -347,6 +348,7 @@ export interface BillingCategoryCall {
   auditorFinalChargeInr: string | null
   aiConfidence: string | null
   aiAuditResult: 'Issue found' | 'No issue found'
+  aiAuditRemark: string | null
   gapMs: number | null
   gapMinutes: string | null
   /** Presence signal for the review action. Never a URL. */
@@ -620,6 +622,7 @@ export function toCategoryCall(
         : fixedMoney(row.auditorFinalChargeInr),
     aiConfidence: row.aiConfidence,
     aiAuditResult: row.aiAuditResult,
+    aiAuditRemark: row.aiAuditRemark,
     gapMs: row.gapMs,
     gapMinutes: minutesFromMs(row.gapMs),
     recordingAvailable: row.recordingAvailable,

@@ -519,7 +519,7 @@ export function BillingCategoryAnalysisPage() {
                 <th>AI Audit Time</th>
                 <th>Gap</th>
                 <th>AI Confidence</th>
-                <th>AI Audit Result</th>
+                <th>AI Audit Remark</th>
                 <th>Recording / admin review</th>
               </tr>
             </thead>
@@ -537,14 +537,8 @@ export function BillingCategoryAnalysisPage() {
                   <td>{minutes(row.aiAuditedDurationMinutes)}</td>
                   <td className="cell-warn">{minutes(row.gapMinutes)}</td>
                   <td>{confidence(row.aiConfidence)}</td>
-                  <td
-                    className={
-                      row.aiAuditResult === 'Issue found'
-                        ? 'cell-warn'
-                        : 'cell-success'
-                    }
-                  >
-                    {row.aiAuditResult}
+                  <td className="category-audit-remark">
+                    {row.aiAuditRemark ?? 'No AI remark recorded'}
                   </td>
                   <td>
                     <Link
@@ -567,7 +561,7 @@ export function BillingCategoryAnalysisPage() {
               ))}
               {table && table.rows.length === 0 && (
                 <tr>
-                  <td colSpan={12} className="table-empty">
+                  <td colSpan={13} className="table-empty">
                     No audited call in this category for {period.label}.
                   </td>
                 </tr>
