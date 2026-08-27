@@ -490,8 +490,6 @@ dl small { color: var(--muted); font-size: .6rem; }
 .category-grand-total small { color: var(--muted); font-size: .7rem; }
 .category-grand-total strong { margin-top: 4px; font-size: 1.28rem; font-variant-numeric: tabular-nums; }
 .category-grand-amount strong { font-size: 1.08rem; }
-.category-table table { min-width: 1800px; }
-.category-audit-remark { min-width: 260px; max-width: 420px; white-space: normal; line-height: 1.45; }
 /* Result count, and the in-flight marker beside it while an uncached page of
    rows is fetched and the previous page is still on screen. */
 .table-heading-status { display: inline-flex; align-items: center; gap: 8px; }
@@ -549,6 +547,11 @@ dl small { color: var(--muted); font-size: .6rem; }
 .audit-table th:first-child { z-index: 2; background: #f9faf9; }
 .audit-table th, .audit-table td { white-space: nowrap; text-align: left; }
 .audit-table th:not(:first-child), .audit-table td:not(:first-child) { text-align: left; }
+.audit-table .category-audit-remark { width: 250px; max-width: 250px; }
+.category-audit-remark-text {
+  display: block; max-width: 250px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; cursor: help;
+}
 .cell-sub { display: block; margin-top: 4px; color: var(--muted); font-size: .62rem; }
 .cell-warn { color: var(--red); font-weight: 750; }
 .cell-success { color: var(--green); font-weight: 750; }
