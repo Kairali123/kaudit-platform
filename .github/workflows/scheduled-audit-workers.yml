@@ -1,0 +1,24 @@
+name: Kaudit scheduled audit workers
+
+on:
+  schedule:
+    # GitHub cron schedules use UTC. Offset from the top of the hour to reduce delay.
+    - cron: '17 */12 * * *'
+    - cron: '47 */6 * * *'
+
+jobs:
+  call-audit:
+    if: github.event.schedule == '17 */12 * * *'
+    uses: ./.github/workflows/audit-worker.yml
+    with:
+      system: call
+      mode: new
+    secrets: inherit
+
+  billing-audit:
+    if: github.event.schedule == '47 */6 * * *'
+    uses: ./.github/workflows/audit-worker.yml
+    with:
+      system: billing
+      mode: new
+    secrets: inherit

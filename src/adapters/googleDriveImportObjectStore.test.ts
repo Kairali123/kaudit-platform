@@ -202,7 +202,10 @@ test('Google Drive import store distinguishes token failures without provider pr
       refreshToken: 'refresh-token',
       sharedDriveId: 'shared_drive_0123456789',
     },
-    async () => jsonResponse({ error: 'synthetic-provider-detail' }, { status: 400 }),
+    async () => jsonResponse(
+      { error: 'synthetic-provider-detail' },
+      { status: 400 },
+    ),
   )
 
   await assert.rejects(
@@ -306,20 +309,29 @@ test('Google Drive import store distinguishes failed upload bytes', async () => 
     async (url) => {
       const href = url.toString()
       if (href === 'https://oauth2.googleapis.com/token') {
-        return jsonResponse({ access_token: 'synthetic-access-token', expires_in: 3600 })
+        return jsonResponse({
+          access_token: 'synthetic-access-token',
+          expires_in: 3600,
+        })
       }
       if (href.startsWith('https://www.googleapis.com/drive/v3/files?')) {
         return jsonResponse({ files: [] })
       }
-      if (href.startsWith('https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true')) {
+      if (href.startsWith(
+        'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&supportsAllDrives=true',
+      )) {
         return new Response(null, {
           status: 200,
           headers: {
-            location: 'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=session_2',
+            location:
+              'https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=session_2',
           },
         })
       }
-      return jsonResponse({ error: 'synthetic-provider-detail' }, { status: 403 })
+      return jsonResponse(
+        { error: 'synthetic-provider-detail' },
+        { status: 403 },
+      )
     },
   )
 

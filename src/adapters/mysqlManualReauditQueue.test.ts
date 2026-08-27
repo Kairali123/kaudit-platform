@@ -411,7 +411,7 @@ function claimPool(overrides: Rule[] = []) {
       rows: [],
     },
     {
-      match: /FROM kaudit_billing_reaudit_item item\s+WHERE item.status = 'queued'/,
+      match: /FROM kaudit_billing_reaudit_item item\s+WHERE \(/,
       rows: CLAIMED,
     },
     {
@@ -439,7 +439,7 @@ function claimPool(overrides: Rule[] = []) {
   ])
 }
 
-test('claiming marks items processing and carries the baseline to the worker', async () => {
+test('selection carries the baseline without claiming work state early', async () => {
   const fake = claimPool()
   const candidates = await createMysqlManualReauditCandidateRepository(
     fake.pool,
@@ -462,15 +462,13 @@ test('claiming marks items processing and carries the baseline to the worker', a
     },
   ])
   const claim = fake.find(
-    /FROM kaudit_billing_reaudit_item item\s+WHERE item.status = 'queued'/,
+    /FROM kaudit_billing_reaudit_item item\s+WHERE \(/,
   )
   assert.match(String(claim?.sql), /FOR UPDATE/)
   assert.match(String(claim?.sql), /attempt_count < 1/)
   assert.match(String(claim?.sql), /LIMIT 1/)
   assert.doesNotMatch(String(claim?.sql), /status = 'processing'/)
-  const update = fake.find(/UPDATE kaudit_billing_reaudit_item/)
-  assert.match(String(update?.sql), /status = 'processing'/)
-  assert.match(String(update?.sql), /attempt_count = attempt_count \+ 1/)
+  assert.equal(fake.find(/UPDATE kaudit_billing_reaudit_item/), undefined)
   // The claim locks only the queue's own rows.
   assert.equal(/kaudit_call_artifact/.test(String(claim?.sql)), false)
 })
@@ -482,7 +480,7 @@ test('an interrupted paid claim fails closed and is never reclaimed', async () =
       rows: CLAIMED,
     },
     {
-      match: /FROM kaudit_billing_reaudit_item item\s+WHERE item.status = 'queued'/,
+      match: /FROM kaudit_billing_reaudit_item item\s+WHERE \(/,
       rows: [],
     },
   ])
@@ -498,19 +496,15 @@ test('an interrupted paid claim fails closed and is never reclaimed', async () =
     .all(/UPDATE kaudit_billing_reaudit_item/)
     .find((entry) => entry.parameters[0] === 'failed')
   assert.equal(settle?.parameters[2], 'REAUDIT_WORKER_INTERRUPTED')
-  const queuedRead = fake.find(/WHERE item.status = 'queued'/)
+  const queuedRead = fake.find(/WHERE \(/)
   assert.doesNotMatch(String(queuedRead?.sql), /status = 'processing'/)
 })
 
-test('an exclusive recovery worker immediately terminalizes an orphaned claim', async () => {
+test('an exclusive recovery worker selects orphaned processing state for the spend guard', async () => {
   const fake = claimPool([
     {
-      match: /FROM kaudit_billing_reaudit_item item\s+WHERE item.status = 'processing'/,
+      match: /FROM kaudit_billing_reaudit_item item\s+WHERE \(/,
       rows: CLAIMED,
-    },
-    {
-      match: /FROM kaudit_billing_reaudit_item item\s+WHERE item.status = 'queued'/,
-      rows: [],
     },
   ])
 
@@ -519,24 +513,10 @@ test('an exclusive recovery worker immediately terminalizes an orphaned claim', 
     { recoverInterruptedClaims: true },
   ).listCandidates({ limit: 25, includePreviouslyClassified: true })
 
-  assert.deepEqual(candidates, [])
-  const interruptedRead = fake.find(/WHERE item.status = 'processing'/)
-  assert.doesNotMatch(String(interruptedRead?.sql), /INTERVAL 30 MINUTE/)
-  const settle = fake
-    .all(/UPDATE kaudit_billing_reaudit_item/)
-    .find((entry) => entry.parameters[0] === 'failed')
-  assert.equal(settle?.parameters[2], 'REAUDIT_WORKER_INTERRUPTED')
-})
-
-test('a claim marks its request running exactly once', async () => {
-  const fake = claimPool()
-  await createMysqlManualReauditCandidateRepository(fake.pool).listCandidates({
-    limit: 25,
-    includePreviouslyClassified: true,
-  })
-  const rollup = fake.find(/UPDATE kaudit_billing_reaudit_request/)
-  assert.match(String(rollup?.sql), /status = 'running'/)
-  assert.match(String(rollup?.sql), /AND status = 'queued'/)
+  assert.equal(candidates.length, 1)
+  const recoveryRead = fake.find(/FROM kaudit_billing_reaudit_item item\s+WHERE \(/)
+  assert.match(String(recoveryRead?.sql), /OR item.status = 'processing'/)
+  assert.equal(fake.find(/UPDATE kaudit_billing_reaudit_item/), undefined)
 })
 
 test('a claimed call with no usable recording is settled without a model call', async () => {
@@ -546,7 +526,7 @@ test('a claimed call with no usable recording is settled without a model call', 
       rows: [],
     },
     {
-      match: /FROM kaudit_billing_reaudit_item item\s+WHERE item.status = 'queued'/,
+      match: /FROM kaudit_billing_reaudit_item item\s+WHERE \(/,
       rows: CLAIMED,
     },
     { match: /FROM kaudit_call_artifact artifact/, rows: [] },

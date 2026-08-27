@@ -43,6 +43,7 @@ function productionEnv(): NodeJS.ProcessEnv {
     KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET: 'synthetic-client-secret',
     KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN: 'synthetic-refresh-token',
     KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID: 'shared_drive_0123456789',
+    KAUDIT_GAS_IMPORT_SECRET: 'synthetic-gas-import-secret-32-characters',
   }
 }
 
@@ -107,7 +108,7 @@ test('database auth may retain dormant OIDC settings for one-variable rollback',
 test('success output is a small fixed JSON object', () => {
   assert.equal(
     formatPreflightReport(evaluate(productionEnv())),
-    '{"preflight":"vercel-release","result":"pass","checks":15,"optionalFeatures":[]}',
+    '{"preflight":"vercel-release","result":"pass","checks":16,"optionalFeatures":[]}',
   )
 })
 
@@ -513,6 +514,27 @@ test('Google Drive IDs are shaped without echoing their values', () => {
   assert.equal(formatPreflightReport(report).includes(invalidRootFolderId), false)
 })
 
+test('the GAS usage-import service principal secret is required', () => {
+  const env = productionEnv()
+  delete env.KAUDIT_GAS_IMPORT_SECRET
+  assert.deepEqual(
+    variablesFor(evaluate(env), 'REQUIRED_VARIABLE_MISSING'),
+    ['KAUDIT_GAS_IMPORT_SECRET'],
+  )
+})
+
+test('the GAS import secret is strongly shaped without echoing its value', () => {
+  const invalidSecret = 'too short'
+  const report = evaluate({
+    ...productionEnv(),
+    KAUDIT_GAS_IMPORT_SECRET: invalidSecret,
+  })
+  assert.deepEqual(variablesFor(report, 'FEATURE_CONFIG_INCOMPLETE'), [
+    'KAUDIT_GAS_IMPORT_SECRET',
+  ])
+  assert.equal(formatPreflightReport(report).includes(invalidSecret), false)
+})
+
 // ---------------------------------------------------------------------------
 // Optional feature gating
 // ---------------------------------------------------------------------------
@@ -614,28 +636,6 @@ test('the recording proxy with an allow-list passes and is reported', () => {
   })
   assert.equal(report.ok, true)
   assert.deepEqual(report.optionalFeatures, ['recordingProxy'])
-})
-
-test('a strongly shaped GAS import secret enables only GAS usage import', () => {
-  const secret = 'synthetic-gas-import-secret-32-characters'
-  const report = evaluate({
-    ...productionEnv(),
-    KAUDIT_GAS_IMPORT_SECRET: secret,
-  })
-  assert.equal(report.ok, true)
-  assert.deepEqual(report.optionalFeatures, ['gasUsageImport'])
-  assert.equal(formatPreflightReport(report).includes(secret), false)
-})
-
-test('a malformed GAS import secret is refused by variable name only', () => {
-  const report = evaluate({
-    ...productionEnv(),
-    KAUDIT_GAS_IMPORT_SECRET: 'short',
-  })
-  assert.deepEqual(codes(report), ['FEATURE_CONFIG_INCOMPLETE'])
-  assert.deepEqual(variablesFor(report, 'FEATURE_CONFIG_INCOMPLETE'), [
-    'KAUDIT_GAS_IMPORT_SECRET',
-  ])
 })
 
 test('the hosted worker dispatcher requires its complete closed configuration', () => {

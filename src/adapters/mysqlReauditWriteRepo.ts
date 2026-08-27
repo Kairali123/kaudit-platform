@@ -41,6 +41,10 @@ interface AttemptRow extends RowDataPacket {
   audio_attempt_count: number | string
 }
 
+interface ManualItemStateRow extends RowDataPacket {
+  status: 'queued' | 'processing' | 'completed' | 'skipped' | 'failed'
+}
+
 const MAX_ATTEMPTS = 8
 
 function retryDelayMs(attempt: number): number {
@@ -59,6 +63,7 @@ function failureFinding(outcome: ReauditItemResult['outcome']): string {
   if (outcome === 'evidence_altered') return 'EVIDENCE_ALTERED'
   if (outcome === 'unsafe_url') return 'UNSAFE_SOURCE_URL'
   if (outcome === 'transcription_failed') return 'TRANSCRIPTION_FAILED'
+  if (outcome === 'spend_state_unknown') return 'SPEND_STATE_UNKNOWN'
   return 'CLASSIFICATION_FAILED'
 }
 
@@ -115,6 +120,39 @@ export function createMysqlReauditWriteRepo(
               candidate.callId,
             ),
           })
+          const [itemRows] = await connection.execute<ManualItemStateRow[]>(
+            `SELECT status
+             FROM kaudit_billing_reaudit_item
+             WHERE id = ? AND request_id = ? AND call_id = ?
+             FOR UPDATE`,
+            [request.itemId, request.requestId, candidate.callId],
+          )
+          const item = itemRows[0]
+          if (!item || !['queued', 'processing'].includes(item.status)) {
+            await connection.commit()
+            return 'already_completed'
+          }
+          if (item.status === 'queued') {
+            const [claimed] = await connection.execute<ResultSetHeader>(
+              `UPDATE kaudit_billing_reaudit_item
+               SET status = 'processing',
+                   attempt_count = attempt_count + 1,
+                   started_at = ?, last_error_code = NULL
+               WHERE id = ? AND status = 'queued' AND attempt_count < 1`,
+              [at, request.itemId],
+            )
+            if (claimed.affectedRows !== 1) {
+              await connection.commit()
+              return 'already_completed'
+            }
+            await connection.execute(
+              `UPDATE kaudit_billing_reaudit_request
+               SET status = 'running',
+                   started_at = COALESCE(started_at, ?)
+               WHERE id = ? AND status = 'queued'`,
+              [at, request.requestId],
+            )
+          }
           if (decision === 'skip_baseline_changed') {
             await settleManualReauditItem(connection, {
               requestId: request.requestId,
@@ -125,8 +163,8 @@ export function createMysqlReauditWriteRepo(
             await connection.commit()
             return 'already_completed'
           }
-          // Claimed already, by the queue. Nothing about the call, its
-          // artifact, or its current audit result is touched here.
+          // A queued item is now claimed; a processing item is a spend-guard
+          // recovery. Neither path mutates the call before final persistence.
           await connection.commit()
           return 'acquired'
         }
@@ -212,12 +250,24 @@ export function createMysqlReauditWriteRepo(
           // result stays current and this attempt is discarded rather than
           // overwriting a newer answer with an older question's one.
           const request = manualRequestOf(candidate)
+          const latestAuditRunId = await manualReauditLatestAuditRunId(
+            connection,
+            candidate.callId,
+          )
+          const [itemRows] = await connection.execute<ManualItemStateRow[]>(
+            `SELECT status
+             FROM kaudit_billing_reaudit_item
+             WHERE id = ? AND request_id = ? AND call_id = ?
+             FOR UPDATE`,
+            [request.itemId, request.requestId, candidate.callId],
+          )
+          if (itemRows[0]?.status !== 'processing') {
+            await connection.commit()
+            return 'already_completed'
+          }
           const decision = manualReauditBaselineDecision({
             baselineAuditRunId: request.baselineAuditRunId,
-            latestAuditRunId: await manualReauditLatestAuditRunId(
-              connection,
-              candidate.callId,
-            ),
+            latestAuditRunId,
           })
           if (decision === 'skip_baseline_changed') {
             await settleManualReauditItem(connection, {
@@ -297,6 +347,7 @@ export function createMysqlReauditWriteRepo(
           const terminal =
             result.outcome === 'evidence_altered' ||
             result.outcome === 'unsafe_url' ||
+            result.outcome === 'spend_state_unknown' ||
             attempt >= MAX_ATTEMPTS
           const nextAttempt = terminal
             ? null
