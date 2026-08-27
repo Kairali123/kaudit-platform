@@ -35,5 +35,8 @@ test('spend lease migration command verifies the complete schema contract', () =
   assert.match(command, /fk_billing_spend_lease_manual_item/)
   assert.match(command, /setStage\('verify-check'\)/)
   assert.match(command, /reason: 'shape'/)
+  assert.match(command, /int\(\?:\\\(\\d\+\\\)\)\? unsigned/)
+  assert.match(command, /actual === 'json' \|\| actual === 'longtext'/)
+  assert.match(command, /json_validstaged_result_json/)
   assert.doesNotMatch(command, /console\.(?:error|log)\([^\n]*error/i)
 })

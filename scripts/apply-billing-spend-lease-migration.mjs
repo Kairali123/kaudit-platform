@@ -26,6 +26,16 @@ const EXPECTED_INDEXES = new Map([
   ['idx_billing_spend_lease_expiry', ['status', 'lease_expires_at']],
 ])
 
+function columnTypeMatches(name, actual, expected) {
+  if (name === 'attempt_count') {
+    return /^int(?:\(\d+\))? unsigned$/.test(actual)
+  }
+  if (name === 'staged_result_json') {
+    return actual === 'json' || actual === 'longtext'
+  }
+  return actual === expected
+}
+
 function required(name) {
   const value = process.env[name]?.trim()
   if (!value) {
@@ -95,7 +105,8 @@ async function verifySchema(connection, setStage, setDetail) {
   for (const row of columns) {
     const expected = EXPECTED_COLUMNS.get(row.COLUMN_NAME)
     if (expected && (
-      row.COLUMN_TYPE.toLowerCase() !== expected[0] || row.IS_NULLABLE !== expected[1]
+      !columnTypeMatches(row.COLUMN_NAME, row.COLUMN_TYPE.toLowerCase(), expected[0]) ||
+      row.IS_NULLABLE !== expected[1]
     )) {
       mismatched.push(row.COLUMN_NAME)
     }
@@ -183,6 +194,30 @@ async function verifySchema(connection, setStage, setDetail) {
     .replaceAll(')', '')
   if (checks.length !== 1 || checkClause !== 'attempt_count=1') {
     throw new Error('unexpected:check-clause')
+  }
+
+  const stagedResultType = actualColumns
+    .get('staged_result_json')
+    ?.COLUMN_TYPE.toLowerCase()
+  if (stagedResultType === 'longtext') {
+    const [jsonChecks] = await connection.execute(
+      `SELECT CHECK_CLAUSE
+         FROM information_schema.CHECK_CONSTRAINTS
+        WHERE CONSTRAINT_SCHEMA = DATABASE()
+          AND TABLE_NAME = ?`,
+      [TABLE],
+    )
+    const hasJsonCheck = jsonChecks.some((row) => (
+      String(row.CHECK_CLAUSE ?? '')
+        .toLowerCase()
+        .replaceAll('`', '')
+        .replaceAll(' ', '')
+        .replaceAll('(', '')
+        .replaceAll(')', '') === 'json_validstaged_result_json'
+    ))
+    if (!hasJsonCheck) {
+      throw new Error('unexpected:json-check')
+    }
   }
 }
 
