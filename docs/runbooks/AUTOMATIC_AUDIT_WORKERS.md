@@ -90,6 +90,11 @@ runtime with:
 Applying the migration, starting either production worker, and selecting the
 worker host are deployment operations, not build steps.
 
+Migration `0017` has a guarded hosted command for supervised installations:
+dispatch the Billing workflow with `mode=migration-0017` and the exact
+confirmation `APPLY_0017`. Apply and verify it as its own operation before any
+repaired Billing worker starts; the migration command never starts a worker.
+
 ## Persistent dashboard control
 
 Set `KAUDIT_AUDIT_WORKER_CONTROL_MODE=persistent` on the Vercel dashboard/API.

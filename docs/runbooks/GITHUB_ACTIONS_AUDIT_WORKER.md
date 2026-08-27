@@ -96,6 +96,18 @@ Every hosted Billing Audit mode sets `KAUDIT_AUDIT_CONCURRENCY=1` and
 headroom supports a reviewed change; the MySQL advisory lock still allows only
 one Billing Audit worker process.
 
+## Spend-lease migration gate
+
+Migration `0017_billing_spend_lease.sql` must exist before the repaired Billing
+Audit worker starts. Apply it only as a separately approved, supervised Billing
+workflow dispatch: select `mode=migration-0017` and type `APPLY_0017` in the
+confirmation field. The command refuses a missing `0015` queue prerequisite,
+validates the complete column/index/constraint contract, and emits only a
+bounded result. It performs no worker or model work.
+
+Run `diagnose-requested` after the migration and before enabling Billing worker
+runs. Do not combine schema application and worker startup in one operation.
+
 ## Operation
 
 1. Open the matching audit report as an administrator.

@@ -1,0 +1,214 @@
+import fs from 'node:fs/promises'
+import mysql from 'mysql2/promise'
+
+const MIGRATION_PATH = new URL('../migrations/0017_billing_spend_lease.sql', import.meta.url)
+const TABLE = 'kaudit_billing_spend_lease'
+const PREREQUISITE_TABLE = 'kaudit_billing_reaudit_item'
+const EXPECTED_COLUMNS = new Map([
+  ['id', ['varchar(64)', 'NO']],
+  ['call_id', ['char(36)', 'NO']],
+  ['artifact_id', ['char(36)', 'NO']],
+  ['manual_item_id', ['varchar(40)', 'YES']],
+  ['status', ["enum('active','completed','released','expired')", 'NO']],
+  ['attempt_count', ['int unsigned', 'NO']],
+  ['worker_id', ['varchar(80)', 'NO']],
+  ['claimed_at', ['datetime(6)', 'NO']],
+  ['lease_expires_at', ['datetime(6)', 'NO']],
+  ['staged_result_json', ['json', 'YES']],
+  ['staged_at', ['datetime(6)', 'YES']],
+  ['settled_at', ['datetime(6)', 'YES']],
+  ['created_at', ['datetime(6)', 'NO']],
+])
+const EXPECTED_INDEXES = new Map([
+  ['PRIMARY', ['id']],
+  ['idx_billing_spend_lease_call', ['call_id', 'status']],
+  ['idx_billing_spend_lease_manual_item', ['manual_item_id', 'status']],
+  ['idx_billing_spend_lease_expiry', ['status', 'lease_expires_at']],
+])
+
+function required(name) {
+  const value = process.env[name]?.trim()
+  if (!value) {
+    throw new Error(`missing:${name}`)
+  }
+  return value
+}
+
+function connectionOptions() {
+  const tlsMode = required('DB_TLS_MODE').toLowerCase()
+  if (tlsMode !== 'required' && tlsMode !== 'disabled') {
+    throw new Error('invalid:DB_TLS_MODE')
+  }
+
+  const port = Number(required('DB_PORT'))
+  if (!Number.isSafeInteger(port) || port < 1 || port > 65_535) {
+    throw new Error('invalid:DB_PORT')
+  }
+
+  let ssl
+  if (tlsMode === 'required') {
+    const ca = required('DB_SSL_CA_PEM').replaceAll('\\n', '\n')
+    if (!ca.includes('-----BEGIN CERTIFICATE-----')) {
+      throw new Error('invalid:DB_SSL_CA_PEM')
+    }
+    ssl = { ca, rejectUnauthorized: true, verifyIdentity: true }
+  } else if (process.env.DB_SSL_CA_PEM?.trim()) {
+    throw new Error('conflict:DB_SSL_CA_PEM')
+  }
+
+  return {
+    host: required('DB_HOST'),
+    port,
+    database: required('DB_NAME'),
+    user: required('DB_USER'),
+    password: required('DB_PASSWORD'),
+    ...(ssl ? { ssl } : {}),
+    connectTimeout: 10_000,
+    multipleStatements: true,
+  }
+}
+
+async function tableNames(connection) {
+  const [rows] = await connection.execute(
+    `SELECT TABLE_NAME
+       FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME IN (?, ?)
+      ORDER BY TABLE_NAME`,
+    [PREREQUISITE_TABLE, TABLE],
+  )
+  return new Set(rows.map((row) => row.TABLE_NAME))
+}
+
+async function verifySchema(connection) {
+  const [columns] = await connection.execute(
+    `SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?`,
+    [TABLE],
+  )
+  if (columns.length !== EXPECTED_COLUMNS.size) {
+    throw new Error('unexpected:columns')
+  }
+  for (const row of columns) {
+    const expected = EXPECTED_COLUMNS.get(row.COLUMN_NAME)
+    if (
+      !expected ||
+      row.COLUMN_TYPE.toLowerCase() !== expected[0] ||
+      row.IS_NULLABLE !== expected[1]
+    ) {
+      throw new Error('unexpected:columns')
+    }
+  }
+
+  const [indexes] = await connection.execute(
+    `SELECT INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME
+       FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+      ORDER BY INDEX_NAME, SEQ_IN_INDEX`,
+    [TABLE],
+  )
+  const actualIndexes = new Map()
+  for (const row of indexes) {
+    const columns = actualIndexes.get(row.INDEX_NAME) ?? []
+    columns.push(row.COLUMN_NAME)
+    actualIndexes.set(row.INDEX_NAME, columns)
+  }
+  for (const [name, expectedColumns] of EXPECTED_INDEXES) {
+    if (
+      JSON.stringify(actualIndexes.get(name)) !== JSON.stringify(expectedColumns)
+    ) {
+      throw new Error('unexpected:indexes')
+    }
+  }
+
+  const [constraints] = await connection.execute(
+    `SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE
+       FROM information_schema.TABLE_CONSTRAINTS
+      WHERE CONSTRAINT_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?`,
+    [TABLE],
+  )
+  const actualConstraints = new Map(
+    constraints.map((row) => [row.CONSTRAINT_NAME, row.CONSTRAINT_TYPE]),
+  )
+  if (
+    actualConstraints.get('PRIMARY') !== 'PRIMARY KEY' ||
+    actualConstraints.get('chk_billing_spend_lease_attempts') !== 'CHECK' ||
+    actualConstraints.get('fk_billing_spend_lease_manual_item') !== 'FOREIGN KEY'
+  ) {
+    throw new Error('unexpected:constraints')
+  }
+
+  const [foreignKeys] = await connection.execute(
+    `SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+       FROM information_schema.KEY_COLUMN_USAGE
+      WHERE CONSTRAINT_SCHEMA = DATABASE()
+        AND TABLE_NAME = ?
+        AND CONSTRAINT_NAME = 'fk_billing_spend_lease_manual_item'`,
+    [TABLE],
+  )
+  if (
+    foreignKeys.length !== 1 ||
+    foreignKeys[0].COLUMN_NAME !== 'manual_item_id' ||
+    foreignKeys[0].REFERENCED_TABLE_NAME !== PREREQUISITE_TABLE ||
+    foreignKeys[0].REFERENCED_COLUMN_NAME !== 'id'
+  ) {
+    throw new Error('unexpected:foreign-key')
+  }
+
+  const [checks] = await connection.execute(
+    `SELECT CHECK_CLAUSE
+       FROM information_schema.CHECK_CONSTRAINTS
+      WHERE CONSTRAINT_SCHEMA = DATABASE()
+        AND CONSTRAINT_NAME = 'chk_billing_spend_lease_attempts'`,
+  )
+  const checkClause = String(checks[0]?.CHECK_CLAUSE ?? '')
+    .replaceAll('`', '')
+    .replaceAll(' ', '')
+    .replaceAll('(', '')
+    .replaceAll(')', '')
+  if (checks.length !== 1 || checkClause !== 'attempt_count=1') {
+    throw new Error('unexpected:check-clause')
+  }
+}
+
+let connection
+try {
+  if (process.env.KAUDIT_MIGRATION_CONFIRM !== 'APPLY_0017') {
+    throw new Error('confirmation:required')
+  }
+
+  connection = await mysql.createConnection(connectionOptions())
+  const before = await tableNames(connection)
+  if (!before.has(PREREQUISITE_TABLE)) {
+    throw new Error('missing:prerequisite')
+  }
+
+  let result = 'already-applied'
+  if (!before.has(TABLE)) {
+    const migration = await fs.readFile(MIGRATION_PATH, 'utf8')
+    await connection.query(migration)
+    result = 'applied-empty'
+  }
+
+  await verifySchema(connection)
+  if (result === 'applied-empty') {
+    const [rows] = await connection.query(
+      'SELECT COUNT(*) AS row_count FROM kaudit_billing_spend_lease',
+    )
+    if (Number(rows[0].row_count) !== 0) {
+      throw new Error('unexpected:nonempty')
+    }
+  }
+  console.log(JSON.stringify({ migration: '0017', result }))
+} catch {
+  console.error(JSON.stringify({ migration: '0017', result: 'failed' }))
+  process.exitCode = 1
+} finally {
+  if (connection) {
+    await connection.end().catch(() => undefined)
+  }
+}

@@ -95,6 +95,30 @@ test(
       )
       assert.equal(statusRow[0]?.status, 'active')
 
+      // 5a. A different guard cannot stage or settle another worker's active
+      // claim, even when it knows the deterministic work identity.
+      const ownership = candidate('ownership')
+      assert.equal(claimOutcome(await guard.claim(ownership)), 'acquired')
+      const competingGuard = (
+        await import('./mysqlBillingSpendLease.ts')
+      ).createMysqlBillingSpendGuard(pool)
+      await assert.rejects(
+        () => competingGuard.stageResult(ownership, {
+          callId: ownership.callId,
+          artifactId: ownership.artifactId,
+          outcome: 'classification_failed',
+          errorCode: 'CLASSIFICATION_FAILED',
+        }),
+        (error: Error & { code?: string }) =>
+          error.code === 'REAUDIT_ITEM_STATE_CONFLICT',
+      )
+      await assert.rejects(
+        () => competingGuard.settle(ownership, 'model_spent'),
+        (error: Error & { code?: string }) =>
+          error.code === 'REAUDIT_ITEM_STATE_CONFLICT',
+      )
+      await guard.settle(ownership, 'no_model_call')
+
       // 5b. If the paid model result was staged before persistence failed, a
       // later worker recovers that result and must not call the model again.
       const staged = candidate('staged')

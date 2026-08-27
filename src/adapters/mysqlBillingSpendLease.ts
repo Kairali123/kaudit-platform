@@ -26,7 +26,7 @@ export const MAX_SPEND_LEASE_ATTEMPTS = 1
 
 interface LeaseRow extends RowDataPacket {
   status: 'active' | 'completed' | 'released' | 'expired'
-  staged_result_json: string | null
+  staged_result_json: unknown
 }
 
 interface OwnershipRow extends RowDataPacket {
@@ -225,8 +225,12 @@ function serializeStagedResult(result: ReauditItemResult): string {
   return JSON.stringify(minimalPersistenceResult(result))
 }
 
-function parseStagedResult(value: string): ReauditItemResult {
-  return JSON.parse(value) as ReauditItemResult
+function parseStagedResult(value: unknown): ReauditItemResult {
+  const parsed = typeof value === 'string' ? JSON.parse(value) : value
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    throw new Error('Invalid staged Billing audit result')
+  }
+  return parsed as ReauditItemResult
 }
 
 function unknownSpendResult(candidate: ReauditCandidate): ReauditItemResult {

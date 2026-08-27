@@ -15,7 +15,7 @@ const candidate: ReauditCandidate = {
 }
 
 function fakePool(options: {
-  lease?: { status: string; staged_result_json: string | null }
+  lease?: { status: string; staged_result_json: unknown }
   owned?: boolean
 } = {}) {
   const statements: Array<{ sql: string; parameters: unknown[] }> = []
@@ -77,6 +77,31 @@ test('a completed lease returns terminal reconciliation instead of staying busy'
   assert.equal(
     claim.outcome === 'closed' ? claim.result.outcome : null,
     'spend_state_unknown',
+  )
+})
+
+test('staged recovery accepts JSON already decoded by mysql2', async () => {
+  const fake = fakePool({
+    lease: {
+      status: 'active',
+      staged_result_json: {
+        callId: candidate.callId,
+        artifactId: candidate.artifactId,
+        outcome: 'classification_failed',
+        errorCode: 'CLASSIFICATION_FAILED',
+      },
+    },
+  })
+  const guard = createMysqlBillingSpendGuard(fake.pool, {
+    exclusiveRecovery: true,
+  })
+
+  const claim = await guard.claim(candidate)
+
+  assert.equal(claim.outcome, 'recovered')
+  assert.equal(
+    claim.outcome === 'recovered' ? claim.result.outcome : null,
+    'classification_failed',
   )
 })
 

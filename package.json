@@ -24,6 +24,7 @@
     "test:billing:mysql": "node --test src/adapters/mysqlVerifiedBilling.integration.test.ts",
     "test:reliability:mysql": "node --test src/adapters/mysqlReliableProcessing.integration.test.ts",
     "test:spend-lease:mysql": "node --test src/adapters/mysqlBillingSpendLease.integration.test.ts",
+    "migration:billing-spend-lease": "node scripts/apply-billing-spend-lease-migration.mjs",
     "test:vercel": "node --test src/vercel/*.test.ts",
     "test:ui": "node --test src/ui/metrics.test.ts src/ui/render.test.ts src/ui/decimal.test.ts src/ui/periods.test.ts src/ui/fullDashboard.test.ts src/ui/fullRender.test.ts",
     "typecheck": "tsc --noEmit",

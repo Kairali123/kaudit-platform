@@ -52,6 +52,35 @@ test('hosted Billing concurrency is conservative in workflow and runbook', () =>
   assert.doesNotMatch(workflowRunbook, /KAUDIT_AUDIT_CONCURRENCY=10/)
 })
 
+test('hosted spend lease migration is explicit, guarded, and billing-only', () => {
+  assert.match(workflow, /- migration-0017/)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "migration-0017"[\s\S]{0,200}migration_confirmation \}\}" != "APPLY_0017"/,
+  )
+  assert.match(workflow, /KAUDIT_MIGRATION_CONFIRM=APPLY_0017/)
+  assert.match(workflow, /npm run migration:billing-spend-lease/)
+  assert.match(
+    workflow,
+    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then\s+if \[\[ "\$AUDIT_MODE" != "new" \]\]; then\s+exit 2/,
+  )
+})
+
+test('reusable workflow callers cannot route unknown modes into a worker', () => {
+  assert.match(
+    workflow,
+    /workflow_call:[\s\S]{0,500}migration_confirmation:[\s\S]{0,160}type: string/,
+  )
+  assert.match(
+    workflow,
+    /elif \[\[ "\$AUDIT_MODE" == "new" \]\]; then[\s\S]{0,300}npm run audit:worker\s+else\s+exit 2/,
+  )
+  assert.match(
+    workflow,
+    /AUDIT_SYSTEM" == "call"[\s\S]{0,120}AUDIT_MODE" != "new"/,
+  )
+})
+
 test('targeted hosted re-audit is private, scope-bound, and billing-only', () => {
   assert.match(workflow, /- targeted/)
   assert.match(
@@ -65,7 +94,7 @@ test('targeted hosted re-audit is private, scope-bound, and billing-only', () =>
   assert.match(workflow, /KAUDIT_AUDIT_CONCURRENCY=1/)
   assert.match(
     workflow,
-    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then\s+if \[\[ "\$AUDIT_MODE" == "targeted" \]\]; then\s+exit 2/,
+    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then\s+if \[\[ "\$AUDIT_MODE" != "new" \]\]; then\s+exit 2/,
   )
   assert.match(workflow, /if: always\(\)/)
   assert.match(workflow, /rm -f "\$RUNNER_TEMP\/kaudit-targeted-reaudit\.json"/)
@@ -95,7 +124,7 @@ test('requested re-audit mode is billing-only, bounded, and queue-driven', () =>
   // Call Audit has no request queue, so the combination exits non-zero.
   assert.match(
     workflow,
-    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then[\s\S]{0,200}if \[\[ "\$AUDIT_MODE" == "requested" \]\]; then\s+exit 2/,
+    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then[\s\S]{0,200}if \[\[ "\$AUDIT_MODE" != "new" \]\]; then\s+exit 2/,
   )
   // Serialized with every other Billing Audit run by the same group.
   assert.match(workflow, /group: kaudit-audit-worker-\$\{\{ inputs\.system \}\}/)

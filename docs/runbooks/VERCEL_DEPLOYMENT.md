@@ -180,6 +180,7 @@ This dedicated 32-256 character HMAC secret is required by the production
 preflight. Configure the same value in GAS Script Properties. It authenticates
 only `POST /api/v1/imports/usage` and binds the exact body hash, route,
 timestamp, filename, and billing period; it is not a browser session secret.
+See `docs/runbooks/GAS_USAGE_IMPORT.md` for setup and retry behavior.
 
 **Recording references (only if admin call review is used)**
 
