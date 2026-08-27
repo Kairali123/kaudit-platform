@@ -538,7 +538,12 @@ export function BillingCategoryAnalysisPage() {
                   <td className="cell-warn">{minutes(row.gapMinutes)}</td>
                   <td>{confidence(row.aiConfidence)}</td>
                   <td className="category-audit-remark">
-                    {row.aiAuditRemark ?? 'No AI remark recorded'}
+                    <span
+                      className="category-audit-remark-text"
+                      title={row.aiAuditRemark ?? 'No AI remark recorded'}
+                    >
+                      {row.aiAuditRemark ?? 'No AI remark recorded'}
+                    </span>
                   </td>
                   <td>
                     <Link
