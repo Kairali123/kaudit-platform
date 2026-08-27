@@ -57,7 +57,9 @@ import {
   type UserAdministrationPort,
 } from '../identity/userAdministration.ts'
 import type { CycleImportService } from '../imports/types.ts'
+import { UsageImportValidationError } from '../imports/types.ts'
 import type { ImportAnalysisService } from '../imports/analysis.ts'
+import { verifyGasImportSignature } from '../imports/gasImportAuth.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
 import {
   collectBilling,
@@ -226,6 +228,8 @@ interface Dependencies {
    */
   oidcAuthorizationClient?: OidcAuthorizationClient
   imports?: CycleImportService
+  /** Dedicated HMAC secret for the usage-import-only GAS service principal. */
+  gasImportSecret?: string
   importAnalysis?: ImportAnalysisService
   recordingFetcher?: UrlFetcher
   allowedRecordingHosts?: string[]
@@ -435,6 +439,8 @@ function problem(
   correlation: string,
   /** Extra response headers; used to clear a cookie while refusing. */
   headers: Record<string, string | string[]> = {},
+  /** Extra bounded JSON body members; only ever allowlisted descriptors. */
+  details: Record<string, unknown> = {},
 ): void {
   response.writeHead(status, {
     ...JSON_SECURITY_HEADERS,
@@ -452,6 +458,7 @@ function problem(
       status,
       code,
       correlationId: correlation,
+      ...details,
     }),
   )
 }
@@ -527,6 +534,66 @@ async function authenticate(
     dependencies.verifier,
     dependencies.access,
   )
+}
+
+function requestHeaderValue(
+  request: IncomingMessage,
+  name: string,
+): string {
+  const value = request.headers[name]
+  return typeof value === 'string' ? value.trim() : ''
+}
+
+function authenticateGasUsageImport(
+  request: IncomingMessage,
+  pathname: string,
+  dependencies: Dependencies,
+): AuthContext | null {
+  if (
+    request.method !== 'POST' ||
+    pathname !== '/api/v1/imports/usage'
+  ) return null
+  const signature = requestHeaderValue(
+    request,
+    'x-kaudit-import-signature',
+  )
+  const timestamp = requestHeaderValue(
+    request,
+    'x-kaudit-import-timestamp',
+  )
+  const bodySha256 = requestHeaderValue(
+    request,
+    'x-kaudit-content-sha256',
+  )
+  const attempted = Boolean(signature || timestamp || bodySha256)
+  if (!attempted) return null
+  const secret = dependencies.gasImportSecret
+  const valid = Boolean(secret) && verifyGasImportSignature({
+    secret: secret as string,
+    signature,
+    nowMs: Date.now(),
+    method: request.method,
+    pathname,
+    timestamp,
+    bodySha256,
+    filename: requestHeaderValue(request, 'x-kaudit-filename'),
+    periodStart: requestHeaderValue(request, 'x-kaudit-period-start'),
+    periodEnd: requestHeaderValue(request, 'x-kaudit-period-end'),
+  })
+  if (!valid) {
+    throw new AuthFailure(401, 'AUTH_INVALID', 'Authentication token is invalid')
+  }
+  return {
+    user: {
+      id: 'gas-import-service',
+      email: 'gas-import@kaudit.invalid',
+      status: 'active',
+      maxSensitivityTier: 'K0',
+      roles: ['admin'],
+    },
+    issuer: 'kaudit-gas-import',
+    subject: 'usage-import',
+  }
 }
 
 /**
@@ -815,7 +882,10 @@ async function auditAccess(
 ): Promise<void> {
   if (dependencies.config.auth.mode === 'preview') return
   await timeAudit(() => dependencies.audit.record({
-    actorUserId: context?.user.id ?? null,
+    actorUserId:
+      context?.issuer === 'kaudit-gas-import'
+        ? null
+        : context?.user.id ?? null,
     actorEmail: context?.user.email ?? null,
     action,
     resourceType,
@@ -1687,6 +1757,16 @@ const BOUNDED_UNAVAILABLE_TITLES: Readonly<Record<string, string>> = {
   IMPORT_NOT_AVAILABLE: 'Imports are not available on this server',
   IMPORT_ANALYSIS_NOT_CONFIGURED:
     'Import analysis is not configured on this server',
+  GOOGLE_DRIVE_IMPORT_CONFIGURATION_FAILED:
+    'Import storage is temporarily unavailable',
+  GOOGLE_DRIVE_IMPORT_TOKEN_FAILED:
+    'Import storage is temporarily unavailable',
+  GOOGLE_DRIVE_IMPORT_LOOKUP_FAILED:
+    'Import storage is temporarily unavailable',
+  GOOGLE_DRIVE_IMPORT_UPLOAD_SESSION_FAILED:
+    'Import storage is temporarily unavailable',
+  GOOGLE_DRIVE_IMPORT_UPLOAD_FAILED:
+    'Import storage is temporarily unavailable',
   USER_ADMIN_UNAVAILABLE:
     'User administration is not available on this server',
   AUDIT_WORKER_DISPATCH_NOT_CONFIGURED:
@@ -1850,17 +1930,18 @@ function timingOperation(pathname: string): string {
 interface ApiCacheEntry {
   expiresAt: number
   value: Promise<unknown>
+  inFlight: boolean
 }
 
 function pruneApiCache(cache: Map<string, ApiCacheEntry>): void {
   const now = Date.now()
   for (const [key, entry] of cache) {
-    if (entry.expiresAt <= now) cache.delete(key)
+    if (!entry.inFlight && entry.expiresAt <= now) cache.delete(key)
   }
   while (cache.size >= 200) {
-    const oldest = cache.keys().next()
-    if (oldest.done) break
-    cache.delete(oldest.value)
+    const oldestSettled = [...cache].find(([, entry]) => !entry.inFlight)
+    if (!oldestSettled) break
+    cache.delete(oldestSettled[0])
   }
 }
 
@@ -1874,7 +1955,13 @@ function cacheTtlMs(pathname: string): number {
   // Rule administration must read its own writes: a cached version list would
   // hide the snapshot an administrator just created.
   if (pathname === CALL_AUDIT_SETTINGS_ROUTE) return 0
-  if (pathname === '/api/v1/audit-workers') return 0
+  // The worker monitor is polled repeatedly, including by serverless
+  // instances whose polls each open their own database connections. A short
+  // bounded TTL coalesces overlapping/slow polls per instance — one DB read
+  // per window instead of one per poller — while keeping the view within a
+  // few seconds of the live worker state. Control-plane WRITES stay
+  // uncached below; only this read is bounded.
+  if (pathname === '/api/v1/audit-workers') return 3_000
   // Money reads its own writes. A cached settlement would let one
   // administrator save a correction and another keep seeing the superseded
   // amount as "finally paid" for the rest of the window.
@@ -1907,7 +1994,7 @@ async function cachedApiResponse(
   }
   const key = `${context.user.roles.slice().sort().join(',')}:${url.pathname}${url.search}`
   const existing = cache.get(key)
-  if (existing && existing.expiresAt > Date.now()) {
+  if (existing && (existing.inFlight || existing.expiresAt > Date.now())) {
     recordApiCache('hit')
     return existing.value
   }
@@ -1917,9 +2004,16 @@ async function cachedApiResponse(
   cache.set(key, {
     expiresAt: Date.now() + ttl,
     value,
+    inFlight: true,
   })
   try {
-    return await value
+    const body = await value
+    const refreshed = cache.get(key)
+    if (refreshed?.value === value) {
+      refreshed.inFlight = false
+      refreshed.expiresAt = Date.now() + ttl
+    }
+    return body
   } catch (error) {
     cache.delete(key)
     throw error
@@ -2419,7 +2513,11 @@ export function createEnterpriseDashboardServer(
 
     let context: AuthContext | null = null
     try {
-      context = await authenticate(request, dependencies)
+      context = authenticateGasUsageImport(
+        request,
+        url.pathname,
+        dependencies,
+      ) ?? await authenticate(request, dependencies)
       if (isAuditWorkerPost) {
         requirePermission(context, 'audit:control')
         const body = await readJsonBody(
@@ -2861,6 +2959,19 @@ export function createEnterpriseDashboardServer(
           return
         }
         const bytes = await readRequestBody(request)
+        if (
+          context.issuer === 'kaudit-gas-import' &&
+          sha256Hex(bytes) !== requestHeaderValue(
+            request,
+            'x-kaudit-content-sha256',
+          )
+        ) {
+          throw new AuthFailure(
+            401,
+            'AUTH_INVALID',
+            'Authentication token is invalid',
+          )
+        }
         const filename = header(request, 'x-kaudit-filename')
         let body: unknown
         if (IMPORT_ANALYSIS_ROUTES.has(url.pathname)) {
@@ -3142,6 +3253,15 @@ export function createEnterpriseDashboardServer(
        * driver message exists on the error to leak.
        */
       const reauditFailure = error instanceof ManualReauditError
+      const shaped = error as {
+        status?: number
+        code?: string
+        message?: string
+      }
+      const boundedUnavailableFailure =
+        shaped.status === 503 &&
+        typeof shaped.code === 'string' &&
+        shaped.code in BOUNDED_UNAVAILABLE_TITLES
       const safeLog = {
         level: authFailure ? 'warn' : 'error',
         event: authFailure
@@ -3149,8 +3269,9 @@ export function createEnterpriseDashboardServer(
           : 'dashboard_request_failed',
         code: authFailure
           ? error.code
-          : userAdminFailure || settlementFailure || reauditFailure
-            ? error.code
+          : userAdminFailure || settlementFailure || reauditFailure ||
+              boundedUnavailableFailure
+            ? shaped.code
             : 'INTERNAL_ERROR',
         correlationId: correlation,
         occurredAt: new Date().toISOString(),
@@ -3190,12 +3311,24 @@ export function createEnterpriseDashboardServer(
               : 'User administration is temporarily unavailable',
           correlation,
         )
+      } else if (error instanceof UsageImportValidationError) {
+        /**
+         * A refused usage batch names its invalid rows and nothing else:
+         * batch-relative row index, canonical field name, allowlisted code.
+         * The offending cell value never leaves the server, so the importer
+         * can mark exactly those source rows for review and resubmit the
+         * valid remainder without the response leaking a single value.
+         */
+        problem(
+          response,
+          error.status,
+          error.code,
+          'Usage batch contains rows that cannot be imported',
+          correlation,
+          {},
+          { issues: error.issues },
+        )
       } else {
-        const shaped = error as {
-          status?: number
-          code?: string
-          message?: string
-        }
         const unavailableTitle =
           typeof shaped.code === 'string'
             ? BOUNDED_UNAVAILABLE_TITLES[shaped.code]

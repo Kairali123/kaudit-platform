@@ -141,6 +141,76 @@ test('liveness is public but emits hardened no-store headers', async () => {
   )
 })
 
+test('slow audit monitor reads survive TTL expiry and cache pruning', async (context) => {
+  const adminAccess: AccessRepository = {
+    ...access,
+    async findByEmail(email) {
+      return {
+        id: 'admin-1',
+        email,
+        status: 'active',
+        maxSensitivityTier: 'K3',
+        roles: ['admin'],
+      }
+    },
+  }
+  let queryCount = 0
+  let nowMs = Date.now()
+  context.mock.method(Date, 'now', () => nowMs)
+  let releaseFirstQuery: (() => void) | null = null
+  let resolveFirstQuery!: () => void
+  const firstQueryStarted = new Promise<void>((resolve) => {
+    resolveFirstQuery = resolve
+  })
+  const read = async () => {
+    queryCount += 1
+    if (queryCount === 1) {
+      await new Promise<void>((release) => {
+        releaseFirstQuery = release
+        resolveFirstQuery()
+      })
+    }
+    return [[], []]
+  }
+  const pool = {
+    query: read,
+    execute: read,
+  } as unknown as Pool
+  await withServer(
+    {
+      async record() {},
+      async readiness() { return true },
+    },
+    async (baseUrl) => {
+      const first = fetch(`${baseUrl}/api/v1/audits`, {
+        headers: { cookie: localCookie() },
+      })
+      await firstQueryStarted
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      nowMs += 6_000
+      const pruningRead = await fetch(`${baseUrl}/api/v1/periods`, {
+        headers: { cookie: localCookie() },
+      })
+      assert.equal(pruningRead.status, 200)
+      const queriesBeforeSecond = queryCount
+      const second = fetch(`${baseUrl}/api/v1/audits`, {
+        headers: { cookie: localCookie() },
+      })
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      const queriesWhileBlocked = queryCount
+      releaseFirstQuery?.()
+      assert.equal((await first).status, 200)
+      assert.equal((await second).status, 200)
+      assert.equal(queriesWhileBlocked, queriesBeforeSecond)
+    },
+    undefined,
+    config,
+    null,
+    adminAccess,
+    pool,
+  )
+})
+
 test('preview mode uses a non-authorizing identity and never writes access audit', async () => {
   let auditWrites = 0
   await withServer(

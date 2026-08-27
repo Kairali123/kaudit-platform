@@ -6,8 +6,11 @@ import { createMysqlManualReauditCandidateRepository } from '../adapters/mysqlMa
 import { createMysqlReauditWriteRepo } from '../adapters/mysqlReauditWriteRepo.ts'
 import { createOpenAiReaudit } from '../adapters/openaiReaudit.ts'
 import { createMysqlAuditWorkerControl } from '../adapters/mysqlAuditWorkerControl.ts'
+import { createMysqlBillingSpendGuard } from '../adapters/mysqlBillingSpendLease.ts'
+import { tagPoolAcquisitionFailures } from '../adapters/mysqlPoolAcquisition.ts'
 import { auditOneCall } from '../reaudit/core.ts'
 import { runReauditBatch } from '../reaudit/worker.ts'
+import { ReauditFatalError } from '../reaudit/failures.ts'
 import { parseRecordingBackedTaskIds } from '../reaudit/scope.ts'
 import { loadRuntimeConfig } from '../config/runtime.ts'
 import { resolveDatabaseTls } from '../runtime/databaseTls.ts'
@@ -131,16 +134,26 @@ async function main(): Promise<void> {
     .filter(Boolean)
   const config = loadRuntimeConfig(process.env)
   const ssl = resolveDatabaseTls(config, process.env)
-  const pool = mysql.createPool({
-    host: config.database.host,
-    port: config.database.port,
-    database: config.database.name,
-    user: config.database.user,
-    password: config.database.password,
-    ...(ssl ? { ssl } : {}),
-    connectionLimit: Math.max(4, concurrency + 2),
-    connectTimeout: 30_000,
-  })
+  /**
+   * Conservative, bounded connection budget. Billing concurrency defaults to
+   * ONE (KAUDIT_AUDIT_CONCURRENCY), so a single worker run holds the advisory
+   * lock plus at most a handful of pool connections even while its items
+   * claim, persist, and report progress. Production evidence showed heavy
+   * database latency during worker runs; do not raise this without measured
+   * spare capacity.
+   */
+  const pool = tagPoolAcquisitionFailures(
+    mysql.createPool({
+      host: config.database.host,
+      port: config.database.port,
+      database: config.database.name,
+      user: config.database.user,
+      password: config.database.password,
+      ...(ssl ? { ssl } : {}),
+      connectionLimit: Math.max(4, concurrency + 2),
+      connectTimeout: 30_000,
+    }),
+  )
   const lockConnection = await pool.getConnection()
   try {
     const [lockRows] = await lockConnection.query<RowDataPacket[]>(
@@ -195,6 +208,7 @@ async function main(): Promise<void> {
       })
       let summary
       let reportedFailures = 0
+      let reportedProcessed = 0
       try {
         summary = await runReauditBatch({
           candidates,
@@ -202,6 +216,13 @@ async function main(): Promise<void> {
           includePreviouslyClassified: appendReaudit || requestedMode,
           batchSize,
           concurrency,
+          // This process owns the global Billing advisory lock and drains all
+          // in-flight work before starting another batch. It can therefore
+          // recover staged/ambiguous leases immediately without waiting for
+          // the fallback wall-clock expiry.
+          spendGuard: createMysqlBillingSpendGuard(pool, {
+            exclusiveRecovery: true,
+          }),
           shouldContinue: async () =>
             !shutdownRequested &&
             (targetedOneShot ||
@@ -219,27 +240,48 @@ async function main(): Promise<void> {
           onProgress: async (progress) => {
             const failures =
               progress.retriesScheduled + progress.terminalFailures
+            const processed =
+              progress.completed + progress.retriesScheduled +
+              progress.terminalFailures + progress.alreadyCompleted +
+              progress.spendGuardSkipped
             await control.recordObservation({
               system: 'billing',
               observedState: 'running',
-              processedDelta: 1,
+              processedDelta: processed - reportedProcessed,
               failedDelta: failures - reportedFailures,
               progressed: true,
             })
+            reportedProcessed = processed
             reportedFailures = failures
             process.stdout.write(
-              `[audit-worker] batch ${progress.completed + progress.retriesScheduled + progress.terminalFailures + progress.alreadyCompleted}/${progress.selected}; completed=${progress.completed}; retry=${progress.retriesScheduled}; terminal=${progress.terminalFailures}; skipped=${progress.alreadyCompleted}\n`,
+              `[audit-worker] batch ${processed}/${progress.selected}; completed=${progress.completed}; retry=${progress.retriesScheduled}; terminal=${progress.terminalFailures}; skipped=${progress.alreadyCompleted + progress.spendGuardSkipped}\n`,
             )
           },
         })
-      } catch {
+      } catch (error) {
+        /**
+         * Privacy-safe diagnostic classification. The original failure is
+         * reduced to a lifecycle phase and one allowlisted category — never
+         * the raw driver/provider error, which can quote SQL or values.
+         */
+        const fatal = error instanceof ReauditFatalError
+          ? { phase: error.phase, category: error.category }
+          : { phase: 'unknown', category: 'DB_UNKNOWN' }
+        const boundedCode = `BILLING_AUDIT_BATCH_FAILED_${fatal.category}`
+        process.stdout.write(
+          `${JSON.stringify({
+            event: 'billing_audit_batch_failed',
+            phase: fatal.phase,
+            category: fatal.category,
+          })}\n`,
+        )
         await control.recordObservation({
           system: 'billing',
           observedState: 'faulted',
-          errorCode: 'BILLING_AUDIT_BATCH_FAILED',
+          errorCode: boundedCode,
           failedDelta: 1,
         })
-        if (!watch) throw new Error('BILLING_AUDIT_BATCH_FAILED')
+        if (!watch) throw new Error(boundedCode)
         await wait(pollMs)
         continue
       }
@@ -327,9 +369,17 @@ async function main(): Promise<void> {
   }
 }
 
-main().catch(() => {
+main().catch((error: unknown) => {
+  /**
+   * The final line of defense keeps the original failure bounded: a classified
+   * fatal surfaces its phase and allowlisted category only; anything else
+   * collapses to the generic worker code. Raw errors are never printed.
+   */
+  const detail = error instanceof ReauditFatalError
+    ? ` (phase=${error.phase}; category=${error.category})`
+    : ''
   process.stderr.write(
-    '[audit-worker] stopped: BILLING_AUDIT_WORKER_FAILED\n',
+    `[audit-worker] stopped: BILLING_AUDIT_WORKER_FAILED${detail}\n`,
   )
   process.exitCode = 1
 })

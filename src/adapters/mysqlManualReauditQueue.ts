@@ -177,6 +177,13 @@ async function expireInterruptedClaims(
             item.baseline_audit_run_id
      FROM kaudit_billing_reaudit_item item
      WHERE item.status = 'processing'
+       AND NOT EXISTS (
+         SELECT 1
+         FROM kaudit_billing_spend_lease lease
+         WHERE lease.manual_item_id = item.id
+           AND lease.status = 'active'
+           AND lease.staged_result_json IS NOT NULL
+       )
        ${recoverAllProcessing ? '' : `AND item.started_at < current_timestamp(6)
          - INTERVAL ${MANUAL_REAUDIT_CLAIM_TIMEOUT_MINUTES} MINUTE`}
        ${scope}
@@ -468,62 +475,44 @@ export function createMysqlManualReauditCandidateRepository(
         )
       }
       const connection = await pool.getConnection()
-      let claimed: ClaimedItemRow[] = []
+      let selected: ClaimedItemRow[] = []
       try {
         await connection.beginTransaction()
-        // The hosted requested-mode worker owns the same exclusive database
-        // lock as every Billing Audit worker. Once a newly dispatched recovery
-        // host has that lock, any pre-existing processing item is proven
-        // orphaned and can fail closed immediately; it is never reclaimed.
-        await expireInterruptedClaims(
-          connection,
-          undefined,
-          repositoryOptions.recoverInterruptedClaims === true,
-        )
+        // Outside the exclusively locked hosted worker, stale unstaged claims
+        // fail closed after the ordinary timeout. The hosted recovery worker
+        // selects processing rows below so the spend guard can recover staged
+        // output or durably terminalize ambiguous paid state.
+        if (repositoryOptions.recoverInterruptedClaims !== true) {
+          await expireInterruptedClaims(connection)
+        }
         const [rows] = await connection.execute<ClaimedItemRow[]>(
           `SELECT item.id AS item_id, item.request_id, item.call_id,
                   item.baseline_audit_run_id
            FROM kaudit_billing_reaudit_item item
-           WHERE item.status = 'queued'
+           WHERE (
+             item.status = 'queued'
              AND item.attempt_count < ${MAX_MANUAL_REAUDIT_ATTEMPTS}
+           )
+           ${repositoryOptions.recoverInterruptedClaims === true
+             ? "OR item.status = 'processing'"
+             : ''}
            ORDER BY item.created_at, item.id
            LIMIT 1
            FOR UPDATE`,
         )
-        claimed = rows
-        for (const row of claimed) {
-          await connection.execute(
-            `UPDATE kaudit_billing_reaudit_item
-             SET status = 'processing',
-                 attempt_count = attempt_count + 1,
-                 started_at = current_timestamp(6),
-                 last_error_code = NULL
-             WHERE id = ?`,
-            [row.item_id],
-          )
-        }
-        if (claimed.length > 0) {
-          await connection.execute(
-            `UPDATE kaudit_billing_reaudit_request
-             SET status = 'running',
-                 started_at = COALESCE(started_at, current_timestamp(6))
-             WHERE id IN (${placeholders(claimed.length)})
-               AND status = 'queued'`,
-            claimed.map((row) => row.request_id),
-          )
-        }
+        selected = rows
         await connection.commit()
       } catch (error) {
         await connection.rollback().catch(() => undefined)
         connection.release()
         throw asSafeQueueError(error)
       }
-      if (claimed.length === 0) {
+      if (selected.length === 0) {
         connection.release()
         return []
       }
       try {
-        const callIds = claimed.map((row) => row.call_id)
+        const callIds = selected.map((row) => row.call_id)
         const list = placeholders(callIds.length)
         const [artifacts] = await connection.execute<ArtifactRow[]>(
           `SELECT artifact.call_id, artifact.id AS artifact_id,
@@ -564,13 +553,21 @@ export function createMysqlManualReauditCandidateRepository(
         }
         const costByCall = new Map(costs.map((row) => [row.call_id, row]))
         const candidates: ReauditCandidate[] = []
-        for (const item of claimed) {
+        for (const item of selected) {
           const artifact = artifactByCall.get(item.call_id)
           if (!artifact) {
-            // Claimed but unauditable. Settled here, with no model call and no
-            // change to the call's current audit result.
+            // Unclaimable evidence is settled without a spend lease or model.
             await connection.beginTransaction()
             try {
+              await connection.execute(
+                `UPDATE kaudit_billing_reaudit_item
+                 SET status = 'processing',
+                     attempt_count = attempt_count + 1,
+                     started_at = current_timestamp(6),
+                     last_error_code = NULL
+                 WHERE id = ? AND status = 'queued' AND attempt_count < 1`,
+                [item.item_id],
+              )
               await settleManualReauditItem(connection, {
                 requestId: item.request_id,
                 itemId: item.item_id,

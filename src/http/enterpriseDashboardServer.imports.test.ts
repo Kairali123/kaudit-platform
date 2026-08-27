@@ -10,6 +10,7 @@ import {
   issueLocalSession,
 } from '../auth/localSession.ts'
 import { createEnterpriseDashboardServer } from './enterpriseDashboardServer.ts'
+import type { CycleImportService } from '../imports/types.ts'
 
 /**
  * Import endpoints on a runtime that has no cycle import service.
@@ -280,4 +281,59 @@ test('authorization is still checked before availability', async () => {
     const body = (await response.json()) as Record<string, unknown>
     assert.notEqual(body.code, 'IMPORT_NOT_AVAILABLE')
   })
+})
+
+test('Drive import stage failures return only their bounded code', async () => {
+  const imports: CycleImportService = {
+    async status() { throw new Error('not used') },
+    async importInvoice() { throw new Error('not used') },
+    async importUsage() {
+      throw Object.assign(new Error('synthetic provider prose'), {
+        status: 503,
+        code: 'GOOGLE_DRIVE_IMPORT_LOOKUP_FAILED',
+      })
+    },
+  }
+  const server = createEnterpriseDashboardServer({
+    config,
+    pool: {
+      async query() { return [[{ one: 1 }], []] },
+    } as unknown as Pool,
+    access,
+    audit: {
+      async record() {},
+      async readiness() { return true },
+    },
+    verifier: null,
+    imports,
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address() as AddressInfo
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/v1/imports/usage`,
+      {
+        method: 'POST',
+        headers: {
+          cookie: adminCookie(),
+          'x-kaudit-filename': 'synthetic-usage.csv',
+          'x-kaudit-period-start': '2026-07-01',
+          'x-kaudit-period-end': '2026-07-31',
+          'content-type': 'text/csv',
+        },
+        body: 'synthetic,csv',
+      },
+    )
+    assert.equal(response.status, 503)
+    const raw = await response.text()
+    assert.equal(raw.includes('synthetic provider prose'), false)
+    assert.equal(
+      (JSON.parse(raw) as { code: string }).code,
+      'GOOGLE_DRIVE_IMPORT_LOOKUP_FAILED',
+    )
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    )
+  }
 })

@@ -170,6 +170,17 @@ blank means the Shared Drive root; set it only when imports must live under a
 specific folder within the Shared Drive. The preflight validates presence and ID
 shape only; it never calls Google and never prints the configured values.
 
+**Google Apps Script usage-import service principal**
+
+```
+KAUDIT_GAS_IMPORT_SECRET
+```
+
+This dedicated 32-256 character HMAC secret is required by the production
+preflight. Configure the same value in GAS Script Properties. It authenticates
+only `POST /api/v1/imports/usage` and binds the exact body hash, route,
+timestamp, filename, and billing period; it is not a browser session secret.
+
 **Recording references (only if admin call review is used)**
 
 ```
@@ -227,8 +238,8 @@ involved. No value, path, URL, issuer, CA text, key, or thrown-error text is eve
 printed, so the output is safe to keep in a CI log.
 
 ```
-{"preflight":"vercel-release","result":"pass","checks":15,"optionalFeatures":[]}
-{"preflight":"vercel-release","result":"fail","checks":15,"errors":[{"code":"DB_CA_SOURCE_AMBIGUOUS","variables":["DB_SSL_CA_FILE","DB_SSL_CA_PEM"]}]}
+{"preflight":"vercel-release","result":"pass","checks":16,"optionalFeatures":[]}
+{"preflight":"vercel-release","result":"fail","checks":16,"errors":[{"code":"DB_CA_SOURCE_AMBIGUOUS","variables":["DB_SSL_CA_FILE","DB_SSL_CA_PEM"]}]}
 ```
 
 If the command cannot get as far as a verdict — the repository manifest is unreadable

@@ -10,6 +10,10 @@ const scheduledWorkflow = readFileSync(
   new URL('../../.github/workflows/scheduled-audit-workers.yml', import.meta.url),
   'utf8',
 )
+const workflowRunbook = readFileSync(
+  new URL('../../docs/runbooks/GITHUB_ACTIONS_AUDIT_WORKER.md', import.meta.url),
+  'utf8',
+)
 
 test('hosted worker is manual, bounded, and serialized per audit system', () => {
   assert.match(workflow, /workflow_dispatch:/)
@@ -24,7 +28,8 @@ test('hosted worker is manual, bounded, and serialized per audit system', () => 
 
 test('hosted worker drains through existing CLIs and never runs a model test', () => {
   assert.match(workflow, /KAUDIT_AUDIT_DRAIN=true/)
-  assert.match(workflow, /KAUDIT_AUDIT_CONCURRENCY=10/)
+  assert.match(workflow, /KAUDIT_AUDIT_CONCURRENCY=1/)
+  assert.doesNotMatch(workflow, /KAUDIT_AUDIT_CONCURRENCY=10/)
   assert.match(workflow, /npm run audit:worker/)
   assert.match(workflow, /KAUDIT_CALL_AUDIT_DRAIN=true/)
   assert.match(workflow, /npm run callaudit:worker/)
@@ -39,6 +44,14 @@ test('hosted worker drains through existing CLIs and never runs a model test', (
   }
 })
 
+test('hosted Billing concurrency is conservative in workflow and runbook', () => {
+  assert.equal(workflow.match(/KAUDIT_AUDIT_CONCURRENCY=1/g)?.length, 3)
+  assert.doesNotMatch(workflow, /KAUDIT_AUDIT_(?:BATCH|CONCURRENCY)=10/)
+  assert.match(workflowRunbook, /KAUDIT_AUDIT_CONCURRENCY=1/)
+  assert.match(workflowRunbook, /KAUDIT_AUDIT_BATCH=1/)
+  assert.doesNotMatch(workflowRunbook, /KAUDIT_AUDIT_CONCURRENCY=10/)
+})
+
 test('targeted hosted re-audit is private, scope-bound, and billing-only', () => {
   assert.match(workflow, /- targeted/)
   assert.match(
@@ -48,7 +61,8 @@ test('targeted hosted re-audit is private, scope-bound, and billing-only', () =>
   assert.match(workflow, /base64 --decode/)
   assert.match(workflow, /KAUDIT_AUDIT_REQUIRE_SCOPE=true/)
   assert.match(workflow, /KAUDIT_AUDIT_REAUDIT_MODE=APPEND/)
-  assert.match(workflow, /KAUDIT_AUDIT_BATCH=100/)
+  assert.match(workflow, /KAUDIT_AUDIT_BATCH=1/)
+  assert.match(workflow, /KAUDIT_AUDIT_CONCURRENCY=1/)
   assert.match(
     workflow,
     /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then\s+if \[\[ "\$AUDIT_MODE" == "targeted" \]\]; then\s+exit 2/,
@@ -70,7 +84,7 @@ test('requested re-audit mode is billing-only, bounded, and queue-driven', () =>
     workflow,
     /KAUDIT_AUDIT_REQUESTED_MODE=true[\s\S]{0,200}KAUDIT_AUDIT_BATCH=1/,
   )
-  assert.doesNotMatch(
+  assert.match(
     workflow,
     /KAUDIT_AUDIT_REQUESTED_MODE=true[\s\S]{0,200}KAUDIT_AUDIT_CONCURRENCY=/,
   )

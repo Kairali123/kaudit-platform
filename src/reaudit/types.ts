@@ -132,6 +132,7 @@ export interface ReauditItemResult {
     | 'unsafe_url'
     | 'transcription_failed'
     | 'classification_failed'
+    | 'spend_state_unknown'
   analysis?: ReauditAnalysis
   transcription?: TranscriptionResult
   classification?: ModelClassification

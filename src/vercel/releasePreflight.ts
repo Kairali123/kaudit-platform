@@ -100,6 +100,7 @@ export const PREFLIGHT_CHECKS = [
   'oidc-browser-flow',
   'local-auth-variables-absent',
   'google-drive-import-storage',
+  'gas-usage-import-auth',
   'call-audit-rule-test',
   'recording-proxy',
   'audit-worker-dispatch',
@@ -181,6 +182,7 @@ export const REPORTABLE_VARIABLES: readonly string[] = Object.freeze([
   'KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN',
   'KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID',
   'KAUDIT_GOOGLE_DRIVE_ROOT_FOLDER_ID',
+  'KAUDIT_GAS_IMPORT_SECRET',
   'KAUDIT_CALL_AUDIT_RULE_TEST_ENABLED',
   'KAUDIT_UNPOD_PROXY_BASE',
   'KAUDIT_ALLOWED_RECORDING_HOSTS',
@@ -412,6 +414,16 @@ export function evaluateVercelReleasePreflight(
     if (invalidGoogleDrive.length > 0) {
       fail('FEATURE_CONFIG_INCOMPLETE', ...invalidGoogleDrive)
     }
+  }
+
+  // gas-usage-import-auth — the automated spreadsheet importer is a service
+  // principal, not a browser. A production candidate must carry its dedicated
+  // HMAC secret so the exact body/route/period/filename contract is usable.
+  const gasImportSecret = env.KAUDIT_GAS_IMPORT_SECRET?.trim() || ''
+  if (!gasImportSecret) {
+    fail('REQUIRED_VARIABLE_MISSING', 'KAUDIT_GAS_IMPORT_SECRET')
+  } else if (!/^[A-Za-z0-9._~-]{32,256}$/.test(gasImportSecret)) {
+    fail('FEATURE_CONFIG_INCOMPLETE', 'KAUDIT_GAS_IMPORT_SECRET')
   }
 
   // call-audit-rule-test — an optional feature, deny by default. Its key is

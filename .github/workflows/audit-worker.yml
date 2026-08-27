@@ -101,19 +101,21 @@ jobs:
               KAUDIT_AUDIT_REQUIRE_SCOPE=true \
               KAUDIT_AUDIT_REAUDIT_MODE=APPEND \
               KAUDIT_AUDIT_MODE=EXECUTE \
-              KAUDIT_AUDIT_BATCH=100 \
+              KAUDIT_AUDIT_BATCH=1 \
+              KAUDIT_AUDIT_CONCURRENCY=1 \
               KAUDIT_AUDIT_WATCH=false \
               npm run audit:worker
             elif [[ "$AUDIT_MODE" == "requested" ]]; then
               KAUDIT_AUDIT_REQUESTED_MODE=true \
               KAUDIT_AUDIT_MODE=EXECUTE \
               KAUDIT_AUDIT_BATCH=1 \
+              KAUDIT_AUDIT_CONCURRENCY=1 \
               KAUDIT_AUDIT_WATCH=false \
               npm run audit:worker
             else
               KAUDIT_AUDIT_MODE=EXECUTE \
-              KAUDIT_AUDIT_BATCH=10 \
-              KAUDIT_AUDIT_CONCURRENCY=10 \
+              KAUDIT_AUDIT_BATCH=1 \
+              KAUDIT_AUDIT_CONCURRENCY=1 \
               KAUDIT_AUDIT_WATCH=false \
               KAUDIT_AUDIT_DRAIN=true \
               npm run audit:worker

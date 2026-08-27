@@ -91,11 +91,10 @@ It calls the same hosted worker workflow with inherited repository secrets:
   billing calls until idle or near the GitHub job deadline.
 - Call Audit runs every 12 hours at minute 17 UTC.
 
-The normal Billing Audit drain sets `KAUDIT_AUDIT_CONCURRENCY=10` and
-`KAUDIT_AUDIT_BATCH=10`. That means up to ten claimed calls can be in provider
-work at the same time, while the MySQL advisory lock still allows only one
-Billing Audit worker process. Targeted and administrator-requested Billing
-re-audits stay sequential unless an operator deliberately changes the workflow.
+Every hosted Billing Audit mode sets `KAUDIT_AUDIT_CONCURRENCY=1` and
+`KAUDIT_AUDIT_BATCH=1`. Keep Billing work sequential until measured database
+headroom supports a reviewed change; the MySQL advisory lock still allows only
+one Billing Audit worker process.
 
 ## Operation
 
