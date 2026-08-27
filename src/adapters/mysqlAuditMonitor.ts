@@ -825,7 +825,24 @@ export async function collectAuditMonitor(
            calculation.calculation_basis AS billing_basis,
            COALESCE(ca.audio_last_attempt_at, ca.created_at, c.created_at)
              AS last_activity_at
-         FROM kaudit_call c
+         FROM (
+           SELECT
+             c.id,
+             c.logical_call_key,
+             c.billing_period_date,
+             c.created_at
+           FROM kaudit_call c
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM kaudit_call_artifact recording
+             WHERE recording.call_id = c.id
+               AND recording.artifact_type = 'recording'
+               AND recording.is_final = 1
+               AND recording.source_url IS NOT NULL
+           )${periodClause}
+           ORDER BY c.billing_period_date DESC, c.id
+           LIMIT ? OFFSET ?
+         ) c
          LEFT JOIN kaudit_call_artifact ca
            ON ca.call_id = c.id
           AND ca.artifact_type = 'recording'
@@ -856,16 +873,8 @@ export async function collectAuditMonitor(
             FROM kaudit_billing_calculation superseding
             WHERE superseding.supersedes_calculation_id = calculation.id
           )
-         WHERE NOT EXISTS (
-           SELECT 1
-           FROM kaudit_call_artifact recording
-           WHERE recording.call_id = c.id
-             AND recording.artifact_type = 'recording'
-             AND recording.is_final = 1
-             AND recording.source_url IS NOT NULL
-         )${periodClause}
          ORDER BY c.billing_period_date DESC, c.id
-         LIMIT ? OFFSET ?`,
+         `,
         [...periodParams, query.pageSize, noRecordingOffset],
       ),
     ])

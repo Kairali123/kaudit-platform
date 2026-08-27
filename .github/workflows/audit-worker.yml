@@ -17,6 +17,11 @@ on:
         required: false
         default: ''
         type: string
+      diagnostic_month:
+        description: YYYY-MM period for a read-only monitor diagnostic
+        required: false
+        default: ''
+        type: string
   workflow_dispatch:
     inputs:
       system:
@@ -38,8 +43,13 @@ on:
           - migration-0015
           - migration-0017
           - diagnose-requested
+          - diagnose-monitor
       migration_confirmation:
         description: Type APPLY_0015 or APPLY_0017 for the matching migration mode
+        required: false
+        type: string
+      diagnostic_month:
+        description: YYYY-MM period for diagnose-monitor
         required: false
         type: string
 
@@ -89,6 +99,9 @@ jobs:
           if [[ "$AUDIT_SYSTEM" == "billing" ]]; then
             if [[ "$AUDIT_MODE" == "diagnose-requested" ]]; then
               node scripts/report-billing-reaudit-health.mjs
+            elif [[ "$AUDIT_MODE" == "diagnose-monitor" ]]; then
+              KAUDIT_DIAGNOSTIC_MONTH="${{ inputs.diagnostic_month }}" \
+              node scripts/report-audit-monitor-health.mjs
             elif [[ "$AUDIT_MODE" == "migration-0015" ]]; then
               if [[ "${{ inputs.migration_confirmation }}" != "APPLY_0015" ]]; then
                 exit 2
