@@ -10,8 +10,9 @@ const script = await readFile(
 test('GAS usage import retries blank K rows in bounded batches', () => {
   assert.match(script, /statusColumn:\s*11/)
   assert.match(script, /batchSize:\s*500/)
-  assert.match(script, /status === ''/)
+  assert.match(script, /if \(status !== ''\) return false/)
   assert.match(script, /submittedStatus:\s*'Submitted'/)
+  assert.match(script, /needsReviewStatus:\s*'Needs review'/)
   assert.match(script, /receipt\.accepted.*receipt\.duplicates/s)
 })
 
@@ -25,7 +26,7 @@ test('GAS usage import keeps credentials out of source and SQL out of GAS', () =
 test('GAS usage import logs status only and never logs response prose', () => {
   assert.match(script, /submittedThisRun/)
   assert.match(script, /pendingRows/)
-  assert.match(script, /errorCode:\s*kauditProblemCode_/)
+  assert.match(script, /errorCode:\s*problemCode/)
   assert.match(script, /\^\[A-Z\]\[A-Z0-9_\]/)
   assert.doesNotMatch(script, /console\.log\([^\n]*getContentText/)
 })

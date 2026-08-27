@@ -6,6 +6,14 @@ const workflow = readFileSync(
   new URL('../../.github/workflows/audit-worker.yml', import.meta.url),
   'utf8',
 )
+const scheduledWorkflow = readFileSync(
+  new URL('../../.github/workflows/scheduled-audit-workers.yml', import.meta.url),
+  'utf8',
+)
+const workflowRunbook = readFileSync(
+  new URL('../../docs/runbooks/GITHUB_ACTIONS_AUDIT_WORKER.md', import.meta.url),
+  'utf8',
+)
 
 test('hosted worker is manual, bounded, and serialized per audit system', () => {
   assert.match(workflow, /workflow_dispatch:/)
@@ -20,6 +28,8 @@ test('hosted worker is manual, bounded, and serialized per audit system', () => 
 
 test('hosted worker drains through existing CLIs and never runs a model test', () => {
   assert.match(workflow, /KAUDIT_AUDIT_DRAIN=true/)
+  assert.match(workflow, /KAUDIT_AUDIT_CONCURRENCY=1/)
+  assert.doesNotMatch(workflow, /KAUDIT_AUDIT_CONCURRENCY=10/)
   assert.match(workflow, /npm run audit:worker/)
   assert.match(workflow, /KAUDIT_CALL_AUDIT_DRAIN=true/)
   assert.match(workflow, /npm run callaudit:worker/)
@@ -34,6 +44,43 @@ test('hosted worker drains through existing CLIs and never runs a model test', (
   }
 })
 
+test('hosted Billing concurrency is conservative in workflow and runbook', () => {
+  assert.equal(workflow.match(/KAUDIT_AUDIT_CONCURRENCY=1/g)?.length, 3)
+  assert.doesNotMatch(workflow, /KAUDIT_AUDIT_(?:BATCH|CONCURRENCY)=10/)
+  assert.match(workflowRunbook, /KAUDIT_AUDIT_CONCURRENCY=1/)
+  assert.match(workflowRunbook, /KAUDIT_AUDIT_BATCH=1/)
+  assert.doesNotMatch(workflowRunbook, /KAUDIT_AUDIT_CONCURRENCY=10/)
+})
+
+test('hosted spend lease migration is explicit, guarded, and billing-only', () => {
+  assert.match(workflow, /- migration-0017/)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "migration-0017"[\s\S]{0,200}migration_confirmation \}\}" != "APPLY_0017"/,
+  )
+  assert.match(workflow, /KAUDIT_MIGRATION_CONFIRM=APPLY_0017/)
+  assert.match(workflow, /npm run migration:billing-spend-lease/)
+  assert.match(
+    workflow,
+    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then\s+if \[\[ "\$AUDIT_MODE" != "new" \]\]; then\s+exit 2/,
+  )
+})
+
+test('reusable workflow callers cannot route unknown modes into a worker', () => {
+  assert.match(
+    workflow,
+    /workflow_call:[\s\S]{0,500}migration_confirmation:[\s\S]{0,160}type: string/,
+  )
+  assert.match(
+    workflow,
+    /elif \[\[ "\$AUDIT_MODE" == "new" \]\]; then[\s\S]{0,300}npm run audit:worker\s+else\s+exit 2/,
+  )
+  assert.match(
+    workflow,
+    /AUDIT_SYSTEM" == "call"[\s\S]{0,120}AUDIT_MODE" != "new"/,
+  )
+})
+
 test('targeted hosted re-audit is private, scope-bound, and billing-only', () => {
   assert.match(workflow, /- targeted/)
   assert.match(
@@ -43,10 +90,11 @@ test('targeted hosted re-audit is private, scope-bound, and billing-only', () =>
   assert.match(workflow, /base64 --decode/)
   assert.match(workflow, /KAUDIT_AUDIT_REQUIRE_SCOPE=true/)
   assert.match(workflow, /KAUDIT_AUDIT_REAUDIT_MODE=APPEND/)
-  assert.match(workflow, /KAUDIT_AUDIT_BATCH=100/)
+  assert.match(workflow, /KAUDIT_AUDIT_BATCH=1/)
+  assert.match(workflow, /KAUDIT_AUDIT_CONCURRENCY=1/)
   assert.match(
     workflow,
-    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then\s+if \[\[ "\$AUDIT_MODE" == "targeted" \]\]; then\s+exit 2/,
+    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then\s+if \[\[ "\$AUDIT_MODE" != "new" \]\]; then\s+exit 2/,
   )
   assert.match(workflow, /if: always\(\)/)
   assert.match(workflow, /rm -f "\$RUNNER_TEMP\/kaudit-targeted-reaudit\.json"/)
@@ -67,12 +115,16 @@ test('requested re-audit mode is billing-only, bounded, and queue-driven', () =>
   )
   assert.match(
     workflow,
+    /KAUDIT_AUDIT_REQUESTED_MODE=true[\s\S]{0,200}KAUDIT_AUDIT_CONCURRENCY=/,
+  )
+  assert.match(
+    workflow,
     /KAUDIT_AUDIT_REQUESTED_MODE=true[\s\S]{0,200}KAUDIT_AUDIT_WATCH=false/,
   )
   // Call Audit has no request queue, so the combination exits non-zero.
   assert.match(
     workflow,
-    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then[\s\S]{0,200}if \[\[ "\$AUDIT_MODE" == "requested" \]\]; then\s+exit 2/,
+    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then[\s\S]{0,200}if \[\[ "\$AUDIT_MODE" != "new" \]\]; then\s+exit 2/,
   )
   // Serialized with every other Billing Audit run by the same group.
   assert.match(workflow, /group: kaudit-audit-worker-\$\{\{ inputs\.system \}\}/)
@@ -110,4 +162,19 @@ test('Call Audit starts at the approved July 2026 UTC boundary', () => {
 test('disabled database TLS cannot retain dormant CA material', () => {
   assert.match(workflow, /if \[\[ "\$DB_TLS_MODE" == "disabled" \]\]/)
   assert.match(workflow, /unset DB_SSL_CA_PEM/)
+})
+
+test('scheduled workers prioritize Billing Audit while still running Call Audit', () => {
+  assert.match(scheduledWorkflow, /name: Kaudit scheduled audit workers/)
+  assert.match(scheduledWorkflow, /cron: '47 \*\/6 \* \* \*'/)
+  assert.match(scheduledWorkflow, /cron: '17 \*\/12 \* \* \*'/)
+  assert.match(
+    scheduledWorkflow,
+    /billing-audit:[\s\S]{0,160}system: billing[\s\S]{0,80}mode: new/,
+  )
+  assert.match(
+    scheduledWorkflow,
+    /call-audit:[\s\S]{0,160}system: call[\s\S]{0,80}mode: new/,
+  )
+  assert.match(scheduledWorkflow, /secrets: inherit/)
 })

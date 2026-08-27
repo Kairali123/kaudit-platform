@@ -5,17 +5,23 @@ import type {
   RowDataPacket,
 } from 'mysql2/promise'
 import { normalizeRecordingUrl } from '../backfill/normalizeRecordingUrl.ts'
-import { parseUsageCsv } from '../imports/csv.ts'
+import {
+  MAX_REPORTED_USAGE_ROW_ISSUES,
+  parseUsageCsv,
+  scanUsageCsv,
+} from '../imports/csv.ts'
 import type { UsageRow } from '../imports/csv.ts'
-import { sha256Hex } from '../lib/hash.ts'
 import type {
   CycleImportService,
   ImportResult,
   InvoiceImportRequest,
   UsageImportRequest,
+  UsageRowIssue,
 } from '../imports/types.ts'
+import { UsageImportValidationError } from '../imports/types.ts'
 import type { ImportObjectStore } from '../imports/objectStore.ts'
 import { safeImportFilename } from '../imports/objectStore.ts'
+import { sha256Hex } from '../lib/hash.ts'
 import { canonicalJson } from '../messaging/canonicalJson.ts'
 
 interface SourceRow extends RowDataPacket {
@@ -97,6 +103,124 @@ export function usageProviderCostClaims(row: UsageRow) {
   ] as const
 }
 
+/**
+ * Validates one CSV row against the full canonical input contract without
+ * throwing: timestamp shapes and recording-URL canonicalization, on top of
+ * the structural checks scanUsageCsv already applied.
+ *
+ * The result is a bounded descriptor only — never the offending value — so it
+ * can travel back to the importing client verbatim.
+ */
+function deepValidateUsageRow(
+  row: UsageRow,
+  allowedRecordingHosts: readonly string[],
+): Omit<UsageRowIssue, 'rowIndex'> | null {
+  for (const [field, raw] of [
+    ['callStartTime', row.callStartTime],
+    ['callConnectedTime', row.callConnectedTime],
+    ['callEndTime', row.callEndTime],
+  ] as const) {
+    const trimmed = raw.trim()
+    if (!trimmed) continue
+    if (!isRealUsageDateTime(trimmed)) {
+      return { field, code: 'DATETIME_INVALID' }
+    }
+  }
+  if (row.recordingUrl) {
+    const normalized = normalizeRecordingUrl(
+      row.recordingUrl,
+      allowedRecordingHosts as string[],
+    )
+    if (!normalized.ok || !normalized.s3Url) {
+      return { field: 'recordingUrl', code: 'RECORDING_URL_INVALID' }
+    }
+  }
+  return null
+}
+
+function isRealUsageDateTime(value: string): boolean {
+  const iso =
+    /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?$/.exec(value)
+  if (iso) {
+    return isRealDateParts({
+      year: Number(iso[1]),
+      month: Number(iso[2]),
+      day: Number(iso[3]),
+      hour: Number(iso[4]),
+      minute: Number(iso[5]),
+      second: Number(iso[6] ?? '0'),
+    })
+  }
+  const indian =
+    /^(\d{1,2})\/(\d{1,2})\/(\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?$/.exec(value)
+  if (!indian) return false
+  return isRealDateParts({
+    year: Number(indian[3]),
+    month: Number(indian[2]),
+    day: Number(indian[1]),
+    hour: Number(indian[4]),
+    minute: Number(indian[5]),
+    second: Number(indian[6] ?? '0'),
+  })
+}
+
+function isRealDateParts(parts: {
+  year: number
+  month: number
+  day: number
+  hour: number
+  minute: number
+  second: number
+}): boolean {
+  if (
+    parts.year < 1000 || parts.year > 9999 ||
+    parts.month < 1 || parts.month > 12 ||
+    parts.hour < 0 || parts.hour > 23 ||
+    parts.minute < 0 || parts.minute > 59 ||
+    parts.second < 0 || parts.second > 59
+  ) return false
+  const leap =
+    parts.year % 4 === 0 && (parts.year % 100 !== 0 || parts.year % 400 === 0)
+  const days = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+  return parts.day >= 1 && parts.day <= (days[parts.month - 1] ?? 0)
+}
+
+/**
+ * Collects every canonical-contract violation in a usage batch BEFORE any
+ * Drive object or database row is written.
+ *
+ * A batch containing at least one permanently invalid row is refused whole —
+ * valid batches stay atomic and idempotent — but the caller receives bounded
+ * per-row descriptors so exactly those source rows can be marked for review
+ * while the valid remainder is retried, instead of an entire sheet blocking
+ * forever on one malformed cell.
+ */
+export function prevalidateUsageRows(
+  bytes: Buffer,
+  allowedRecordingHosts: readonly string[],
+): UsageRow[] {
+  const scan = scanUsageCsv(bytes)
+  const issues: UsageRowIssue[] = [...scan.issues]
+  for (const entry of scan.entries) {
+    if (!entry.row) continue
+    const issue = deepValidateUsageRow(entry.row, allowedRecordingHosts)
+    if (issue) {
+      issues.push({ rowIndex: entry.rowIndex, ...issue })
+    }
+  }
+  if (issues.length > MAX_REPORTED_USAGE_ROW_ISSUES) {
+    // Bounded response: report at most the capped number of descriptors,
+    // never more. The count alone still lets the operator size the problem.
+    throw new UsageImportValidationError(
+      issues.slice(0, MAX_REPORTED_USAGE_ROW_ISSUES),
+    )
+  }
+  if (issues.length > 0) {
+    throw new UsageImportValidationError(issues)
+  }
+  return parseUsageCsv(bytes)
+}
+
 function dateOnly(value: string, name: string): string {
   if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
     throw new ImportInputError(`${name} must use YYYY-MM-DD`)
@@ -161,6 +285,41 @@ interface PreparedUsageRow {
   connectedAt: string | null
   endedAt: string | null
   sourceUrl: string | null
+}
+
+function prepareUsageRows(
+  rows: readonly UsageRow[],
+  allowedRecordingHosts: readonly string[],
+): PreparedUsageRow[] {
+  return rows.map((row) => {
+    let sourceUrl: string | null = null
+    if (row.recordingUrl) {
+      const normalized = normalizeRecordingUrl(
+        row.recordingUrl,
+        allowedRecordingHosts as string[],
+      )
+      if (!normalized.ok || !normalized.s3Url) {
+        // prevalidateUsageRows has already reduced this to a bounded row issue.
+        throw new ImportInputError(
+          'A recording URL is not an approved canonical source',
+        )
+      }
+      sourceUrl = normalized.s3Url
+    }
+    return {
+      row,
+      callId: randomUUID(),
+      legId: randomUUID(),
+      artifactId: randomUUID(),
+      startedAt: sqlDateTime(row.callStartTime, 'Call Start Time'),
+      connectedAt: sqlDateTime(
+        row.callConnectedTime,
+        'Call Connected Time',
+      ),
+      endedAt: sqlDateTime(row.callEndTime, 'Call End Time'),
+      sourceUrl,
+    }
+  })
 }
 
 async function resolveSource(
@@ -271,35 +430,17 @@ export function createMysqlCycleImportService(
     async importUsage(request): Promise<ImportResult> {
       const periodStart = dateOnly(request.periodStart, 'periodStart')
       const periodEnd = dateOnly(request.periodEnd, 'periodEnd')
-      const rows = parseUsageCsv(request.bytes)
-      const preparedRows: PreparedUsageRow[] = rows.map((row) => {
-        let sourceUrl: string | null = null
-        if (row.recordingUrl) {
-          const normalized = normalizeRecordingUrl(
-            row.recordingUrl,
-            config.allowedRecordingHosts,
-          )
-          if (!normalized.ok || !normalized.s3Url) {
-            throw new ImportInputError(
-              `Task ${row.taskId}: recording URL is not an approved canonical source`,
-            )
-          }
-          sourceUrl = normalized.s3Url
-        }
-        return {
-          row,
-          callId: randomUUID(),
-          legId: randomUUID(),
-          artifactId: randomUUID(),
-          startedAt: sqlDateTime(row.callStartTime, 'Call Start Time'),
-          connectedAt: sqlDateTime(
-            row.callConnectedTime,
-            'Call Connected Time',
-          ),
-          endedAt: sqlDateTime(row.callEndTime, 'Call End Time'),
-          sourceUrl,
-        }
-      })
+      // Every canonical-contract check runs BEFORE a single byte is preserved
+      // or one database row is opened: an invalid batch leaves no partial
+      // Drive object and no partial transaction behind.
+      const rows = prevalidateUsageRows(
+        request.bytes,
+        config.allowedRecordingHosts,
+      )
+      const preparedRows = prepareUsageRows(
+        rows,
+        config.allowedRecordingHosts,
+      )
       const preserved = await config.objectStore.preserve({
         bytes: request.bytes,
         filename: request.filename,
@@ -377,7 +518,10 @@ export function createMysqlCycleImportService(
         let duplicates = 0
         let queued = 0
         let missingRecordingUrls = 0
-        for (const batch of chunks(preparedRows, USAGE_IMPORT_WRITE_BATCH_SIZE)) {
+        for (const batch of chunks(
+          preparedRows,
+          USAGE_IMPORT_WRITE_BATCH_SIZE,
+        )) {
           const taskIds = batch.map(({ row }) => row.taskId)
           const [existing] =
             await connection.execute<ExternalReferenceRow[]>(

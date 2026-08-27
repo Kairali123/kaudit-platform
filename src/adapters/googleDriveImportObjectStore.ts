@@ -26,7 +26,9 @@ export class GoogleDriveImportStorageError extends Error {
   readonly code: string
   readonly status = 503
 
-  constructor(stage: 'CONFIGURATION' | 'TOKEN' | 'LOOKUP' | 'UPLOAD_SESSION' | 'UPLOAD') {
+  constructor(
+    stage: 'CONFIGURATION' | 'TOKEN' | 'LOOKUP' | 'UPLOAD_SESSION' | 'UPLOAD',
+  ) {
     super('Import storage is unavailable')
     this.code = `GOOGLE_DRIVE_IMPORT_${stage}_FAILED`
   }

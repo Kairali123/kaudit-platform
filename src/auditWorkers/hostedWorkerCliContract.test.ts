@@ -59,9 +59,13 @@ test('bounded Call Audit polls idle until deadline and exits on pause or fault',
   assert.match(callWorker, /if \(drain && Date\.now\(\) >= deadline\)/)
 })
 
-test('Billing Audit publishes each settled candidate before continuing', () => {
+test('Billing Audit publishes exact progress deltas before continuing', () => {
   assert.match(billingWorker, /onProgress: async/)
-  assert.match(billingWorker, /processedDelta: 1/)
+  assert.match(
+    billingWorker,
+    /const processed =[^]*progress\.spendGuardSkipped/,
+  )
+  assert.match(billingWorker, /processedDelta: processed - reportedProcessed/)
   assert.match(billingWorker, /await control\.recordObservation/)
 })
 

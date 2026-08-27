@@ -81,7 +81,10 @@ const SUCCESS: ReauditItemResult = {
   },
 }
 
-function manualPool(options: { latestAuditRunId?: string | null } = {}) {
+function manualPool(options: {
+  latestAuditRunId?: string | null
+  itemStatus?: 'queued' | 'processing' | 'completed'
+} = {}) {
   const statements: Array<{ sql: string; parameters: unknown[] }> = []
   let committed = 0
   let rolledBack = 0
@@ -103,6 +106,9 @@ function manualPool(options: { latestAuditRunId?: string | null } = {}) {
       }
       if (/SELECT audio_attempt_count/.test(sql)) {
         return [[{ audio_attempt_count: 1 }]]
+      }
+      if (/SELECT status\s+FROM kaudit_billing_reaudit_item/.test(sql)) {
+        return [[{ status: options.itemStatus ?? 'queued' }]]
       }
       if (/^SELECT/.test(sql.trim())) return [[]]
       return [{ affectedRows: 1 }]
@@ -150,6 +156,14 @@ test('an unchanged baseline is claimed without touching the intake pipeline', as
     String(fixture.find(/SELECT latest_audit_run_id/)?.sql),
     /FOR UPDATE/,
   )
+  assert.match(
+    String(fixture.find(/UPDATE kaudit_billing_reaudit_item/)?.sql),
+    /status = 'processing'/,
+  )
+  assert.match(
+    String(fixture.find(/UPDATE kaudit_billing_reaudit_request/)?.sql),
+    /status = 'running'/,
+  )
   // Nothing about the call, its artifact, or its current result is changed.
   assert.equal(fixture.all(/UPDATE kaudit_call/).length, 0)
 })
@@ -167,14 +181,31 @@ test('a call that moved on since selection is skipped, never re-audited', async 
   const outcome = await manualRepo(fixture).markStarted(candidate, new Date(0))
 
   assert.equal(outcome, 'already_completed')
-  const settle = fixture.find(/UPDATE kaudit_billing_reaudit_item/)
+  const settle = fixture
+    .all(/UPDATE kaudit_billing_reaudit_item/)
+    .find((entry) => entry.parameters[0] === 'skipped')
   assert.equal(settle?.parameters[0], 'skipped')
   assert.equal(settle?.parameters[2], null)
   assert.equal(fixture.committed(), 1)
 })
 
+test('a processing item is a recovery and does not consume another attempt', async () => {
+  const fixture = manualPool({ itemStatus: 'processing' })
+  assert.equal(
+    await manualRepo(fixture).markStarted(candidate, new Date(0)),
+    'acquired',
+  )
+  assert.equal(
+    fixture.all(/attempt_count = attempt_count \+ 1/).length,
+    0,
+  )
+})
+
 test('persist re-checks the baseline and discards a stale answer', async () => {
-  const fixture = manualPool({ latestAuditRunId: 'run-synthetic-newer' })
+  const fixture = manualPool({
+    latestAuditRunId: 'run-synthetic-newer',
+    itemStatus: 'processing',
+  })
   const outcome = await manualRepo(fixture).persist(
     candidate,
     SUCCESS,
@@ -192,7 +223,7 @@ test('persist re-checks the baseline and discards a stale answer', async () => {
 })
 
 test('a successful requested re-audit appends a run and advances the pointer', async () => {
-  const fixture = manualPool()
+  const fixture = manualPool({ itemStatus: 'processing' })
   const outcome = await manualRepo(fixture).persist(
     candidate,
     SUCCESS,
@@ -216,7 +247,7 @@ test('a successful requested re-audit appends a run and advances the pointer', a
 })
 
 test('a same-ruleset rerun gets its own outbox identity', async () => {
-  const fixture = manualPool()
+  const fixture = manualPool({ itemStatus: 'processing' })
   await manualRepo(fixture).persist(candidate, SUCCESS, new Date(0))
   const message = fixture.find(/INSERT INTO kaudit_outbox_message/)
   const messageId = String(message?.parameters[1])
@@ -225,7 +256,7 @@ test('a same-ruleset rerun gets its own outbox identity', async () => {
 
   // The same call, evidence and ruleset re-run under a DIFFERENT queue item
   // produces a different message, so the two never collide.
-  const second = manualPool()
+  const second = manualPool({ itemStatus: 'processing' })
   await manualRepo(second).persist(
     {
       ...candidate,
@@ -244,7 +275,7 @@ test('a same-ruleset rerun gets its own outbox identity', async () => {
 })
 
 test('a failed requested re-audit records history and keeps the prior result', async () => {
-  const fixture = manualPool()
+  const fixture = manualPool({ itemStatus: 'processing' })
   const outcome = await manualRepo(fixture).persist(
     candidate,
     {
@@ -271,6 +302,23 @@ test('a failed requested re-audit records history and keeps the prior result', a
   const settle = fixture.find(/UPDATE kaudit_billing_reaudit_item/)
   assert.equal(settle?.parameters[0], 'failed')
   assert.equal(settle?.parameters[2], 'CLASSIFIER_OUTPUT_INVALID')
+})
+
+test('persist refuses a queue item already terminalized by recovery', async () => {
+  const fixture = manualPool({ itemStatus: 'completed' })
+  const outcome = await manualRepo(fixture).persist(
+    candidate,
+    SUCCESS,
+    new Date(0),
+  )
+
+  assert.equal(outcome, 'already_completed')
+  assert.equal(fixture.committed(), 1)
+  assert.match(
+    String(fixture.find(/SELECT status\s+FROM kaudit_billing_reaudit_item/)?.sql),
+    /FOR UPDATE/,
+  )
+  assert.equal(fixture.all(/INSERT INTO kaudit_audit_run/).length, 0)
 })
 
 test('an unclaimed candidate is refused rather than audited unaccounted for', async () => {

@@ -57,6 +57,7 @@ import {
   type UserAdministrationPort,
 } from '../identity/userAdministration.ts'
 import type { CycleImportService } from '../imports/types.ts'
+import { UsageImportValidationError } from '../imports/types.ts'
 import type { ImportAnalysisService } from '../imports/analysis.ts'
 import { verifyGasImportSignature } from '../imports/gasImportAuth.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
@@ -438,6 +439,8 @@ function problem(
   correlation: string,
   /** Extra response headers; used to clear a cookie while refusing. */
   headers: Record<string, string | string[]> = {},
+  /** Extra bounded JSON body members; only ever allowlisted descriptors. */
+  details: Record<string, unknown> = {},
 ): void {
   response.writeHead(status, {
     ...JSON_SECURITY_HEADERS,
@@ -455,6 +458,7 @@ function problem(
       status,
       code,
       correlationId: correlation,
+      ...details,
     }),
   )
 }
@@ -1926,17 +1930,18 @@ function timingOperation(pathname: string): string {
 interface ApiCacheEntry {
   expiresAt: number
   value: Promise<unknown>
+  inFlight: boolean
 }
 
 function pruneApiCache(cache: Map<string, ApiCacheEntry>): void {
   const now = Date.now()
   for (const [key, entry] of cache) {
-    if (entry.expiresAt <= now) cache.delete(key)
+    if (!entry.inFlight && entry.expiresAt <= now) cache.delete(key)
   }
   while (cache.size >= 200) {
-    const oldest = cache.keys().next()
-    if (oldest.done) break
-    cache.delete(oldest.value)
+    const oldestSettled = [...cache].find(([, entry]) => !entry.inFlight)
+    if (!oldestSettled) break
+    cache.delete(oldestSettled[0])
   }
 }
 
@@ -1950,7 +1955,13 @@ function cacheTtlMs(pathname: string): number {
   // Rule administration must read its own writes: a cached version list would
   // hide the snapshot an administrator just created.
   if (pathname === CALL_AUDIT_SETTINGS_ROUTE) return 0
-  if (pathname === '/api/v1/audit-workers') return 0
+  // The worker monitor is polled repeatedly, including by serverless
+  // instances whose polls each open their own database connections. A short
+  // bounded TTL coalesces overlapping/slow polls per instance — one DB read
+  // per window instead of one per poller — while keeping the view within a
+  // few seconds of the live worker state. Control-plane WRITES stay
+  // uncached below; only this read is bounded.
+  if (pathname === '/api/v1/audit-workers') return 3_000
   // Money reads its own writes. A cached settlement would let one
   // administrator save a correction and another keep seeing the superseded
   // amount as "finally paid" for the rest of the window.
@@ -1983,7 +1994,7 @@ async function cachedApiResponse(
   }
   const key = `${context.user.roles.slice().sort().join(',')}:${url.pathname}${url.search}`
   const existing = cache.get(key)
-  if (existing && existing.expiresAt > Date.now()) {
+  if (existing && (existing.inFlight || existing.expiresAt > Date.now())) {
     recordApiCache('hit')
     return existing.value
   }
@@ -1993,9 +2004,16 @@ async function cachedApiResponse(
   cache.set(key, {
     expiresAt: Date.now() + ttl,
     value,
+    inFlight: true,
   })
   try {
-    return await value
+    const body = await value
+    const refreshed = cache.get(key)
+    if (refreshed?.value === value) {
+      refreshed.inFlight = false
+      refreshed.expiresAt = Date.now() + ttl
+    }
+    return body
   } catch (error) {
     cache.delete(key)
     throw error
@@ -3292,6 +3310,23 @@ export function createEnterpriseDashboardServer(
               ? 'User account change was refused'
               : 'User administration is temporarily unavailable',
           correlation,
+        )
+      } else if (error instanceof UsageImportValidationError) {
+        /**
+         * A refused usage batch names its invalid rows and nothing else:
+         * batch-relative row index, canonical field name, allowlisted code.
+         * The offending cell value never leaves the server, so the importer
+         * can mark exactly those source rows for review and resubmit the
+         * valid remainder without the response leaking a single value.
+         */
+        problem(
+          response,
+          error.status,
+          error.code,
+          'Usage batch contains rows that cannot be imported',
+          correlation,
+          {},
+          { issues: error.issues },
         )
       } else {
         const unavailableTitle =

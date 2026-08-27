@@ -1,5 +1,5 @@
-import assert from 'node:assert/strict'
 import { test } from 'node:test'
+import assert from 'node:assert/strict'
 import type { Pool, PoolConnection } from 'mysql2/promise'
 import {
   createMysqlCycleImportService,
@@ -53,7 +53,10 @@ test('usage imports write canonical tables in bounded 500-row bulk statements', 
   } as unknown as PoolConnection
   const pool = {
     async execute() {
-      return [[{ id: 'source-synthetic', vendor_account_id: 'vendor-synthetic' }], []]
+      return [[{
+        id: 'source-synthetic',
+        vendor_account_id: 'vendor-synthetic',
+      }], []]
     },
     async getConnection() { return connection },
   } as unknown as Pool
@@ -88,7 +91,10 @@ test('usage imports write canonical tables in bounded 500-row bulk statements', 
 
   const duplicateReads = statements.filter((item) =>
     item.sql.includes('FROM kaudit_call_external_reference'))
-  assert.deepEqual(duplicateReads.map((item) => item.values.length), [500, 500, 1])
+  assert.deepEqual(
+    duplicateReads.map((item) => item.values.length),
+    [500, 500, 1],
+  )
 
   for (const table of [
     'kaudit_call\n',
@@ -99,7 +105,8 @@ test('usage imports write canonical tables in bounded 500-row bulk statements', 
     'kaudit_outbox_message',
   ]) {
     assert.equal(
-      statements.filter((item) => item.sql.includes(`INSERT INTO ${table}`)).length,
+      statements.filter((item) =>
+        item.sql.includes(`INSERT INTO ${table}`)).length,
       3,
       table,
     )
