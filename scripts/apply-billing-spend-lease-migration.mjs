@@ -26,6 +26,16 @@ const EXPECTED_INDEXES = new Map([
   ['idx_billing_spend_lease_expiry', ['status', 'lease_expires_at']],
 ])
 
+function columnTypeMatches(name, actual, expected) {
+  if (name === 'attempt_count') {
+    return /^int(?:\(\d+\))? unsigned$/.test(actual)
+  }
+  if (name === 'staged_result_json') {
+    return actual === 'json' || actual === 'longtext'
+  }
+  return actual === expected
+}
+
 function required(name) {
   const value = process.env[name]?.trim()
   if (!value) {
@@ -80,7 +90,8 @@ async function tableNames(connection) {
   return new Set(rows.map((row) => row.TABLE_NAME))
 }
 
-async function verifySchema(connection) {
+async function verifySchema(connection, setStage, setDetail) {
+  setStage('verify-columns')
   const [columns] = await connection.execute(
     `SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
        FROM information_schema.COLUMNS
@@ -88,20 +99,28 @@ async function verifySchema(connection) {
         AND TABLE_NAME = ?`,
     [TABLE],
   )
-  if (columns.length !== EXPECTED_COLUMNS.size) {
-    throw new Error('unexpected:columns')
-  }
+  const actualColumns = new Map(columns.map((row) => [row.COLUMN_NAME, row]))
+  const missing = []
+  const mismatched = []
   for (const row of columns) {
     const expected = EXPECTED_COLUMNS.get(row.COLUMN_NAME)
-    if (
-      !expected ||
-      row.COLUMN_TYPE.toLowerCase() !== expected[0] ||
+    if (expected && (
+      !columnTypeMatches(row.COLUMN_NAME, row.COLUMN_TYPE.toLowerCase(), expected[0]) ||
       row.IS_NULLABLE !== expected[1]
-    ) {
-      throw new Error('unexpected:columns')
+    )) {
+      mismatched.push(row.COLUMN_NAME)
     }
   }
+  for (const name of EXPECTED_COLUMNS.keys()) {
+    if (!actualColumns.has(name)) missing.push(name)
+  }
+  const unexpectedCount = columns.length - (EXPECTED_COLUMNS.size - missing.length)
+  if (missing.length || mismatched.length || unexpectedCount !== 0) {
+    setDetail({ reason: 'shape', missing, mismatched, unexpectedCount })
+    throw new Error('unexpected:columns')
+  }
 
+  setStage('verify-indexes')
   const [indexes] = await connection.execute(
     `SELECT INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME
        FROM information_schema.STATISTICS
@@ -124,6 +143,7 @@ async function verifySchema(connection) {
     }
   }
 
+  setStage('verify-constraints')
   const [constraints] = await connection.execute(
     `SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE
        FROM information_schema.TABLE_CONSTRAINTS
@@ -142,6 +162,7 @@ async function verifySchema(connection) {
     throw new Error('unexpected:constraints')
   }
 
+  setStage('verify-foreign-key')
   const [foreignKeys] = await connection.execute(
     `SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
        FROM information_schema.KEY_COLUMN_USAGE
@@ -159,6 +180,7 @@ async function verifySchema(connection) {
     throw new Error('unexpected:foreign-key')
   }
 
+  setStage('verify-check')
   const [checks] = await connection.execute(
     `SELECT CHECK_CLAUSE
        FROM information_schema.CHECK_CONSTRAINTS
@@ -173,15 +195,43 @@ async function verifySchema(connection) {
   if (checks.length !== 1 || checkClause !== 'attempt_count=1') {
     throw new Error('unexpected:check-clause')
   }
+
+  const stagedResultType = actualColumns
+    .get('staged_result_json')
+    ?.COLUMN_TYPE.toLowerCase()
+  if (stagedResultType === 'longtext') {
+    const [jsonChecks] = await connection.execute(
+      `SELECT CHECK_CLAUSE
+         FROM information_schema.CHECK_CONSTRAINTS
+        WHERE CONSTRAINT_SCHEMA = DATABASE()
+          AND TABLE_NAME = ?`,
+      [TABLE],
+    )
+    const hasJsonCheck = jsonChecks.some((row) => (
+      String(row.CHECK_CLAUSE ?? '')
+        .toLowerCase()
+        .replaceAll('`', '')
+        .replaceAll(' ', '')
+        .replaceAll('(', '')
+        .replaceAll(')', '') === 'json_validstaged_result_json'
+    ))
+    if (!hasJsonCheck) {
+      throw new Error('unexpected:json-check')
+    }
+  }
 }
 
 let connection
+let stage = 'confirmation'
+let detail
 try {
   if (process.env.KAUDIT_MIGRATION_CONFIRM !== 'APPLY_0017') {
     throw new Error('confirmation:required')
   }
 
+  stage = 'connect'
   connection = await mysql.createConnection(connectionOptions())
+  stage = 'prerequisite'
   const before = await tableNames(connection)
   if (!before.has(PREREQUISITE_TABLE)) {
     throw new Error('missing:prerequisite')
@@ -189,13 +239,23 @@ try {
 
   let result = 'already-applied'
   if (!before.has(TABLE)) {
+    stage = 'apply'
     const migration = await fs.readFile(MIGRATION_PATH, 'utf8')
     await connection.query(migration)
     result = 'applied-empty'
   }
 
-  await verifySchema(connection)
+  await verifySchema(
+    connection,
+    (nextStage) => {
+      stage = nextStage
+    },
+    (nextDetail) => {
+      detail = nextDetail
+    },
+  )
   if (result === 'applied-empty') {
+    stage = 'verify-empty'
     const [rows] = await connection.query(
       'SELECT COUNT(*) AS row_count FROM kaudit_billing_spend_lease',
     )
@@ -205,7 +265,12 @@ try {
   }
   console.log(JSON.stringify({ migration: '0017', result }))
 } catch {
-  console.error(JSON.stringify({ migration: '0017', result: 'failed' }))
+  console.error(JSON.stringify({
+    migration: '0017',
+    result: 'failed',
+    stage,
+    ...(detail ? { detail } : {}),
+  }))
   process.exitCode = 1
 } finally {
   if (connection) {
