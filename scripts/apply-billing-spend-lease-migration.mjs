@@ -80,7 +80,7 @@ async function tableNames(connection) {
   return new Set(rows.map((row) => row.TABLE_NAME))
 }
 
-async function verifySchema(connection, setStage) {
+async function verifySchema(connection, setStage, setDetail) {
   setStage('verify-columns')
   const [columns] = await connection.execute(
     `SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
@@ -89,18 +89,24 @@ async function verifySchema(connection, setStage) {
         AND TABLE_NAME = ?`,
     [TABLE],
   )
-  if (columns.length !== EXPECTED_COLUMNS.size) {
-    throw new Error('unexpected:columns')
-  }
+  const actualColumns = new Map(columns.map((row) => [row.COLUMN_NAME, row]))
+  const missing = []
+  const mismatched = []
   for (const row of columns) {
     const expected = EXPECTED_COLUMNS.get(row.COLUMN_NAME)
-    if (
-      !expected ||
-      row.COLUMN_TYPE.toLowerCase() !== expected[0] ||
-      row.IS_NULLABLE !== expected[1]
-    ) {
-      throw new Error('unexpected:columns')
+    if (expected && (
+      row.COLUMN_TYPE.toLowerCase() !== expected[0] || row.IS_NULLABLE !== expected[1]
+    )) {
+      mismatched.push(row.COLUMN_NAME)
     }
+  }
+  for (const name of EXPECTED_COLUMNS.keys()) {
+    if (!actualColumns.has(name)) missing.push(name)
+  }
+  const unexpectedCount = columns.length - (EXPECTED_COLUMNS.size - missing.length)
+  if (missing.length || mismatched.length || unexpectedCount !== 0) {
+    setDetail({ reason: 'shape', missing, mismatched, unexpectedCount })
+    throw new Error('unexpected:columns')
   }
 
   setStage('verify-indexes')
@@ -182,6 +188,7 @@ async function verifySchema(connection, setStage) {
 
 let connection
 let stage = 'confirmation'
+let detail
 try {
   if (process.env.KAUDIT_MIGRATION_CONFIRM !== 'APPLY_0017') {
     throw new Error('confirmation:required')
@@ -203,9 +210,15 @@ try {
     result = 'applied-empty'
   }
 
-  await verifySchema(connection, (nextStage) => {
-    stage = nextStage
-  })
+  await verifySchema(
+    connection,
+    (nextStage) => {
+      stage = nextStage
+    },
+    (nextDetail) => {
+      detail = nextDetail
+    },
+  )
   if (result === 'applied-empty') {
     stage = 'verify-empty'
     const [rows] = await connection.query(
@@ -217,7 +230,12 @@ try {
   }
   console.log(JSON.stringify({ migration: '0017', result }))
 } catch {
-  console.error(JSON.stringify({ migration: '0017', result: 'failed', stage }))
+  console.error(JSON.stringify({
+    migration: '0017',
+    result: 'failed',
+    stage,
+    ...(detail ? { detail } : {}),
+  }))
   process.exitCode = 1
 } finally {
   if (connection) {
