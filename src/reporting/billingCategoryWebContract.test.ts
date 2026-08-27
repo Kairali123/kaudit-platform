@@ -193,6 +193,14 @@ test('every required table column is rendered', async () => {
   // The review action is the existing restricted route, keyed by reference.
   assert.match(source, /\/audits\/call\?task=\$\{encodeURIComponent\(/)
   assert.match(source, /row\.aiAuditRemark \?\? 'No AI remark recorded'/)
+  assert.match(
+    source,
+    /title=\{row\.aiAuditRemark \?\? 'No AI remark recorded'\}/,
+  )
+  const styles = await webSource('styles.css')
+  assert.match(styles, /\.audit-table \.category-audit-remark \{ width: 250px; max-width: 250px; \}/)
+  assert.match(styles, /\.category-audit-remark-text[\s\S]*text-overflow: ellipsis/)
+  assert.equal(styles.includes('.category-table table { min-width: 1800px; }'), false)
 })
 
 test('the footer totals the whole scope and labels what does not apply', async () => {
