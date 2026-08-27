@@ -115,6 +115,8 @@ export interface BillingCategoryCallRow {
   /** Latest classifier confidence as exact decimal text. */
   aiConfidence: string | null
   aiAuditResult: 'Issue found' | 'No issue found'
+  /** Bounded Kaudit-owned rationale from the authoritative latest audit run. */
+  aiAuditRemark: string | null
   /** KServe billed duration minus AI-audited duration. Sign preserved. */
   gapMs: number | null
   /** Presence signal only. The recording reference itself never leaves here. */
@@ -269,6 +271,30 @@ const TASK_REFERENCE_SQL = `
   WHERE ranked.reference_rank = 1
 `
 
+/** Classifier result belonging to the call's authoritative latest audit run. */
+const LATEST_AUDIT_FINDING_SQL = `
+  SELECT
+    ranked.call_id,
+    ranked.confidence,
+    ranked.explanation
+  FROM (
+    SELECT
+      finding.call_id,
+      finding.confidence,
+      finding.explanation,
+      ROW_NUMBER() OVER (
+        PARTITION BY finding.call_id
+        ORDER BY finding.created_at DESC, finding.id DESC
+      ) AS finding_rank
+    FROM kaudit_audit_finding finding
+    JOIN scoped_calls finding_scope
+      ON finding_scope.id = finding.call_id
+     AND finding_scope.latest_audit_run_id = finding.audit_run_id
+     AND finding_scope.canonical_outcome_code = finding.finding_code
+  ) ranked
+  WHERE ranked.finding_rank = 1
+`
+
 /**
  * Both vendor assertions in one scoped provider-cost pass. `MAX(CASE ...)`
  * preserves the revision semantics of the shared KServe read model while
@@ -345,10 +371,12 @@ export function scopedAuditedCallsSql(
   options: {
     includeRecording?: boolean
     includeTaskReference?: boolean
+    includeAuditFinding?: boolean
   } = {},
 ): string {
   const includeRecording = options.includeRecording ?? true
   const includeTaskReference = options.includeTaskReference ?? true
+  const includeAuditFinding = options.includeAuditFinding ?? false
   return `WITH scoped_calls AS (
      SELECT
        c.id,
@@ -356,7 +384,8 @@ export function scopedAuditedCallsSql(
        c.canonical_outcome_code,
        c.billing_period_date,
        c.source_started_at,
-       c.source_ended_at
+       c.source_ended_at,
+       c.latest_audit_run_id
      FROM kaudit_call c
      WHERE ${filters.join('\n       AND ')}
    )
@@ -374,7 +403,10 @@ ${select}
    ) recording ON recording.call_id = c.id` : ''}
    ${includeTaskReference ? `LEFT JOIN (
      ${TASK_REFERENCE_SQL}
-   ) task_reference ON task_reference.call_id = c.id` : ''}`
+   ) task_reference ON task_reference.call_id = c.id` : ''}
+   ${includeAuditFinding ? `LEFT JOIN (
+     ${LATEST_AUDIT_FINDING_SQL}
+   ) audit_finding ON audit_finding.call_id = c.id` : ''}`
 }
 
 function periodFilter(scope: BillingCategoryScope): {
@@ -545,16 +577,11 @@ export function categoryCallsSql(filters: readonly string[]): string {
     COALESCE(recording.recording_available, 0) AS recording_available,
     ${VENDOR_CHARGE_SQL} AS kserve_charge_inr,
     ${AUDITOR_CAPPED_CHARGE_SQL} AS auditor_final_charge_inr,
-    CAST((
-      SELECT finding.confidence
-      FROM kaudit_audit_finding finding
-      WHERE finding.call_id = c.id
-        AND finding.finding_code = c.canonical_outcome_code
-      ORDER BY finding.created_at DESC, finding.id DESC
-      LIMIT 1
-    ) AS CHAR) AS ai_confidence,
+    CAST(audit_finding.confidence AS CHAR) AS ai_confidence,
+    audit_finding.explanation AS ai_audit_remark,
 ${DURATION_COLUMNS_SQL}`,
     filters,
+    { includeAuditFinding: true },
   )}
    ORDER BY call_started_at DESC, call_reference ASC, c.id ASC
    LIMIT ? OFFSET ?`
@@ -591,6 +618,7 @@ interface CallDataRow extends RowDataPacket {
   kserve_charge_inr: number | string | null
   auditor_final_charge_inr: number | string | null
   ai_confidence: number | string | null
+  ai_audit_remark: string | null
   kserve_charge_time_ms: number | string | null
   ai_audited_duration_ms: number | string | null
 }
@@ -601,6 +629,12 @@ function wholeNumber(value: unknown): number {
 
 function nullableWholeNumber(value: unknown): number | null {
   return value == null ? null : Number(value)
+}
+
+function boundedAuditRemark(value: unknown): string | null {
+  if (value == null) return null
+  const remark = String(value).trim()
+  return remark ? remark.slice(0, 1200) : null
 }
 
 /** The database's own decimal text, kept as text. Never parsed to a float. */
@@ -729,6 +763,7 @@ export function toCategoryCallRow(
     aiConfidence:
       row.ai_confidence == null ? null : String(row.ai_confidence),
     aiAuditResult: noIssueFound ? 'No issue found' : 'Issue found',
+    aiAuditRemark: boundedAuditRemark(row.ai_audit_remark),
     gapMs: durationGapMs(kserveChargeTimeMs, aiAuditedDurationMs),
     recordingAvailable: Number(row.recording_available ?? 0) === 1,
   }

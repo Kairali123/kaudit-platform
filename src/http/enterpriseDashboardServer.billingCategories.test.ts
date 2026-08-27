@@ -125,6 +125,7 @@ function callFixture(): BillingCategoryCallRow {
     aiAuditedDurationMs: 121_000,
     aiConfidence: '0.95000000',
     aiAuditResult: 'Issue found',
+    aiAuditRemark: 'Synthetic category rationale.',
     gapMs: 59_000,
     recordingAvailable: true,
     callId: 'SYNTHETIC-INTERNAL-ID-MUST-NOT-LEAK',
