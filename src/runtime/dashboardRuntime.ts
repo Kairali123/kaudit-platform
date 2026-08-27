@@ -14,6 +14,7 @@ import { createMysqlCycleImportService } from '../adapters/mysqlCycleImport.ts'
 import { createLocalImportObjectStore } from '../adapters/localImportObjectStore.ts'
 import { createGoogleDriveImportObjectStore } from '../adapters/googleDriveImportObjectStore.ts'
 import { createImportAnalysisService } from '../imports/analysis.ts'
+import { configuredGasImportSecret } from '../imports/gasImportAuth.ts'
 import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.ts'
 import { createOpenAiCallAuditModel } from '../adapters/openaiCallAuditClient.ts'
 import { resolveDatabaseTls, type CaFileReader } from './databaseTls.ts'
@@ -158,6 +159,7 @@ export function createDashboardRuntime(
       ? createMysqlUserAdministration(pool)
       : undefined
   const allowedRecordingHosts = hostList(env)
+  const gasImportSecret = configuredGasImportSecret(env) ?? undefined
   const importObjectStore =
     options.cycleImports === 'local-disk'
       ? createLocalImportObjectStore(
@@ -252,6 +254,7 @@ export function createDashboardRuntime(
     access,
     audit,
     imports,
+    gasImportSecret,
     importAnalysis,
     recordingFetcher,
     allowedRecordingHosts,

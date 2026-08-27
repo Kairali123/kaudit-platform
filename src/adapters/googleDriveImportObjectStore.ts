@@ -23,10 +23,14 @@ interface AccessToken {
 }
 
 export class GoogleDriveImportStorageError extends Error {
-  readonly code = 'GOOGLE_DRIVE_IMPORT_STORAGE_FAILED'
+  readonly code: string
+  readonly status = 503
 
-  constructor() {
+  constructor(
+    stage: 'CONFIGURATION' | 'TOKEN' | 'LOOKUP' | 'UPLOAD_SESSION' | 'UPLOAD',
+  ) {
     super('Import storage is unavailable')
+    this.code = `GOOGLE_DRIVE_IMPORT_${stage}_FAILED`
   }
 }
 
@@ -91,7 +95,7 @@ export function createGoogleDriveImportObjectStore(
     !configured(config.refreshToken, 4096) ||
     !config.sharedDriveId
   ) {
-    throw new GoogleDriveImportStorageError()
+    throw new GoogleDriveImportStorageError('CONFIGURATION')
   }
   const sharedDriveId = config.sharedDriveId
   const parentId = config.parentId ?? sharedDriveId
@@ -118,7 +122,7 @@ export function createGoogleDriveImportObjectStore(
         body,
       })
     } catch {
-      throw new GoogleDriveImportStorageError()
+      throw new GoogleDriveImportStorageError('TOKEN')
     }
     const data = await safeJson(response)
     const value = typeof data.access_token === 'string'
@@ -132,7 +136,7 @@ export function createGoogleDriveImportObjectStore(
       expiresIn < 60 ||
       expiresIn > 86_400
     ) {
-      throw new GoogleDriveImportStorageError()
+      throw new GoogleDriveImportStorageError('TOKEN')
     }
     cachedToken = {
       value,
@@ -159,10 +163,10 @@ export function createGoogleDriveImportObjectStore(
         },
       })
     } catch {
-      throw new GoogleDriveImportStorageError()
+      throw new GoogleDriveImportStorageError('LOOKUP')
     }
     const data = await safeJson(response)
-    if (!response.ok) throw new GoogleDriveImportStorageError()
+    if (!response.ok) throw new GoogleDriveImportStorageError('LOOKUP')
     return data
   }
 
@@ -182,7 +186,7 @@ export function createGoogleDriveImportObjectStore(
     for (const file of files.slice(0, 2)) {
       if (file && typeof file === 'object') {
         const id = parseId((file as Record<string, unknown>).id)
-        if (!id) throw new GoogleDriveImportStorageError()
+        if (!id) throw new GoogleDriveImportStorageError('LOOKUP')
         return id
       }
     }
@@ -227,10 +231,12 @@ export function createGoogleDriveImportObjectStore(
         }),
       })
     } catch {
-      throw new GoogleDriveImportStorageError()
+      throw new GoogleDriveImportStorageError('UPLOAD_SESSION')
     }
     const location = resumableUrl(session.headers.get('location'))
-    if (!session.ok || !location) throw new GoogleDriveImportStorageError()
+    if (!session.ok || !location) {
+      throw new GoogleDriveImportStorageError('UPLOAD_SESSION')
+    }
     let stored: Response
     try {
       stored = await fetcher(location, {
@@ -244,11 +250,11 @@ export function createGoogleDriveImportObjectStore(
         body: new Uint8Array(bytes),
       })
     } catch {
-      throw new GoogleDriveImportStorageError()
+      throw new GoogleDriveImportStorageError('UPLOAD')
     }
     const data = await safeJson(stored)
     const id = parseId(data.id)
-    if (!stored.ok || !id) throw new GoogleDriveImportStorageError()
+    if (!stored.ok || !id) throw new GoogleDriveImportStorageError('UPLOAD')
     return id
   }
 

@@ -17,6 +17,45 @@ report request never triggers model work.
 The worker does not begin a period until a matching `kaudit_invoice` row is in
 an accepted state. Upload order therefore does not matter.
 
+### Pre-model spend leases (migration 0017)
+
+Before any paid model call, the worker commits a row in
+`kaudit_billing_spend_lease` keyed by the exact work identity (call, artifact,
+evidence hash, ruleset/engine versions, manual queue item). Two overlapping
+runs race on this primary key: exactly one may spend.
+
+- `completed` — results were durably written; the question never re-spends.
+- `released` — the worker proved no model call happened (for example the
+  recording could not be fetched); the ordinary retry policy continues freely.
+- `active` with staged output — an interrupted persistence step. The exclusively
+  locked recovery worker persists the staged Kaudit-owned result instead of
+  calling the model again.
+- `active` with no staged output — ambiguous paid state. Recovery persists a
+  bounded terminal `SPEND_STATE_UNKNOWN` result and never invokes the model.
+- A persistence failure after model completion leaves staged output on the
+  lease, so recovery cannot silently pay twice while persistence is pending.
+
+Temporary staging contains only normalized fields required by the existing
+final audit writer. It excludes URLs, prompts, raw responses/errors, displayed
+references, and monetary projections, and is cleared after final persistence.
+
+### Failure classification
+
+Fatal infrastructure failures are reduced to a lifecycle phase (`claim`,
+`processor`, `persist`, `progress`, `pool_acquisition`) plus ONE allowlisted
+category (`DB_CONNECTION_LIMIT`, `DB_CONNECTION_TIMEOUT`, `DB_LOCK_TIMEOUT`,
+`DB_DEADLOCK`, `DB_CONSTRAINT`, `WORKER_LIFECYCLE`, `DB_UNKNOWN`). Raw driver
+or provider errors are never logged or persisted; the control row records e.g.
+`BILLING_AUDIT_BATCH_FAILED_DB_DEADLOCK`. In-flight items drain after the first
+fatal error, per-item success counts stay accurate even if progress reporting
+fails, and advisory locking (`kaudit-independent-reaudit-v2`) still prevents
+overlapping worker runs.
+
+Concurrency defaults to `KAUDIT_AUDIT_CONCURRENCY=1` with a pool of
+`max(4, concurrency + 2)`. Do not raise it without measured spare database
+capacity; production evidence showed heavy DB latency under parallel runs.
+
+
 ## Call Audit
 
 `npm run callaudit:worker` polls the external source every 60 seconds using
@@ -45,10 +84,16 @@ runtime with:
 - the same least-privilege database and model configuration;
 - durable import storage available before imports are submitted;
 - centralized bounded-code logs and heartbeat monitoring; and
-- migration `0012_automatic_audit_workers.sql` applied before worker startup.
+- migrations `0012_automatic_audit_workers.sql`, `0015_billing_reaudit_requests.sql`,
+  and `0017_billing_spend_lease.sql` applied before worker startup.
 
 Applying the migration, starting either production worker, and selecting the
 worker host are deployment operations, not build steps.
+
+Migration `0017` has a guarded hosted command for supervised installations:
+dispatch the Billing workflow with `mode=migration-0017` and the exact
+confirmation `APPLY_0017`. Apply and verify it as its own operation before any
+repaired Billing worker starts; the migration command never starts a worker.
 
 ## Persistent dashboard control
 

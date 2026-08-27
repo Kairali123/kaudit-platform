@@ -12,6 +12,11 @@ on:
         required: false
         default: new
         type: string
+      migration_confirmation:
+        description: Exact confirmation for a supervised migration mode
+        required: false
+        default: ''
+        type: string
   workflow_dispatch:
     inputs:
       system:
@@ -31,9 +36,10 @@ on:
           - targeted
           - requested
           - migration-0015
+          - migration-0017
           - diagnose-requested
       migration_confirmation:
-        description: Type APPLY_0015 when selecting migration-0015
+        description: Type APPLY_0015 or APPLY_0017 for the matching migration mode
         required: false
         type: string
 
@@ -89,6 +95,12 @@ jobs:
               fi
               KAUDIT_MIGRATION_CONFIRM=APPLY_0015 \
               node scripts/apply-billing-reaudit-migration.mjs
+            elif [[ "$AUDIT_MODE" == "migration-0017" ]]; then
+              if [[ "${{ inputs.migration_confirmation }}" != "APPLY_0017" ]]; then
+                exit 2
+              fi
+              KAUDIT_MIGRATION_CONFIRM=APPLY_0017 \
+              npm run migration:billing-spend-lease
             elif [[ "$AUDIT_MODE" == "targeted" ]]; then
               if [[ -z "$KAUDIT_TARGETED_REAUDIT_SCOPE_B64" ]]; then
                 exit 2
@@ -101,28 +113,29 @@ jobs:
               KAUDIT_AUDIT_REQUIRE_SCOPE=true \
               KAUDIT_AUDIT_REAUDIT_MODE=APPEND \
               KAUDIT_AUDIT_MODE=EXECUTE \
-              KAUDIT_AUDIT_BATCH=100 \
+              KAUDIT_AUDIT_BATCH=1 \
+              KAUDIT_AUDIT_CONCURRENCY=1 \
               KAUDIT_AUDIT_WATCH=false \
               npm run audit:worker
             elif [[ "$AUDIT_MODE" == "requested" ]]; then
               KAUDIT_AUDIT_REQUESTED_MODE=true \
               KAUDIT_AUDIT_MODE=EXECUTE \
               KAUDIT_AUDIT_BATCH=1 \
+              KAUDIT_AUDIT_CONCURRENCY=1 \
               KAUDIT_AUDIT_WATCH=false \
               npm run audit:worker
-            else
+            elif [[ "$AUDIT_MODE" == "new" ]]; then
               KAUDIT_AUDIT_MODE=EXECUTE \
-              KAUDIT_AUDIT_BATCH=10 \
-              KAUDIT_AUDIT_CONCURRENCY=10 \
+              KAUDIT_AUDIT_BATCH=1 \
+              KAUDIT_AUDIT_CONCURRENCY=1 \
               KAUDIT_AUDIT_WATCH=false \
               KAUDIT_AUDIT_DRAIN=true \
               npm run audit:worker
-            fi
-          elif [[ "$AUDIT_SYSTEM" == "call" ]]; then
-            if [[ "$AUDIT_MODE" == "targeted" ]]; then
+            else
               exit 2
             fi
-            if [[ "$AUDIT_MODE" == "requested" ]]; then
+          elif [[ "$AUDIT_SYSTEM" == "call" ]]; then
+            if [[ "$AUDIT_MODE" != "new" ]]; then
               exit 2
             fi
             KAUDIT_CALL_AUDIT_DRAIN=true \

@@ -46,6 +46,7 @@ function productionEnv(): NodeJS.ProcessEnv {
     KAUDIT_GOOGLE_DRIVE_CLIENT_SECRET: 'synthetic-drive-client-secret',
     KAUDIT_GOOGLE_DRIVE_REFRESH_TOKEN: 'synthetic-drive-refresh-token',
     KAUDIT_GOOGLE_DRIVE_SHARED_DRIVE_ID: 'shared_drive_0123456789',
+    KAUDIT_GAS_IMPORT_SECRET: 'synthetic-gas-import-secret-32-characters',
   }
 }
 
