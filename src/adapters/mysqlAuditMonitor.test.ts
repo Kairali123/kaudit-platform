@@ -488,6 +488,24 @@ test('a row with no re-audit lifecycle reports null rather than a stale word', a
   assert.match(lookup, /NOT EXISTS \(/)
 })
 
+test('no-recording pagination happens before optional metadata joins', async () => {
+  const fake = fakePool([
+    { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },
+    { match: 'grace_adjusted_duration_ms', rows: [AUDITED_ROW] },
+  ])
+  await collectAuditMonitor(fake.pool, QUERY)
+
+  const noRecordingQuery = fake.find("'no_recording'") ?? ''
+  assert.match(
+    noRecordingQuery,
+    /FROM \(\s*SELECT[\s\S]*?FROM kaudit_call c[\s\S]*?LIMIT \? OFFSET \?\s*\) c\s*LEFT JOIN kaudit_call_artifact/,
+  )
+  assert.doesNotMatch(
+    noRecordingQuery,
+    /LEFT JOIN kaudit_billing_calculation[\s\S]*?LIMIT \? OFFSET \?/,
+  )
+})
+
 test('an unapplied re-audit migration still renders the audited rows', async () => {
   const fake = fakePool(
     [
