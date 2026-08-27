@@ -19,7 +19,7 @@ test('spend lease migration command requires explicit 0017 confirmation', () => 
   assert.equal(result.stdout, '')
   assert.equal(
     result.stderr.trim(),
-    JSON.stringify({ migration: '0017', result: 'failed' }),
+    JSON.stringify({ migration: '0017', result: 'failed', stage: 'confirmation' }),
   )
 })
 
@@ -33,5 +33,6 @@ test('spend lease migration command verifies the complete schema contract', () =
   assert.match(command, /information_schema\.CHECK_CONSTRAINTS/)
   assert.match(command, /chk_billing_spend_lease_attempts/)
   assert.match(command, /fk_billing_spend_lease_manual_item/)
+  assert.match(command, /setStage\('verify-check'\)/)
   assert.doesNotMatch(command, /console\.(?:error|log)\([^\n]*error/i)
 })

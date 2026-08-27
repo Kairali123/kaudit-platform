@@ -80,7 +80,8 @@ async function tableNames(connection) {
   return new Set(rows.map((row) => row.TABLE_NAME))
 }
 
-async function verifySchema(connection) {
+async function verifySchema(connection, setStage) {
+  setStage('verify-columns')
   const [columns] = await connection.execute(
     `SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE
        FROM information_schema.COLUMNS
@@ -102,6 +103,7 @@ async function verifySchema(connection) {
     }
   }
 
+  setStage('verify-indexes')
   const [indexes] = await connection.execute(
     `SELECT INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME
        FROM information_schema.STATISTICS
@@ -124,6 +126,7 @@ async function verifySchema(connection) {
     }
   }
 
+  setStage('verify-constraints')
   const [constraints] = await connection.execute(
     `SELECT CONSTRAINT_NAME, CONSTRAINT_TYPE
        FROM information_schema.TABLE_CONSTRAINTS
@@ -142,6 +145,7 @@ async function verifySchema(connection) {
     throw new Error('unexpected:constraints')
   }
 
+  setStage('verify-foreign-key')
   const [foreignKeys] = await connection.execute(
     `SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
        FROM information_schema.KEY_COLUMN_USAGE
@@ -159,6 +163,7 @@ async function verifySchema(connection) {
     throw new Error('unexpected:foreign-key')
   }
 
+  setStage('verify-check')
   const [checks] = await connection.execute(
     `SELECT CHECK_CLAUSE
        FROM information_schema.CHECK_CONSTRAINTS
@@ -176,12 +181,15 @@ async function verifySchema(connection) {
 }
 
 let connection
+let stage = 'confirmation'
 try {
   if (process.env.KAUDIT_MIGRATION_CONFIRM !== 'APPLY_0017') {
     throw new Error('confirmation:required')
   }
 
+  stage = 'connect'
   connection = await mysql.createConnection(connectionOptions())
+  stage = 'prerequisite'
   const before = await tableNames(connection)
   if (!before.has(PREREQUISITE_TABLE)) {
     throw new Error('missing:prerequisite')
@@ -189,13 +197,17 @@ try {
 
   let result = 'already-applied'
   if (!before.has(TABLE)) {
+    stage = 'apply'
     const migration = await fs.readFile(MIGRATION_PATH, 'utf8')
     await connection.query(migration)
     result = 'applied-empty'
   }
 
-  await verifySchema(connection)
+  await verifySchema(connection, (nextStage) => {
+    stage = nextStage
+  })
   if (result === 'applied-empty') {
+    stage = 'verify-empty'
     const [rows] = await connection.query(
       'SELECT COUNT(*) AS row_count FROM kaudit_billing_spend_lease',
     )
@@ -205,7 +217,7 @@ try {
   }
   console.log(JSON.stringify({ migration: '0017', result }))
 } catch {
-  console.error(JSON.stringify({ migration: '0017', result: 'failed' }))
+  console.error(JSON.stringify({ migration: '0017', result: 'failed', stage }))
   process.exitCode = 1
 } finally {
   if (connection) {
