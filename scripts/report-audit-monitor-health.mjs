@@ -93,9 +93,23 @@ try {
         return async (...args) => {
           const stage = QUERY_STAGES[queryIndex] ?? 'unexpected-query'
           queryIndex += 1
+          const queryStartedAt = Date.now()
           try {
-            return await target.query(...args)
+            const result = await target.query(...args)
+            console.log(JSON.stringify({
+              operation: 'audit-monitor-query',
+              result: 'ok',
+              stage,
+              elapsed: elapsedBucket(queryStartedAt),
+            }))
+            return result
           } catch {
+            console.error(JSON.stringify({
+              operation: 'audit-monitor-query',
+              result: 'failed',
+              stage,
+              elapsed: elapsedBucket(queryStartedAt),
+            }))
             throw new MonitorQueryFailure(stage)
           }
         }
