@@ -428,6 +428,7 @@ export interface BillingCategoryCall {
   auditorFinalChargeInr: string | null
   aiConfidence: string | null
   aiAuditResult: 'Issue found' | 'No issue found'
+  aiAuditRemark: string | null
   gapMs: number | null
   gapMinutes: string | null
   /** Presence signal for the review action; never a recording reference. */
