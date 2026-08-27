@@ -185,13 +185,14 @@ test('every required table column is rendered', async () => {
     'AI Audit Time',
     'Gap',
     'AI Confidence',
-    'AI Audit Result',
+    'AI Audit Remark',
     'Recording / admin review',
   ]) {
     assert.ok(source.includes(`<th>${column}</th>`), column)
   }
   // The review action is the existing restricted route, keyed by reference.
   assert.match(source, /\/audits\/call\?task=\$\{encodeURIComponent\(/)
+  assert.match(source, /row\.aiAuditRemark \?\? 'No AI remark recorded'/)
 })
 
 test('the footer totals the whole scope and labels what does not apply', async () => {
@@ -327,6 +328,7 @@ test('the client type keeps money as text and durations as metadata', async () =
   assert.match(source, /auditorFinalChargeInr: string \| null/)
   assert.match(source, /aiConfidence: string \| null/)
   assert.match(source, /aiAuditResult: 'Issue found' \| 'No issue found'/)
+  assert.match(source, /aiAuditRemark: string \| null/)
   assert.match(source, /recordingAvailable: boolean/)
   // No client-side field could carry evidence or an internal identifier.
   const shape = source.slice(

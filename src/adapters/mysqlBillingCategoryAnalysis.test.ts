@@ -80,6 +80,9 @@ interface SyntheticCall {
   /** Several task references, in insertion order, with explicit ids. */
   taskReferences?: SyntheticTaskReference[]
   confirmationStatus?: 'confirmed' | 'rejected' | 'model_output' | null
+  auditRemark?: string | null
+  /** A non-authoritative finding deliberately newer than the latest audit run. */
+  staleAuditRemark?: string
   /**
    * Explicit artifacts. When present these REPLACE the single default
    * artifact, so a fixture can attach evidence to a chosen artifact.
@@ -103,7 +106,8 @@ const SCHEMA = `
     canonical_outcome_code TEXT,
     billing_period_date TEXT,
     source_started_at TEXT,
-    source_ended_at TEXT
+    source_ended_at TEXT,
+    latest_audit_run_id TEXT
   );
   CREATE TABLE kaudit_call_artifact (
     id TEXT PRIMARY KEY,
@@ -151,10 +155,12 @@ const SCHEMA = `
   );
   CREATE TABLE kaudit_audit_finding (
     id TEXT PRIMARY KEY,
+    audit_run_id TEXT NOT NULL,
     call_id TEXT NOT NULL,
     finding_code TEXT NOT NULL,
     confirmation_status TEXT NOT NULL,
     confidence TEXT,
+    explanation TEXT,
     created_at TEXT NOT NULL
   );
 `
@@ -228,8 +234,9 @@ function synthetic(fixture: {
     db.prepare(
       `INSERT INTO kaudit_call
          (id, logical_call_key, canonical_outcome_code,
-          billing_period_date, source_started_at, source_ended_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+          billing_period_date, source_started_at, source_ended_at,
+          latest_audit_run_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     ).run(
       call.id,
       `synthetic-key:${call.id}`,
@@ -237,19 +244,37 @@ function synthetic(fixture: {
       call.billingPeriodDate,
       call.startedAt ?? null,
       call.endedAt ?? null,
+      call.category === null ? null : `run-latest-${call.id}`,
     )
     if (call.category !== null && call.confirmationStatus !== null) {
       db.prepare(
         `INSERT INTO kaudit_audit_finding
-           (id, call_id, finding_code, confirmation_status, confidence,
-            created_at)
-         VALUES (?, ?, ?, ?, '0.95000000', '2026-08-03 00:00:00')`,
+           (id, audit_run_id, call_id, finding_code, confirmation_status,
+            confidence, explanation, created_at)
+         VALUES (?, ?, ?, ?, ?, '0.95000000', ?, '2026-08-03 00:00:00')`,
       ).run(
         `finding-${call.id}`,
+        `run-latest-${call.id}`,
         call.id,
         call.category,
         call.confirmationStatus ?? 'confirmed',
+        call.auditRemark ?? 'Synthetic category rationale.',
       )
+      if (call.staleAuditRemark) {
+        db.prepare(
+          `INSERT INTO kaudit_audit_finding
+             (id, audit_run_id, call_id, finding_code, confirmation_status,
+              confidence, explanation, created_at)
+           VALUES (?, ?, ?, ?, 'confirmed', '0.10000000', ?,
+                   '2026-08-04 00:00:00')`,
+        ).run(
+          `finding-stale-${call.id}`,
+          `run-stale-${call.id}`,
+          call.id,
+          call.category,
+          call.staleAuditRemark,
+        )
+      }
     }
     for (const artifact of artifactsOf(call)) {
       db.prepare(
@@ -400,6 +425,7 @@ const AUDITED_CALL: SyntheticCall = {
   conversationEndMs: 61_000,
   recordingUrl: 'https://synthetic.invalid/recording',
   taskReference: 'SYNTHETIC-TASK-1',
+  auditRemark: 'Synthetic observable behavior matches product enquiry.',
 }
 
 // ---------------------------------------------------------------------------
@@ -775,6 +801,10 @@ test('a row carries the approved table facts only', () => {
   assert.equal(Number(row.auditorFinalChargeInr), 28.5)
   assert.equal(row.aiConfidence, '0.95000000')
   assert.equal(row.aiAuditResult, 'Issue found')
+  assert.equal(
+    row.aiAuditRemark,
+    'Synthetic observable behavior matches product enquiry.',
+  )
   assert.equal(row.gapMs, 59_000)
   assert.equal(row.recordingAvailable, true)
   // Nothing that identifies evidence or an internal record is on the row.
@@ -789,6 +819,20 @@ test('a row carries the approved table facts only', () => {
   ]) {
     assert.equal(forbidden in row, false, `${forbidden} must not be returned`)
   }
+})
+
+test('the remark and confidence come only from the authoritative latest audit run', () => {
+  const [row] = callsOf({
+    calls: [
+      {
+        ...AUDITED_CALL,
+        auditRemark: 'Authoritative synthetic rationale.',
+        staleAuditRemark: 'Non-authoritative synthetic rationale.',
+      },
+    ],
+  })
+  assert.equal(row.aiAuditRemark, 'Authoritative synthetic rationale.')
+  assert.equal(row.aiConfidence, '0.95000000')
 })
 
 test('a driver Date is read back as the same wall clock, not re-zoned', () => {
@@ -1066,7 +1110,9 @@ test('shared evidence relations are joined once and confidence is read once', ()
   assert.equal(sql.match(/kaudit_media_analysis/g)?.length, 1)
   assert.equal(sql.match(/kaudit_transcript/g)?.length, 1)
   assert.equal(sql.match(/kaudit_billing_calculation/g)?.length ?? 0, 0)
-  assert.equal(sql.match(/SELECT finding\.confidence/g)?.length, 1)
+  assert.equal(sql.match(/finding\.confidence/g)?.length, 2)
+  assert.equal(sql.match(/finding\.explanation/g)?.length, 2)
+  assert.equal(sql.match(/kaudit_audit_finding/g)?.length, 1)
 })
 
 test('No Recording starts from grouped vendor facts before the month join', () => {
