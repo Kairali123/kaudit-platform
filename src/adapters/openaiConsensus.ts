@@ -11,12 +11,13 @@ import type {
 import { REAUDIT_CATEGORIES } from '../reaudit/types.ts'
 import {
   REAUDIT_CLASSIFICATION_MODEL,
+  REAUDIT_DECISION_SIGNAL_RULES,
   REAUDIT_KAIRALI_REFERENCE_RULES,
   REAUDIT_SPEAKER_ATTRIBUTION_RULES,
 } from './openaiReaudit.ts'
 
 export const CONSENSUS_REVIEWER_VERSION =
-  'kairali-independent-consensus-review/1.2.0'
+  'kairali-independent-consensus-review/1.3.0'
 
 export const CONSENSUS_REVIEWER_PROMPT = `You are an independent automated
 verification pass for Kairali's call-audit system. Review the timestamped,
@@ -33,7 +34,9 @@ ambiguous, lower confidence and mark unclear blocks.
 
 ${REAUDIT_SPEAKER_ATTRIBUTION_RULES}
 
-${REAUDIT_KAIRALI_REFERENCE_RULES}`
+${REAUDIT_KAIRALI_REFERENCE_RULES}
+
+${REAUDIT_DECISION_SIGNAL_RULES}`
 
 export const CONSENSUS_REVIEWER_RULESET_SHA256 =
   canonicalJsonSha256({
@@ -41,7 +44,7 @@ export const CONSENSUS_REVIEWER_RULESET_SHA256 =
     model: REAUDIT_CLASSIFICATION_MODEL,
     prompt: CONSENSUS_REVIEWER_PROMPT,
     categories: REAUDIT_CATEGORIES,
-    outputSchemaVersion: '2',
+    outputSchemaVersion: '3',
   } as unknown as JsonValue)
 
 export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
@@ -61,6 +64,33 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
         type: 'array',
         items: { type: 'integer', minimum: 1 },
       },
+      counterparty_type: {
+        type: 'string',
+        enum: [
+          'human',
+          'voicemail',
+          'interactive_automation',
+          'no_response',
+          'unclear',
+        ],
+      },
+      agent_handling: {
+        type: 'string',
+        enum: ['normal', 'failed', 'unclear'],
+      },
+      conversation_outcome: {
+        type: 'string',
+        enum: ['successful', 'no_outcome', 'unclear'],
+      },
+      duration_outcome: {
+        type: 'string',
+        enum: [
+          'appropriate',
+          'ended_too_early',
+          'continued_without_value',
+          'unclear',
+        ],
+      },
       remarks: { type: 'string', maxLength: 1200 },
       dispute_recommended: { type: 'boolean' },
     },
@@ -69,6 +99,10 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
       'confidence',
       'customer_block_numbers',
       'unclear_block_numbers',
+      'counterparty_type',
+      'agent_handling',
+      'conversation_outcome',
+      'duration_outcome',
       'remarks',
       'dispute_recommended',
     ],
@@ -82,6 +116,7 @@ export function createOpenAiConsensusReviewer(apiKey: string): {
     recordedDurationMs: number
     speechDurationMs: number
     connectedDurationMs: number | null
+    durationMismatch: boolean
   }): Promise<ModelClassification>
 } {
   if (!apiKey.trim()) throw new Error('OPENAI_API_KEY is required')
@@ -121,6 +156,7 @@ Vendor connected duration: ${
             }
 Decoded recording duration: ${options.recordedDurationMs} ms
 Detected speech: ${options.speechDurationMs} ms
+Duration mismatch beyond 5 seconds: ${options.durationMismatch}
 
 NUMBERED TRANSCRIPT
 ${transcript}`,
@@ -138,6 +174,19 @@ ${transcript}`,
         confidence: number
         customer_block_numbers: number[]
         unclear_block_numbers: number[]
+        counterparty_type:
+          | 'human'
+          | 'voicemail'
+          | 'interactive_automation'
+          | 'no_response'
+          | 'unclear'
+        agent_handling: 'normal' | 'failed' | 'unclear'
+        conversation_outcome: 'successful' | 'no_outcome' | 'unclear'
+        duration_outcome:
+          | 'appropriate'
+          | 'ended_too_early'
+          | 'continued_without_value'
+          | 'unclear'
         remarks: string
         dispute_recommended: boolean
       }
@@ -160,6 +209,12 @@ ${transcript}`,
           customerEnds.length > 0 ? Math.max(...customerEnds) : null,
         remarks: raw.remarks,
         disputeRecommended: raw.dispute_recommended,
+        decisionSignals: {
+          counterpartyType: raw.counterparty_type,
+          agentHandling: raw.agent_handling,
+          conversationOutcome: raw.conversation_outcome,
+          durationOutcome: raw.duration_outcome,
+        },
         usage: {
           inputTokens: completion.usage?.prompt_tokens ?? null,
           outputTokens: completion.usage?.completion_tokens ?? null,
