@@ -75,3 +75,17 @@ test('no audited duration is formatted as money anywhere on the page', async () 
     )
   }
 })
+
+test('Task ID search is exact, submitted deliberately, and clearable', async () => {
+  const source = await webSource('pages/AuditMonitorPage.tsx')
+  assert.match(source, /placeholder="Exact Task ID"/)
+  assert.match(source, /onSubmit=\{applyTaskSearch\}/)
+  assert.match(source, /\.\.\.\(taskId \? \{ taskId \} : \{\}\)/)
+  assert.match(source, /setPendingPage\(1\)/)
+  assert.match(source, /setNoRecordingPage\(1\)/)
+  assert.match(source, /aria-label="Search exact Task ID"/)
+  assert.match(source, /aria-label="Clear Task ID search"/)
+  assert.match(source, /No audited call matches this Task ID/)
+  assert.match(source, /No pending call matches this Task ID/)
+  assert.match(source, /No no-recording call matches this Task ID/)
+})

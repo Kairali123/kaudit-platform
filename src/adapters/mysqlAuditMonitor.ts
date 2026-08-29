@@ -15,6 +15,7 @@ export interface AuditMonitorQuery {
   pageSize: number
   category: string | null
   language: string | null
+  taskId: string | null
   periodStart?: string | null
   periodEnd?: string | null
 }
@@ -128,6 +129,7 @@ export interface AuditMonitorData {
   filters: {
     category: string | null
     language: string | null
+    taskId: string | null
     availableCategories: string[]
     availableLanguages: string[]
   }
@@ -438,7 +440,24 @@ function filterSql(query: AuditMonitorQuery): {
     clauses.push('LOWER(COALESCE(t.language, ?)) = ?')
     params.push('unknown', query.language.toLowerCase())
   }
+  if (query.taskId) {
+    clauses.push(taskIdPredicate('c'))
+    params.push(query.taskId, query.taskId)
+  }
   return { sql: `WHERE ${clauses.join(' AND ')}`, params }
+}
+
+function taskIdPredicate(callAlias: string): string {
+  return `(
+    ${callAlias}.logical_call_key = ?
+    OR EXISTS (
+      SELECT 1
+      FROM kaudit_call_external_reference task_ref
+      WHERE task_ref.call_id = ${callAlias}.id
+        AND task_ref.reference_type IN ('task_id','taskId','task')
+        AND task_ref.external_id = ?
+    )
+  )`
 }
 
 export async function collectAuditMonitor(
@@ -454,6 +473,12 @@ export async function collectAuditMonitor(
     query.periodStart && query.periodEnd
       ? [query.periodStart, query.periodEnd]
       : []
+  const taskClause = query.taskId
+    ? ` AND ${taskIdPredicate('c')}`
+    : ''
+  const taskParams = query.taskId ? [query.taskId, query.taskId] : []
+  const queueScopeClause = `${periodClause}${taskClause}`
+  const queueScopeParams = [...periodParams, ...taskParams]
   const [
     overallRows,
     reauditRows,
@@ -554,10 +579,60 @@ export async function collectAuditMonitor(
   const totalCalls = Number(overall?.total_calls || 0)
   const aiAuditedCalls = Number(overall?.audited_calls || 0)
   const totalFilteredRows = count(filteredRows[0][0])
-  const totalPendingRows = Number(overall?.pending_calls || 0)
-  const totalNoRecordingRows = Number(
+  const summaryPendingRows = Number(overall?.pending_calls || 0)
+  const summaryNoRecordingRows = Number(
     overall?.no_recording_calls || 0,
   )
+  let totalPendingRows = summaryPendingRows
+  let totalNoRecordingRows = summaryNoRecordingRows
+  if (query.taskId) {
+    const [pendingCountResult, noRecordingCountResult] =
+      await Promise.all([
+        pool.query<CountRow[]>(
+          `SELECT COUNT(DISTINCT c.id) AS n
+           FROM kaudit_call c
+           JOIN kaudit_call_artifact ca
+             ON ca.call_id = c.id
+            AND ca.artifact_type = 'recording'
+            AND ca.is_final = 1
+            AND ca.source_url IS NOT NULL
+           LEFT JOIN (
+             SELECT DISTINCT call_artifact_id
+             FROM kaudit_media_analysis
+             WHERE status = 'completed'
+               AND classification_status = 'completed'
+           ) completed_media
+             ON completed_media.call_artifact_id = ca.id
+           LEFT JOIN (
+             SELECT DISTINCT call_artifact_id
+             FROM kaudit_transcript
+             WHERE status = 'completed'
+           ) completed_transcript
+             ON completed_transcript.call_artifact_id = ca.id
+           WHERE NOT (
+             c.canonical_outcome_code IS NOT NULL
+             AND completed_media.call_artifact_id IS NOT NULL
+             AND completed_transcript.call_artifact_id IS NOT NULL
+           )${queueScopeClause}`,
+          queueScopeParams,
+        ),
+        pool.query<CountRow[]>(
+          `SELECT COUNT(DISTINCT c.id) AS n
+           FROM kaudit_call c
+           WHERE NOT EXISTS (
+             SELECT 1
+             FROM kaudit_call_artifact recording
+             WHERE recording.call_id = c.id
+               AND recording.artifact_type = 'recording'
+               AND recording.is_final = 1
+               AND recording.source_url IS NOT NULL
+           )${queueScopeClause}`,
+          queueScopeParams,
+        ),
+      ])
+    totalPendingRows = count(pendingCountResult[0][0])
+    totalNoRecordingRows = count(noRecordingCountResult[0][0])
+  }
   const recordingAvailableCalls = Number(
     overall?.recording_available || 0,
   )
@@ -800,12 +875,12 @@ export async function collectAuditMonitor(
              c.canonical_outcome_code IS NOT NULL
              AND completed_media.call_artifact_id IS NOT NULL
              AND completed_transcript.call_artifact_id IS NOT NULL
-           )${periodClause}
+           )${queueScopeClause}
            ORDER BY c.billing_period_date DESC, c.id
            LIMIT ? OFFSET ?
          ) pending
          ORDER BY pending.billing_period_date DESC, pending.call_id`,
-        [...periodParams, query.pageSize, pendingOffset],
+        [...queueScopeParams, query.pageSize, pendingOffset],
       ),
       pool.query<QueueDataRow[]>(
         `SELECT
@@ -839,7 +914,7 @@ export async function collectAuditMonitor(
                AND recording.artifact_type = 'recording'
                AND recording.is_final = 1
                AND recording.source_url IS NOT NULL
-           )${periodClause}
+           )${queueScopeClause}
            ORDER BY c.billing_period_date DESC, c.id
            LIMIT ? OFFSET ?
          ) c
@@ -875,7 +950,7 @@ export async function collectAuditMonitor(
           )
          ORDER BY c.billing_period_date DESC, c.id
          `,
-        [...periodParams, query.pageSize, noRecordingOffset],
+        [...queueScopeParams, query.pageSize, noRecordingOffset],
       ),
     ])
   const rowResult = auditedResult[0]
@@ -901,10 +976,8 @@ export async function collectAuditMonitor(
           ? '0.00'
           : ((aiAuditedCalls / totalCalls) * 100).toFixed(2),
       recordingAvailableCalls,
-      pendingEligibleCalls: Math.max(
-        0, totalPendingRows,
-      ),
-      noRecordingCalls: totalNoRecordingRows,
+      pendingEligibleCalls: Math.max(0, summaryPendingRows),
+      noRecordingCalls: summaryNoRecordingRows,
       processingFailureCalls: Number(
         overall?.processing_failures || 0,
       ),
@@ -1024,6 +1097,7 @@ export async function collectAuditMonitor(
     filters: {
       category: query.category,
       language: query.language,
+      taskId: query.taskId,
       availableCategories: categories[0].map((row) => String(row.value)),
       availableLanguages: languages[0].map((row) => String(row.value)),
     },

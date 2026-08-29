@@ -296,9 +296,11 @@ interface RowRule {
 
 function fakePool(rules: RowRule[], failing: string[] = []) {
   const statements: string[] = []
+  const calls: Array<{ sql: string; params: unknown[] }> = []
   const pool = {
-    async query(sql: string) {
+    async query(sql: string, params: unknown[] = []) {
       statements.push(sql)
+      calls.push({ sql, params })
       if (failing.some((match) => sql.includes(match))) {
         throw Object.assign(new Error('synthetic unavailable relation'), {
           code: 'ER_NO_SUCH_TABLE',
@@ -311,6 +313,7 @@ function fakePool(rules: RowRule[], failing: string[] = []) {
   return {
     pool,
     statements,
+    calls,
     find(match: string) {
       return statements.find((sql) => sql.includes(match))
     },
@@ -324,6 +327,7 @@ const QUERY: AuditMonitorQuery = {
   pageSize: 25,
   category: null,
   language: null,
+  taskId: null,
   periodStart: '2026-08-01',
   periodEnd: '2026-08-31',
 }
@@ -520,4 +524,44 @@ test('an unapplied re-audit migration still renders the audited rows', async () 
   assert.equal(data.rows[0].reAuditStatus, null)
   assert.equal(data.rows[0].reAuditCompletedAt, null)
   assert.equal(data.rows[0].category, 'TIME_DURATION')
+})
+
+test('an exact Task ID scopes every status table without entering SQL text', async () => {
+  const fake = fakePool([
+    {
+      match: 'COUNT(*) AS total_calls',
+      rows: [{
+        total_calls: 12,
+        audited_calls: 3,
+        recording_available: 7,
+        pending_calls: 4,
+        no_recording_calls: 5,
+        processing_failures: 0,
+      }],
+    },
+  ])
+  const taskId = 'synthetic-task-search'
+  const data = await collectAuditMonitor(fake.pool, {
+    ...QUERY,
+    taskId,
+  })
+
+  assert.equal(data.filters.taskId, taskId)
+  assert.equal(data.pagination.totalRows, 0)
+  assert.equal(data.pendingPagination.totalRows, 0)
+  assert.equal(data.noRecordingPagination.totalRows, 0)
+  assert.equal(data.summary.pendingEligibleCalls, 4)
+  assert.equal(data.summary.noRecordingCalls, 5)
+  const scoped = fake.calls.filter(({ sql }) =>
+    sql.includes('task_ref.external_id = ?'),
+  )
+  assert.ok(scoped.length >= 9)
+  for (const call of scoped) {
+    assert.equal(call.sql.includes(taskId), false)
+    assert.doesNotMatch(call.sql, /\bLIKE\b/i)
+    assert.ok(call.params.filter((value) => value === taskId).length >= 2)
+  }
+  assert.ok(scoped.some(({ sql }) => sql.includes(') pending')))
+  assert.ok(scoped.some(({ sql }) => sql.includes("'no_recording'")))
+  assert.ok(scoped.some(({ sql }) => sql.includes('grace_adjusted_duration_ms')))
 })

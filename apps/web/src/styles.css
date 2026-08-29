@@ -411,16 +411,31 @@ dl small { color: var(--muted); font-size: .6rem; }
   letter-spacing: 0; white-space: normal;
 }
 .audit-control-bar {
-  display: grid; grid-template-columns: minmax(300px, 1fr) 210px 180px;
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(250px, 310px) 190px 170px;
   gap: 12px; align-items: end; padding: 15px 17px;
   background: var(--paper); border: 1px solid var(--line);
 }
 .audit-control-bar > div { display: flex; align-items: flex-start; gap: 9px; color: var(--muted); font-size: .72rem; line-height: 1.5; }
 .audit-control-bar > div svg { flex: 0 0 auto; color: var(--teal); }
 .audit-control-bar label { display: grid; gap: 5px; color: var(--muted); font-size: .67rem; font-weight: 700; }
-.audit-control-bar select {
+.audit-control-bar select, .audit-control-bar input {
   width: 100%; min-height: 36px; padding: 7px 9px; color: var(--ink);
   background: #f9faf9; border: 1px solid var(--line);
+}
+.audit-task-search { display: grid; gap: 5px; min-width: 0; }
+.audit-task-search > label { color: var(--muted); font-size: .67rem; font-weight: 700; }
+.audit-search-field {
+  display: grid; grid-template-columns: minmax(0, 1fr) 34px 36px;
+  align-items: center; min-height: 36px; background: #f9faf9;
+  border: 1px solid var(--line);
+}
+.audit-control-bar .audit-search-field input {
+  min-width: 0; border: 0; background: transparent;
+}
+.audit-search-field .icon-button { width: 34px; height: 34px; color: var(--muted); }
+.audit-search-field .audit-search-submit {
+  width: 36px; color: #fff; background: var(--teal);
 }
 .audit-table .table-scroll { overflow: auto; }
 .audit-table table { min-width: 1650px; }
@@ -775,6 +790,7 @@ dl small { color: var(--muted); font-size: .6rem; }
 .ca-footnote svg { flex: 0 0 auto; margin-top: 1px; color: var(--ca-accent); }
 
 @media (max-width: 1050px) {
+  .audit-control-bar { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .audit-worker-control { grid-template-columns: 1fr auto; }
   .audit-worker-facts { grid-column: 1 / -1; grid-row: 2; }
   .topbar-right > span, .topbar-right > svg { display: none; }
