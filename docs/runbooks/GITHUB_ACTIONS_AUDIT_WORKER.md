@@ -94,7 +94,11 @@ It calls the same hosted worker workflow with inherited repository secrets:
 Every hosted Billing Audit mode sets `KAUDIT_AUDIT_CONCURRENCY=1` and
 `KAUDIT_AUDIT_BATCH=1`. Keep Billing work sequential until measured database
 headroom supports a reviewed change; the MySQL advisory lock still allows only
-one Billing Audit worker process.
+one Billing Audit worker process. A new worker waits for that lock for at most
+30 seconds. If another database session still owns it, the worker performs no
+queue or model work, records `BILLING_AUDIT_LOCK_BUSY`, marks the monitor
+faulted, and exits. Never automatically kill the owner: first establish that
+the owning database session is stale rather than legitimate in-flight work.
 
 ## Spend-lease migration gate
 
