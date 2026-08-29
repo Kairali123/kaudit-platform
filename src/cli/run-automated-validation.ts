@@ -114,6 +114,11 @@ async function main(): Promise<void> {
     }
     for (const candidate of candidates) {
       const blocks = mergeTranscriptSegments(candidate.segments)
+      const durationMismatch =
+        candidate.connectedDurationMs != null &&
+        Math.abs(
+          candidate.connectedDurationMs - candidate.recordedDurationMs,
+        ) > 5_000
       const secondary = validateClassification(
         await reviewer.classify({
           blocks,
@@ -121,9 +126,11 @@ async function main(): Promise<void> {
           recordedDurationMs: candidate.recordedDurationMs,
           speechDurationMs: candidate.speechDurationMs,
           connectedDurationMs: candidate.connectedDurationMs,
+          durationMismatch,
         }),
         blocks,
         candidate.recordedDurationMs,
+        { durationMismatch },
       )
       let consensus = evaluateAutomatedConsensus({
         primary: candidate.primary,
@@ -143,15 +150,11 @@ async function main(): Promise<void> {
             recordedDurationMs: candidate.recordedDurationMs,
             speechDurationMs: candidate.speechDurationMs,
             connectedDurationMs: candidate.connectedDurationMs,
-            durationMismatch:
-              candidate.connectedDurationMs != null &&
-              Math.abs(
-                candidate.connectedDurationMs -
-                  candidate.recordedDurationMs,
-              ) > 5_000,
+            durationMismatch,
           }),
           blocks,
           candidate.recordedDurationMs,
+          { durationMismatch },
         )
         consensus = evaluateAutomatedConsensus({
           primary: candidate.primary,

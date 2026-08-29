@@ -7,6 +7,7 @@ import { sha256Hex } from '../lib/hash.ts'
 import { isSafeVendorUrl } from '../security/urlSafety.ts'
 import type { UrlFetcher } from '../storage/ports.ts'
 import type {
+  ClassificationDecisionSignals,
   ModelClassification,
   NaturalSpeechBlock,
   ReauditAi,
@@ -18,14 +19,103 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.1.0'
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.3.0'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.2.0'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.4.0'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
 export const MERGE_MAX_BLOCK_CHARS = 250
 
 const decimal = /^(0|1)(?:\.\d{1,8})?$/
+
+const DECISION_SIGNAL_VALUES = {
+  counterpartyType: [
+    'human',
+    'voicemail',
+    'interactive_automation',
+    'no_response',
+    'unclear',
+  ],
+  agentHandling: ['normal', 'failed', 'unclear'],
+  conversationOutcome: ['successful', 'no_outcome', 'unclear'],
+  durationOutcome: [
+    'appropriate',
+    'ended_too_early',
+    'continued_without_value',
+    'unclear',
+  ],
+} as const
+
+function validateDecisionSignals(
+  signals: ClassificationDecisionSignals,
+): void {
+  for (const [name, allowed] of Object.entries(DECISION_SIGNAL_VALUES)) {
+    const value = signals[name as keyof ClassificationDecisionSignals]
+    if (!(allowed as readonly string[]).includes(value)) {
+      throw new Error(`Classifier returned an unsupported ${name} signal`)
+    }
+  }
+}
+
+export function resolveReviewedCategory(options: {
+  proposedCategory: ModelClassification['category']
+  decisionSignals?: ClassificationDecisionSignals
+  customerBlockCount: number
+  durationMismatch?: boolean
+}): ModelClassification['category'] {
+  const signals = options.decisionSignals
+  if (!signals) return options.proposedCategory
+  validateDecisionSignals(signals)
+
+  if (
+    signals.counterpartyType === 'human' &&
+    options.customerBlockCount === 0
+  ) {
+    throw new Error('Human counterparty signal requires customer speech')
+  }
+  if (
+    (signals.counterpartyType === 'voicemail' ||
+      signals.counterpartyType === 'interactive_automation' ||
+      signals.counterpartyType === 'no_response') &&
+    options.customerBlockCount > 0
+  ) {
+    throw new Error('Non-human counterparty signal cannot contain customer speech')
+  }
+
+  if (signals.counterpartyType === 'voicemail') return 'VOICEMAIL'
+  if (signals.counterpartyType === 'interactive_automation') return 'AI_TO_AI'
+  if (signals.counterpartyType === 'no_response') {
+    return 'USER_SILENCE'
+  }
+  if (signals.agentHandling === 'failed') return 'AGENT_FAILURE'
+  if (
+    signals.counterpartyType === 'human' &&
+    signals.conversationOutcome === 'successful' &&
+    signals.agentHandling === 'normal'
+  ) {
+    return 'OK'
+  }
+  if (
+    signals.durationOutcome === 'ended_too_early' ||
+    signals.durationOutcome === 'continued_without_value'
+  ) {
+    return 'TIME_DURATION'
+  }
+  if (
+    signals.counterpartyType === 'human' &&
+    signals.conversationOutcome === 'no_outcome' &&
+    signals.agentHandling === 'normal'
+  ) {
+    return 'CONNECT_NOT_FRUITFUL'
+  }
+  if (options.proposedCategory === 'INCORRECT_CALL_DURATION') {
+    if (options.durationMismatch === true) return 'INCORRECT_CALL_DURATION'
+    throw new Error(
+      'Duration-mismatch category requires a verified duration mismatch',
+    )
+  }
+  return options.proposedCategory
+}
 
 function safeMs(value: number, name: string): number {
   if (!Number.isSafeInteger(value) || value < 0) {
@@ -65,6 +155,7 @@ export function validateClassification(
   raw: ModelClassification,
   blocks: NaturalSpeechBlock[],
   recordedDurationMs: number,
+  options: { durationMismatch?: boolean } = {},
 ): ModelClassification {
   if (!(REAUDIT_CATEGORIES as readonly string[]).includes(raw.category)) {
     throw new Error(`Classifier returned unsupported category: ${raw.category}`)
@@ -96,7 +187,13 @@ export function validateClassification(
   if (last != null && last > recordedDurationMs) {
     throw new Error('Customer block end falls outside the recording')
   }
-  if (raw.category === 'USER_SILENCE') {
+  const category = resolveReviewedCategory({
+    proposedCategory: raw.category,
+    decisionSignals: raw.decisionSignals,
+    customerBlockCount: customerBlockNumbers.length,
+    durationMismatch: options.durationMismatch,
+  })
+  if (category === 'USER_SILENCE') {
     if (customerBlockNumbers.length > 0) {
       throw new Error('User-silence result cannot contain customer speech')
     }
@@ -113,6 +210,7 @@ export function validateClassification(
   }
   return {
     ...raw,
+    category,
     customerBlockNumbers,
     unclearBlockNumbers,
     customerSpoke,
@@ -256,6 +354,7 @@ export async function auditOneCall(options: {
         }),
         blocks,
         transcript.durationMs,
+        { durationMismatch },
       )
     } catch {
       return {
