@@ -79,11 +79,12 @@ REFERENCE DECISIONS (SYNTHETIC)
 - A normal completed two-way exchange with no independent defect: OK.
 
 REMARK REQUIREMENTS
-Write one or two concise sentences explaining the observable behavior and why
-it supports the selected category over the nearest plausible alternative. Do
-not quote transcript text or include a name, phone number, email address, URL,
-task identifier, provider prose, money, or a calculated duration. Do not claim
-facts that are absent from the supplied evidence.`
+Write one or two concise sentences explaining the observable facts behind the
+decision signals and why the nearest plausible alternative does not apply. The
+remark must remain accurate if the deterministic engine corrects the proposed
+category. Do not quote transcript text or include a name, phone number, email
+address, URL, task identifier, provider prose, money, or a calculated duration.
+Do not claim facts that are absent from the supplied evidence.`
 
 export const REAUDIT_SPEAKER_ATTRIBUTION_RULES = `SPEAKER ATTRIBUTION RULES
 The transcript contains text and timestamps but no acoustic speaker labels. Assign
@@ -114,6 +115,27 @@ CATEGORY GUARDRAILS
 - A recorded voicemail or answering-machine greeting is VOICEMAIL, not
   USER_SILENCE and not customer speech.`
 
+export const REAUDIT_DECISION_SIGNAL_RULES = `DECISION SIGNALS
+Before proposing a category, extract these observable facts independently:
+- counterparty_type: human for a real person's response; voicemail for a fixed
+  mailbox greeting or beep; interactive_automation for an IVR or automated
+  system that exchanges prompts; no_response when only Saanvi speaks; otherwise
+  unclear.
+- agent_handling: failed when Saanvi ignores or mishandles a human response,
+  abandons the exchange, repeats without value, or continues against the stated
+  response; normal when handling is appropriate; otherwise unclear.
+- conversation_outcome: successful only when the legitimate purpose succeeds,
+  including a properly completed transfer; no_outcome when a human connection
+  ends without that result; otherwise unclear.
+- duration_outcome: ended_too_early or continued_without_value only when the
+  conversational sequence itself demonstrates that behavior; appropriate when
+  timing fits the outcome; otherwise unclear.
+
+The deterministic engine applies reviewed precedence to these signals. Do not
+alter a signal to justify the proposed category. A vendor-versus-recording
+duration mismatch is supplied separately and is never inferred from transcript
+timing.`
+
 export const REAUDIT_CLASSIFIER_PROMPT = `You are the automated call-quality auditor for Kairali Group.
 The female Kairali AI agent is named Saanvi. Calls may be English, Hindi, Hinglish,
 Malayalam, or another detected language.
@@ -126,6 +148,8 @@ natural closing words are handled later by a deterministic 60-second billing gra
 ${REAUDIT_SPEAKER_ATTRIBUTION_RULES}
 
 ${REAUDIT_KAIRALI_REFERENCE_RULES}
+
+${REAUDIT_DECISION_SIGNAL_RULES}
 
 Choose exactly one category:
 ${Object.entries(CATEGORY_RULEBOOK)
@@ -142,7 +166,7 @@ export const REAUDIT_CLASSIFIER_RULESET_SHA256 = canonicalJsonSha256({
   model: REAUDIT_CLASSIFICATION_MODEL,
   prompt: REAUDIT_CLASSIFIER_PROMPT,
   categories: REAUDIT_CATEGORIES,
-  outputSchemaVersion: '2',
+  outputSchemaVersion: '3',
 } as unknown as JsonValue)
 
 export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
@@ -162,6 +186,33 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
         type: 'array',
         items: { type: 'integer', minimum: 1 },
       },
+      counterparty_type: {
+        type: 'string',
+        enum: [
+          'human',
+          'voicemail',
+          'interactive_automation',
+          'no_response',
+          'unclear',
+        ],
+      },
+      agent_handling: {
+        type: 'string',
+        enum: ['normal', 'failed', 'unclear'],
+      },
+      conversation_outcome: {
+        type: 'string',
+        enum: ['successful', 'no_outcome', 'unclear'],
+      },
+      duration_outcome: {
+        type: 'string',
+        enum: [
+          'appropriate',
+          'ended_too_early',
+          'continued_without_value',
+          'unclear',
+        ],
+      },
       remarks: { type: 'string', maxLength: 1200 },
       dispute_recommended: { type: 'boolean' },
     },
@@ -170,6 +221,10 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
       'confidence',
       'customer_block_numbers',
       'unclear_block_numbers',
+      'counterparty_type',
+      'agent_handling',
+      'conversation_outcome',
+      'duration_outcome',
       'remarks',
       'dispute_recommended',
     ],
@@ -303,6 +358,19 @@ ${transcript}`,
         confidence: number
         customer_block_numbers: number[]
         unclear_block_numbers: number[]
+        counterparty_type:
+          | 'human'
+          | 'voicemail'
+          | 'interactive_automation'
+          | 'no_response'
+          | 'unclear'
+        agent_handling: 'normal' | 'failed' | 'unclear'
+        conversation_outcome: 'successful' | 'no_outcome' | 'unclear'
+        duration_outcome:
+          | 'appropriate'
+          | 'ended_too_early'
+          | 'continued_without_value'
+          | 'unclear'
         remarks: string
         dispute_recommended: boolean
       }
@@ -325,6 +393,12 @@ ${transcript}`,
           customerEnds.length > 0 ? Math.max(...customerEnds) : null,
         remarks: raw.remarks,
         disputeRecommended: raw.dispute_recommended,
+        decisionSignals: {
+          counterpartyType: raw.counterparty_type,
+          agentHandling: raw.agent_handling,
+          conversationOutcome: raw.conversation_outcome,
+          durationOutcome: raw.duration_outcome,
+        },
         usage: {
           inputTokens: completion.usage?.prompt_tokens ?? null,
           outputTokens: completion.usage?.completion_tokens ?? null,

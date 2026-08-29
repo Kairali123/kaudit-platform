@@ -7,11 +7,35 @@ import {
   validateClassification,
 } from './core.ts'
 import type {
+  ClassificationDecisionSignals,
   ModelClassification,
   ReauditAnalysis,
   ReauditCandidate,
   ReauditAi,
 } from './types.ts'
+
+function reviewedClassification(options: {
+  proposed: ModelClassification['category']
+  signals: ClassificationDecisionSignals
+  customerSpoke?: boolean
+}): ModelClassification {
+  return {
+    model: {
+      provider: 'openai',
+      name: 'synthetic-classifier',
+      version: 'synthetic-v1',
+    },
+    category: options.proposed,
+    confidence: '0.90000000',
+    customerBlockNumbers: options.customerSpoke ? [2] : [],
+    unclearBlockNumbers: [],
+    customerSpoke: options.customerSpoke ?? false,
+    lastMeaningfulCustomerExchangeMs: options.customerSpoke ? 2_000 : null,
+    remarks: 'Synthetic evidence-based rationale.',
+    disputeRecommended: false,
+    decisionSignals: options.signals,
+  }
+}
 
 const candidate: ReauditCandidate = {
   callId: 'synthetic-call',
@@ -140,6 +164,191 @@ test('classification clears redundant customer facts when no customer block exis
   )
   assert.equal(result.customerSpoke, false)
   assert.equal(result.lastMeaningfulCustomerExchangeMs, null)
+})
+
+test('reviewed decision signals correct the quality-team disagreement patterns', () => {
+  const agentOnly = [
+    { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent speech' },
+  ]
+  const twoWay = [
+    { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent speech' },
+    { number: 2, startMs: 1_200, endMs: 2_000, text: 'Synthetic reply' },
+  ]
+  const cases: Array<{
+    proposed: ModelClassification['category']
+    expected: ModelClassification['category']
+    signals: ClassificationDecisionSignals
+    customerSpoke: boolean
+  }> = [
+    {
+      proposed: 'INCORRECT_CALL_DURATION',
+      expected: 'TIME_DURATION',
+      customerSpoke: true,
+      signals: {
+        counterpartyType: 'human',
+        agentHandling: 'unclear',
+        conversationOutcome: 'unclear',
+        durationOutcome: 'ended_too_early',
+      },
+    },
+    {
+      proposed: 'INCORRECT_CALL_DURATION',
+      expected: 'USER_SILENCE',
+      customerSpoke: false,
+      signals: {
+        counterpartyType: 'no_response',
+        agentHandling: 'normal',
+        conversationOutcome: 'no_outcome',
+        durationOutcome: 'appropriate',
+      },
+    },
+    {
+      proposed: 'INCORRECT_CALL_DURATION',
+      expected: 'VOICEMAIL',
+      customerSpoke: false,
+      signals: {
+        counterpartyType: 'voicemail',
+        agentHandling: 'normal',
+        conversationOutcome: 'no_outcome',
+        durationOutcome: 'appropriate',
+      },
+    },
+    {
+      proposed: 'CONNECT_NOT_FRUITFUL',
+      expected: 'TIME_DURATION',
+      customerSpoke: true,
+      signals: {
+        counterpartyType: 'human',
+        agentHandling: 'unclear',
+        conversationOutcome: 'unclear',
+        durationOutcome: 'continued_without_value',
+      },
+    },
+    {
+      proposed: 'CONNECT_NOT_FRUITFUL',
+      expected: 'TIME_DURATION',
+      customerSpoke: true,
+      signals: {
+        counterpartyType: 'human',
+        agentHandling: 'unclear',
+        conversationOutcome: 'unclear',
+        durationOutcome: 'ended_too_early',
+      },
+    },
+    {
+      proposed: 'CONNECT_NOT_FRUITFUL',
+      expected: 'OK',
+      customerSpoke: true,
+      signals: {
+        counterpartyType: 'human',
+        agentHandling: 'normal',
+        conversationOutcome: 'successful',
+        durationOutcome: 'appropriate',
+      },
+    },
+    {
+      proposed: 'CONNECT_NOT_FRUITFUL',
+      expected: 'AGENT_FAILURE',
+      customerSpoke: true,
+      signals: {
+        counterpartyType: 'human',
+        agentHandling: 'failed',
+        conversationOutcome: 'no_outcome',
+        durationOutcome: 'continued_without_value',
+      },
+    },
+    {
+      proposed: 'AGENT_FAILURE',
+      expected: 'VOICEMAIL',
+      customerSpoke: false,
+      signals: {
+        counterpartyType: 'voicemail',
+        agentHandling: 'normal',
+        conversationOutcome: 'no_outcome',
+        durationOutcome: 'appropriate',
+      },
+    },
+    {
+      proposed: 'VOICEMAIL',
+      expected: 'USER_SILENCE',
+      customerSpoke: false,
+      signals: {
+        counterpartyType: 'no_response',
+        agentHandling: 'normal',
+        conversationOutcome: 'no_outcome',
+        durationOutcome: 'appropriate',
+      },
+    },
+  ]
+
+  for (const item of cases) {
+    const result = validateClassification(
+      reviewedClassification(item),
+      item.customerSpoke ? twoWay : agentOnly,
+      3_000,
+      { durationMismatch: false },
+    )
+    assert.equal(result.category, item.expected)
+    assert.equal(result.remarks, 'Synthetic evidence-based rationale.')
+  }
+})
+
+test('incorrect-duration category requires the independently verified mismatch', () => {
+  const raw = reviewedClassification({
+    proposed: 'INCORRECT_CALL_DURATION',
+    customerSpoke: true,
+    signals: {
+      counterpartyType: 'unclear',
+      agentHandling: 'unclear',
+      conversationOutcome: 'unclear',
+      durationOutcome: 'unclear',
+    },
+  })
+  const blocks = [
+    { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent speech' },
+    { number: 2, startMs: 1_200, endMs: 2_000, text: 'Synthetic reply' },
+  ]
+  assert.throws(
+    () =>
+      validateClassification(raw, blocks, 3_000, {
+        durationMismatch: false,
+      }),
+    /requires a verified duration mismatch/,
+  )
+  assert.equal(
+    validateClassification(raw, blocks, 3_000, {
+      durationMismatch: true,
+    }).category,
+    'INCORRECT_CALL_DURATION',
+  )
+})
+
+test('reviewed counterparty signals must agree with identified customer speech', () => {
+  const raw = reviewedClassification({
+    proposed: 'OK',
+    signals: {
+      counterpartyType: 'human',
+      agentHandling: 'normal',
+      conversationOutcome: 'successful',
+      durationOutcome: 'appropriate',
+    },
+  })
+  assert.throws(
+    () =>
+      validateClassification(
+        raw,
+        [
+          {
+            number: 1,
+            startMs: 0,
+            endMs: 1_000,
+            text: 'Synthetic agent speech',
+          },
+        ],
+        2_000,
+      ),
+    /requires customer speech/,
+  )
 })
 
 test('classification failure stores a bounded code instead of thrown prose', async () => {

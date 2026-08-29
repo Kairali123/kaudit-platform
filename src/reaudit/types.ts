@@ -71,6 +71,22 @@ export interface NaturalSpeechBlock {
   text: string
 }
 
+export interface ClassificationDecisionSignals {
+  counterpartyType:
+    | 'human'
+    | 'voicemail'
+    | 'interactive_automation'
+    | 'no_response'
+    | 'unclear'
+  agentHandling: 'normal' | 'failed' | 'unclear'
+  conversationOutcome: 'successful' | 'no_outcome' | 'unclear'
+  durationOutcome:
+    | 'appropriate'
+    | 'ended_too_early'
+    | 'continued_without_value'
+    | 'unclear'
+}
+
 export interface ModelClassification {
   model: {
     provider: 'openai'
@@ -85,6 +101,8 @@ export interface ModelClassification {
   lastMeaningfulCustomerExchangeMs: number | null
   remarks: string
   disputeRecommended: boolean
+  /** Required from live classifiers; optional for durable legacy results. */
+  decisionSignals?: ClassificationDecisionSignals
   usage?: AiUsage
 }
 
