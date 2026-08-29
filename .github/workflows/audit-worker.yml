@@ -81,6 +81,7 @@ jobs:
       KAUDIT_TARGETED_REAUDIT_SCOPE_B64: ${{ secrets.KAUDIT_TARGETED_REAUDIT_SCOPE_B64 }}
       KAUDIT_CALL_AUDIT_AUTO_START: "2026-07-01 00:00:00.000000"
       KAUDIT_WORKER_DEADLINE_SECONDS: "19200"
+      KAUDIT_AUDIT_LOCK_WAIT_SECONDS: "30"
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4

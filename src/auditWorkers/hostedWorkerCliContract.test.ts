@@ -69,6 +69,16 @@ test('Billing Audit publishes exact progress deltas before continuing', () => {
   assert.match(billingWorker, /await control\.recordObservation/)
 })
 
+test('Billing Audit retries a busy advisory lock and publishes a bounded fault', () => {
+  assert.match(billingWorker, /KAUDIT_AUDIT_LOCK_WAIT_SECONDS/)
+  assert.match(billingWorker, /acquireBillingAuditLock/)
+  assert.match(billingWorker, /asReauditFatalError\('claim', error\)/)
+  assert.match(billingWorker, /observedState: 'faulted'/)
+  assert.match(billingWorker, /BILLING_AUDIT_LOCK_ERROR_CODE/)
+  assert.match(billingWorker, /new ReauditFatalError\('claim', 'WORKER_LOCK_BUSY'\)/)
+  assert.doesNotMatch(billingWorker, /KILL\s+(?:CONNECTION|QUERY)/i)
+})
+
 test('an exact append-only one-shot can run without waking a paused queue', () => {
   assert.match(
     billingWorker,
