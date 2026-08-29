@@ -11,11 +11,12 @@ import type {
 import { REAUDIT_CATEGORIES } from '../reaudit/types.ts'
 import {
   REAUDIT_CLASSIFICATION_MODEL,
+  REAUDIT_KAIRALI_REFERENCE_RULES,
   REAUDIT_SPEAKER_ATTRIBUTION_RULES,
 } from './openaiReaudit.ts'
 
 export const CONSENSUS_REVIEWER_VERSION =
-  'kairali-independent-consensus-review/1.1.0'
+  'kairali-independent-consensus-review/1.2.0'
 
 export const CONSENSUS_REVIEWER_PROMPT = `You are an independent automated
 verification pass for Kairali's call-audit system. Review the timestamped,
@@ -30,7 +31,9 @@ customer exchange. Do not calculate money or add the deterministic 60-second
 goodbye grace. Return confidence from 0 to 1. If speaker identity or meaning is
 ambiguous, lower confidence and mark unclear blocks.
 
-${REAUDIT_SPEAKER_ATTRIBUTION_RULES}`
+${REAUDIT_SPEAKER_ATTRIBUTION_RULES}
+
+${REAUDIT_KAIRALI_REFERENCE_RULES}`
 
 export const CONSENSUS_REVIEWER_RULESET_SHA256 =
   canonicalJsonSha256({

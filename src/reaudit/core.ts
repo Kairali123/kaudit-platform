@@ -19,7 +19,7 @@ import type {
 import { REAUDIT_CATEGORIES } from './types.ts'
 
 export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.1.0'
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.2.0'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.3.0'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
