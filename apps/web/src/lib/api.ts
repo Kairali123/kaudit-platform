@@ -365,6 +365,7 @@ export interface AuditMonitorData {
   filters: {
     category: string | null
     language: string | null
+    taskId: string | null
     availableCategories: string[]
     availableLanguages: string[]
   }

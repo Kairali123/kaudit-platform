@@ -611,6 +611,74 @@ test('audit monitor is admin-only and excludes raw content fields', async () => 
   )
 })
 
+test('audit monitor Task ID search is exact and invalid input never reaches SQL', async () => {
+  const adminAccess: AccessRepository = {
+    ...access,
+    async findByEmail(email) {
+      return {
+        id: 'admin-1',
+        email,
+        status: 'active',
+        maxSensitivityTier: 'K3',
+        roles: ['admin'],
+      }
+    },
+  }
+  const calls: Array<{ sql: string; params: unknown[] }> = []
+  const pool = {
+    async query(sql: string, params: unknown[] = []) {
+      calls.push({ sql, params })
+      return [[], []]
+    },
+  } as unknown as Pool
+
+  await withServer(
+    {
+      async record() {},
+      async readiness() { return true },
+    },
+    async (baseUrl) => {
+      const invalid = await fetch(
+        `${baseUrl}/api/v1/audits?taskId=invalid%20task`,
+        { headers: { cookie: localCookie() } },
+      )
+      assert.equal(invalid.status, 400)
+      assert.equal(
+        ((await invalid.json()) as { code?: string }).code,
+        'INVALID_AUDIT_QUERY',
+      )
+      assert.equal(calls.length, 0)
+
+      const taskId = 'synthetic-task-search'
+      const valid = await fetch(
+        `${baseUrl}/api/v1/audits?taskId=${taskId}`,
+        { headers: { cookie: localCookie() } },
+      )
+      assert.equal(valid.status, 200)
+      const body = (await valid.json()) as {
+        filters: { taskId: string | null }
+      }
+      assert.equal(body.filters.taskId, taskId)
+      assert.ok(
+        calls.some(({ params }) => params.includes(taskId)),
+      )
+      assert.equal(
+        calls.some(({ sql }) => sql.includes(taskId)),
+        false,
+      )
+      assert.equal(
+        calls.some(({ sql }) => /\bLIKE\b/i.test(sql)),
+        false,
+      )
+    },
+    undefined,
+    config,
+    null,
+    adminAccess,
+    pool,
+  )
+})
+
 test('audit monitor API exposes terminal re-audit lifecycle without queue internals', async () => {
   const adminAccess: AccessRepository = {
     ...access,
