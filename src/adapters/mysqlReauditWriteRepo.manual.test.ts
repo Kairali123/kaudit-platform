@@ -246,6 +246,25 @@ test('a successful requested re-audit appends a run and advances the pointer', a
   )
 })
 
+test('each appended media analysis has a bounded per-run config revision', async () => {
+  const first = manualPool({ itemStatus: 'processing' })
+  const second = manualPool({ itemStatus: 'processing' })
+
+  await manualRepo(first).persist(candidate, SUCCESS, new Date(0))
+  await manualRepo(second).persist(candidate, SUCCESS, new Date(0))
+
+  const firstInsert = first.find(/INSERT INTO kaudit_media_analysis/)
+  const secondInsert = second.find(/INSERT INTO kaudit_media_analysis/)
+  const firstVersion = String(firstInsert?.parameters[4])
+  const secondVersion = String(secondInsert?.parameters[4])
+
+  assert.match(String(firstInsert?.sql), /analyzer_version, config_version/)
+  assert.match(String(firstInsert?.sql), /VALUES \(\?, \?, \?, '[^']+', \?, \?,/)
+  assert.match(firstVersion, /^2:[0-9a-f-]{36}$/)
+  assert.ok(firstVersion.length <= 40)
+  assert.notEqual(secondVersion, firstVersion)
+})
+
 test('a same-ruleset rerun gets its own outbox identity', async () => {
   const fixture = manualPool({ itemStatus: 'processing' })
   await manualRepo(fixture).persist(candidate, SUCCESS, new Date(0))

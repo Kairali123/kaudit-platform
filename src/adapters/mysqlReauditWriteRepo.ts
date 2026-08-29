@@ -443,6 +443,10 @@ export function createMysqlReauditWriteRepo(
         const classification = result.classification
         const mediaAnalysisId = randomUUID()
         const transcriptId = randomUUID()
+        // Requested re-audits deliberately reuse the artifact, evidence, and
+        // analyzer version. Bind the schema's fourth uniqueness component to
+        // this append-only run so prior media history is retained.
+        const mediaConfigVersion = `2:${auditRunId}`
         await connection.execute(
           `INSERT INTO kaudit_audit_run
              (id, call_id, audit_policy_version, engine_version,
@@ -489,13 +493,14 @@ export function createMysqlReauditWriteRepo(
               analyzer_version, config_version, status, decoded_duration_ms,
               speech_ms, customer_speech_ms, agent_speech_ms,
               conversation_end_ms, classification_status, metrics_json)
-           VALUES (?, ?, ?, 'kairali-independent-reaudit', ?, '2',
+           VALUES (?, ?, ?, 'kairali-independent-reaudit', ?, ?,
                    'completed', ?, ?, ?, ?, ?, 'completed', ?)`,
           [
             mediaAnalysisId,
             candidate.artifactId,
             analysis.evidenceSha256,
             REAUDIT_ENGINE_VERSION,
+            mediaConfigVersion,
             analysis.recordedDurationMs,
             analysis.speechDurationMs,
             analysis.customerSpeechMs,
