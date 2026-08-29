@@ -34,9 +34,56 @@ const CATEGORY_RULEBOOK: Record<ReauditCategory, string> = {
   USER_SILENCE:
     'A person picked up but never responded while the AI agent spoke.',
   JUNK_CALL:
-    'Wrong number, test call, spam pickup machine, or no legitimate customer interaction.',
+    'A test, spam, or clearly illegitimate interaction with no genuine customer purpose.',
   OK: 'Normal, legitimate and properly handled two-way customer conversation.',
 }
+
+/**
+ * Decision precedence distilled from administrator-reviewed outcomes. These
+ * are behavioral rules only: no reviewed call content or source identity is
+ * embedded in configuration.
+ */
+export const REAUDIT_KAIRALI_REFERENCE_RULES = `KAIRALI-REVIEWED DECISION RULES
+Apply the first rule supported by the transcript evidence. Do not use a broad
+category when a more specific rule below matches:
+1. A fixed voicemail greeting, leave-a-message request, mailbox notice, or beep
+   is VOICEMAIL. It is not customer speech and is not AI_TO_AI.
+2. AI_TO_AI requires an interactive automated system, IVR, or screening agent
+   that exchanges prompts with Saanvi. A one-way voicemail greeting is VOICEMAIL.
+3. When Saanvi speaks and the called person gives no response at all, choose
+   USER_SILENCE. Any human reply, including hello, wrong number, busy, callback,
+   or not interested, means USER_SILENCE is not allowed.
+4. When a human speaks but Saanvi fails to answer substantively, abandons the
+   exchange, ignores the answer, or continues against the person's response,
+   choose AGENT_FAILURE. This outranks CONNECT_NOT_FRUITFUL.
+5. Choose CONNECT_NOT_FRUITFUL for a legitimate human connection that ends
+   without an outcome, such as wrong number, busy, callback, not interested, or
+   an early hang-up, when Saanvi did not itself fail. Wrong number is not JUNK_CALL.
+6. JUNK_CALL is only for a test, spam, or clearly illegitimate interaction. It
+   is never a fallback for silence, voicemail, wrong number, or a short call.
+7. INCORRECT_CALL_DURATION is only for the supplied vendor-versus-recording
+   duration-mismatch fact. TIME_DURATION instead describes a recording that
+   continued too long or ended too early for the conversational outcome. Never
+   infer either category merely because a displayed duration is absent.
+8. Choose OK when a legitimate two-way conversation was handled normally and
+   none of the specific failure rules applies. Do not invent a defect.
+
+REFERENCE DECISIONS (SYNTHETIC)
+- Saanvi introduces herself and receives no human response: USER_SILENCE.
+- A mailbox greeting asks for a message: VOICEMAIL.
+- A human says the number is wrong and Saanvi closes appropriately:
+  CONNECT_NOT_FRUITFUL.
+- A human answers or asks a question and Saanvi gives no useful response:
+  AGENT_FAILURE.
+- An automated menu interactively prompts Saanvi: AI_TO_AI.
+- A normal completed two-way exchange with no independent defect: OK.
+
+REMARK REQUIREMENTS
+Write one or two concise sentences explaining the observable behavior and why
+it supports the selected category over the nearest plausible alternative. Do
+not quote transcript text or include a name, phone number, email address, URL,
+task identifier, provider prose, money, or a calculated duration. Do not claim
+facts that are absent from the supplied evidence.`
 
 export const REAUDIT_SPEAKER_ATTRIBUTION_RULES = `SPEAKER ATTRIBUTION RULES
 The transcript contains text and timestamps but no acoustic speaker labels. Assign
@@ -77,6 +124,8 @@ last identified customer block as the final meaningful customer exchange. Saanvi
 natural closing words are handled later by a deterministic 60-second billing grace rule.
 
 ${REAUDIT_SPEAKER_ATTRIBUTION_RULES}
+
+${REAUDIT_KAIRALI_REFERENCE_RULES}
 
 Choose exactly one category:
 ${Object.entries(CATEGORY_RULEBOOK)

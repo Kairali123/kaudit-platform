@@ -7,6 +7,7 @@ import {
 import {
   REAUDIT_CLASSIFIER_OUTPUT_SCHEMA,
   REAUDIT_CLASSIFIER_PROMPT,
+  REAUDIT_KAIRALI_REFERENCE_RULES,
   REAUDIT_SPEAKER_ATTRIBUTION_RULES,
 } from './openaiReaudit.ts'
 
@@ -36,6 +37,29 @@ test('primary and consensus classifiers share speaker-attribution guardrails', (
       prompt,
       /answering-machine greeting is VOICEMAIL/,
     )
+  }
+})
+
+test('primary and consensus classifiers share Kairali-reviewed precedence', () => {
+  for (const prompt of [
+    REAUDIT_CLASSIFIER_PROMPT,
+    CONSENSUS_REVIEWER_PROMPT,
+  ]) {
+    assert.ok(prompt.includes(REAUDIT_KAIRALI_REFERENCE_RULES))
+    assert.match(prompt, /one-way voicemail greeting is VOICEMAIL/)
+    assert.match(prompt, /Any human reply[\s\S]+USER_SILENCE is not allowed/)
+    assert.match(prompt, /AGENT_FAILURE[\s\S]+outranks CONNECT_NOT_FRUITFUL/)
+    assert.match(prompt, /Wrong number is not JUNK_CALL/)
+    assert.match(
+      prompt,
+      /INCORRECT_CALL_DURATION[\s\S]+vendor-versus-recording[\s\S]+TIME_DURATION/,
+    )
+    assert.match(prompt, /Do not invent a defect/)
+    assert.match(
+      prompt,
+      /why[\s\S]+selected category[\s\S]+nearest plausible alternative/,
+    )
+    assert.match(prompt, /Do\s+not quote transcript text/)
   }
 })
 
