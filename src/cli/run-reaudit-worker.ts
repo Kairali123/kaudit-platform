@@ -8,9 +8,16 @@ import { createOpenAiReaudit } from '../adapters/openaiReaudit.ts'
 import { createMysqlAuditWorkerControl } from '../adapters/mysqlAuditWorkerControl.ts'
 import { createMysqlBillingSpendGuard } from '../adapters/mysqlBillingSpendLease.ts'
 import { tagPoolAcquisitionFailures } from '../adapters/mysqlPoolAcquisition.ts'
+import {
+  acquireBillingAuditLock,
+  BILLING_AUDIT_LOCK_ERROR_CODE,
+} from '../auditWorkers/billingAdvisoryLock.ts'
 import { auditOneCall } from '../reaudit/core.ts'
 import { runReauditBatch } from '../reaudit/worker.ts'
-import { ReauditFatalError } from '../reaudit/failures.ts'
+import {
+  asReauditFatalError,
+  ReauditFatalError,
+} from '../reaudit/failures.ts'
 import { parseRecordingBackedTaskIds } from '../reaudit/scope.ts'
 import { loadRuntimeConfig } from '../config/runtime.ts'
 import { resolveDatabaseTls } from '../runtime/databaseTls.ts'
@@ -59,6 +66,8 @@ async function main(): Promise<void> {
   const batchSize = integer('KAUDIT_AUDIT_BATCH', 10, 1, 100)
   const requestedConcurrency = integer('KAUDIT_AUDIT_CONCURRENCY', 1, 1, 10)
   const pollMs = integer('KAUDIT_AUDIT_POLL_MS', 15_000, 1_000, 60_000)
+  const lockWaitMs =
+    integer('KAUDIT_AUDIT_LOCK_WAIT_SECONDS', 30, 0, 120) * 1_000
   const watch = enabled('KAUDIT_AUDIT_WATCH')
   const drain = enabled('KAUDIT_AUDIT_DRAIN')
   if (watch && drain) {
@@ -154,13 +163,51 @@ async function main(): Promise<void> {
       connectTimeout: 30_000,
     }),
   )
-  const lockConnection = await pool.getConnection()
+  const control = createMysqlAuditWorkerControl(pool)
+  let lockConnection
   try {
-    const [lockRows] = await lockConnection.query<RowDataPacket[]>(
-      `SELECT GET_LOCK('kaudit-independent-reaudit-v2', 0) AS acquired`,
-    )
-    if (Number(lockRows[0]?.acquired || 0) !== 1) {
-      throw new Error('Another full-call audit worker already owns the database lock')
+    lockConnection = await pool.getConnection()
+  } catch (error) {
+    await pool.end().catch(() => undefined)
+    throw asReauditFatalError('pool_acquisition', error)
+  }
+  let lockAcquired = false
+  try {
+    try {
+      lockAcquired = await acquireBillingAuditLock({
+        timeoutMs: lockWaitMs,
+        retryMs: 1_000,
+        wait,
+        tryAcquire: async () => {
+          const [lockRows] = await lockConnection.query<RowDataPacket[]>(
+            `SELECT GET_LOCK('kaudit-independent-reaudit-v2', 0) AS acquired`,
+          )
+          const acquired = lockRows[0]?.acquired
+          if (Number(acquired) === 1) return true
+          if (Number(acquired) === 0) return false
+          throw new ReauditFatalError('claim', 'DB_UNKNOWN')
+        },
+      })
+    } catch (error) {
+      throw asReauditFatalError('claim', error)
+    }
+    if (!lockAcquired) {
+      try {
+        await control.recordObservation({
+          system: 'billing',
+          observedState: 'faulted',
+          errorCode: BILLING_AUDIT_LOCK_ERROR_CODE,
+        })
+      } catch {
+        // Preserve the primary lock diagnosis even if monitor publication fails.
+      }
+      process.stdout.write(
+        `${JSON.stringify({
+          event: 'billing_audit_lock_busy',
+          category: 'WORKER_LOCK_BUSY',
+        })}\n`,
+      )
+      throw new ReauditFatalError('claim', 'WORKER_LOCK_BUSY')
     }
     const candidates = requestedMode
       ? createMysqlManualReauditCandidateRepository(pool, {
@@ -174,7 +221,6 @@ async function main(): Promise<void> {
       allowCompletedReaudit: appendReaudit,
       manualRequest: requestedMode,
     })
-    const control = createMysqlAuditWorkerControl(pool)
     const fetcher = createProxyResolvingFetcher(
       required('KAUDIT_UNPOD_PROXY_BASE'),
     )
@@ -359,9 +405,11 @@ async function main(): Promise<void> {
     }
   } finally {
     try {
-      await lockConnection.query(
-        `SELECT RELEASE_LOCK('kaudit-independent-reaudit-v2')`,
-      )
+      if (lockAcquired) {
+        await lockConnection.query(
+          `SELECT RELEASE_LOCK('kaudit-independent-reaudit-v2')`,
+        )
+      }
     } finally {
       lockConnection.release()
       await pool.end()

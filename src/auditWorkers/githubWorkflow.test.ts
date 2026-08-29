@@ -24,6 +24,7 @@ test('hosted worker is manual, bounded, and serialized per audit system', () => 
   assert.match(workflow, /cancel-in-progress: false/)
   assert.match(workflow, /timeout-minutes: 330/)
   assert.match(workflow, /KAUDIT_WORKER_DEADLINE_SECONDS: "19200"/)
+  assert.match(workflow, /KAUDIT_AUDIT_LOCK_WAIT_SECONDS: "30"/)
 })
 
 test('hosted worker drains through existing CLIs and never runs a model test', () => {
@@ -50,6 +51,8 @@ test('hosted Billing concurrency is conservative in workflow and runbook', () =>
   assert.match(workflowRunbook, /KAUDIT_AUDIT_CONCURRENCY=1/)
   assert.match(workflowRunbook, /KAUDIT_AUDIT_BATCH=1/)
   assert.doesNotMatch(workflowRunbook, /KAUDIT_AUDIT_CONCURRENCY=10/)
+  assert.match(workflowRunbook, /BILLING_AUDIT_LOCK_BUSY/)
+  assert.match(workflowRunbook, /30 seconds/)
 })
 
 test('hosted spend lease migration is explicit, guarded, and billing-only', () => {
