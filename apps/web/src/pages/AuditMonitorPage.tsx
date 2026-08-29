@@ -8,13 +8,16 @@ import {
   FileQuestion,
   LockKeyhole,
   RefreshCw,
+  Search,
   ShieldCheck,
+  X,
 } from 'lucide-react'
 import {
   useEffect,
   useMemo,
   useState,
   type Dispatch,
+  type FormEvent,
   type SetStateAction,
 } from 'react'
 import { Link } from 'react-router-dom'
@@ -190,6 +193,8 @@ export function AuditMonitorPage() {
   const [noRecordingPage, setNoRecordingPage] = useState(1)
   const [category, setCategory] = useState('')
   const [language, setLanguage] = useState('')
+  const [taskIdDraft, setTaskIdDraft] = useState('')
+  const [taskId, setTaskId] = useState('')
   const queryString = new URLSearchParams({
     page: String(page),
     pendingPage: String(pendingPage),
@@ -197,6 +202,7 @@ export function AuditMonitorPage() {
     pageSize: '25',
     ...(category ? { category } : {}),
     ...(language ? { language } : {}),
+    ...(taskId ? { taskId } : {}),
   }).toString()
   const query = useQuery({
     queryKey: [
@@ -207,6 +213,7 @@ export function AuditMonitorPage() {
       noRecordingPage,
       category,
       language,
+      taskId,
     ],
     queryFn: () =>
       getJson<AuditMonitorData>(
@@ -262,7 +269,26 @@ export function AuditMonitorPage() {
     setSelected([])
     setReceipt(null)
     setIdempotencyKey(newIdempotencyKey())
-  }, [period.month, page, category, language])
+  }, [period.month, page, category, language, taskId])
+  const resetPages = () => {
+    setPage(1)
+    setPendingPage(1)
+    setNoRecordingPage(1)
+  }
+  const applyTaskSearch = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const nextTaskId = taskIdDraft.trim()
+    setTaskId(nextTaskId)
+    setTaskIdDraft(nextTaskId)
+    setCategory('')
+    setLanguage('')
+    resetPages()
+  }
+  const clearTaskSearch = () => {
+    setTaskId('')
+    setTaskIdDraft('')
+    resetPages()
+  }
   const tiles = useMemo<Tile[]>(() => {
     const summary = query.data?.summary
     if (!summary) return []
@@ -416,6 +442,41 @@ export function AuditMonitorPage() {
           <ShieldCheck size={18} aria-hidden />
           <span>{data.contentBoundary}</span>
         </div>
+        <form className="audit-task-search" onSubmit={applyTaskSearch}>
+          <label htmlFor="audit-task-id">Task ID</label>
+          <div className="audit-search-field">
+            <input
+              id="audit-task-id"
+              type="search"
+              value={taskIdDraft}
+              maxLength={191}
+              pattern="[A-Za-z0-9_-]{1,191}"
+              autoComplete="off"
+              spellCheck={false}
+              placeholder="Exact Task ID"
+              onChange={(event) => setTaskIdDraft(event.target.value)}
+            />
+            {(taskIdDraft || taskId) && (
+              <button
+                type="button"
+                className="icon-button"
+                title="Clear Task ID search"
+                aria-label="Clear Task ID search"
+                onClick={clearTaskSearch}
+              >
+                <X size={15} aria-hidden />
+              </button>
+            )}
+            <button
+              type="submit"
+              className="icon-button audit-search-submit"
+              title="Search exact Task ID"
+              aria-label="Search exact Task ID"
+            >
+              <Search size={16} aria-hidden />
+            </button>
+          </div>
+        </form>
         <label>
           Category
           <select
@@ -659,6 +720,15 @@ export function AuditMonitorPage() {
                   </td>
                 </tr>
               ))}
+              {data.rows.length === 0 && (
+                <tr>
+                  <td colSpan={isAdmin ? 18 : 17} className="table-empty">
+                    {taskId
+                      ? 'No audited call matches this Task ID in the selected bill month.'
+                      : 'No audited calls match the current filters.'}
+                  </td>
+                </tr>
+              )}
             </tbody>
           </table>
         </div>
@@ -715,7 +785,9 @@ export function AuditMonitorPage() {
               {data.pendingRows.length === 0 && (
                 <tr>
                   <td colSpan={8} className="table-empty">
-                    No recording-backed calls are waiting for audit.
+                    {taskId
+                      ? 'No pending call matches this Task ID in the selected bill month.'
+                      : 'No recording-backed calls are waiting for audit.'}
                   </td>
                 </tr>
               )}
@@ -790,7 +862,9 @@ export function AuditMonitorPage() {
               {data.noRecordingRows.length === 0 && (
                 <tr>
                   <td colSpan={8} className="table-empty">
-                    Every call in this period has a recording URL.
+                    {taskId
+                      ? 'No no-recording call matches this Task ID in the selected bill month.'
+                      : 'Every call in this period has a recording URL.'}
                   </td>
                 </tr>
               )}

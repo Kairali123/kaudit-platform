@@ -127,7 +127,7 @@ test('one retry key covers a draft and is replaced only after a success', async 
   )
   assert.match(
     source,
-    /setSelected\(\[\]\)[\s\S]{0,200}setIdempotencyKey\(newIdempotencyKey\(\)\)[\s\S]{0,120}\}, \[period\.month, page, category, language\]\)/,
+    /setSelected\(\[\]\)[\s\S]{0,200}setIdempotencyKey\(newIdempotencyKey\(\)\)[\s\S]{0,140}\}, \[period\.month, page, category, language, taskId\]\)/,
   )
 })
 

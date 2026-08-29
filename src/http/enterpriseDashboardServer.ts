@@ -1665,6 +1665,17 @@ async function apiResponse(
         ? value
         : null
     }
+    const rawTaskId = url.searchParams.get('taskId')
+    const taskId = rawTaskId?.trim() || null
+    if (
+      rawTaskId != null &&
+      (taskId == null || !/^[A-Za-z0-9_-]{1,191}$/.test(taskId))
+    ) {
+      throw Object.assign(new Error('Task ID search is invalid'), {
+        code: 'INVALID_AUDIT_QUERY',
+        status: 400,
+      })
+    }
     return collectAuditMonitor(dependencies.pool, {
       page: integer('page', 1, 1, 100_000),
       pendingPage: integer('pendingPage', 1, 1, 100_000),
@@ -1677,6 +1688,7 @@ async function apiResponse(
       pageSize: integer('pageSize', 25, 10, 100),
       category: safeFilter('category'),
       language: safeFilter('language'),
+      taskId,
       periodStart: period?.start ?? null,
       periodEnd: period?.end ?? null,
     })
