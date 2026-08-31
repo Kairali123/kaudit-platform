@@ -637,12 +637,14 @@ test('the monitor read returns only safe lifecycle fields', async () => {
           status: 'queued',
           created_at: '2026-08-20 09:00:00',
           completed_at: null,
+          last_error_code: null,
         },
         {
           call_id: 'call-synthetic-2',
           status: 'failed',
           created_at: '2026-08-20 10:00:00',
           completed_at: '2026-08-20 10:05:00',
+          last_error_code: 'CLASSIFICATION_FAILED',
         },
       ],
     },
@@ -652,10 +654,17 @@ test('the monitor read returns only safe lifecycle fields', async () => {
     'call-synthetic-2',
   ])
   assert.deepEqual([...statuses], [
-    ['call-synthetic-1', { status: 'queued', completedAt: null }],
+    [
+      'call-synthetic-1',
+      { status: 'queued', completedAt: null, failureCode: null },
+    ],
     [
       'call-synthetic-2',
-      { status: 'failed', completedAt: '2026-08-20 10:05:00' },
+      {
+        status: 'failed',
+        completedAt: '2026-08-20 10:05:00',
+        failureCode: 'CLASSIFICATION_FAILED',
+      },
     ],
   ])
   const statusSql = String(
@@ -665,7 +674,7 @@ test('the monitor read returns only safe lifecycle fields', async () => {
   assert.match(statusSql, /newer.status IN \('queued','processing','completed','skipped','failed'\)/)
   assert.match(statusSql, /NOT EXISTS \(/)
   assert.match(statusSql, /INTERVAL 30 MINUTE/)
-  assert.equal(statusSql.includes('last_error_code'), false)
+  assert.equal(statusSql.includes('last_error_code'), true)
   assert.equal(statusSql.includes('request_id'), false)
 })
 
@@ -679,12 +688,14 @@ test('the monitor read lets a newer lifecycle item win over an older terminal it
           status: 'completed',
           created_at: '2026-08-20 09:00:00',
           completed_at: '2026-08-20 09:05:00',
+          last_error_code: null,
         },
         {
           call_id: 'call-synthetic-1',
           status: 'processing',
           created_at: '2026-08-20 11:00:00',
           completed_at: null,
+          last_error_code: null,
         },
       ],
     },
@@ -693,7 +704,7 @@ test('the monitor read lets a newer lifecycle item win over an older terminal it
     (await readManualReauditRowStatuses(fake.pool, ['call-synthetic-1'])).get(
       'call-synthetic-1',
     ),
-    { status: 'processing', completedAt: null },
+    { status: 'processing', completedAt: null, failureCode: null },
   )
 })
 

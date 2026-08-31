@@ -207,7 +207,7 @@ test('a row reports the newest privacy-safe re-audit lifecycle item', () => {
         completedAt,
       },
     ]),
-    { status: 'completed', completedAt },
+    { status: 'completed', completedAt, failureCode: null },
   )
   assert.deepEqual(
     manualReauditRowLifecycle([
@@ -218,14 +218,14 @@ test('a row reports the newest privacy-safe re-audit lifecycle item', () => {
       },
       { status: 'queued', createdAt: '2026-08-20T11:00:00.000Z' },
     ]),
-    { status: 'queued', completedAt: null },
+    { status: 'queued', completedAt: null, failureCode: null },
   )
   assert.deepEqual(
     manualReauditRowLifecycle([
       { status: 'queued', createdAt: '2026-08-20T09:00:00.000Z' },
       { status: 'processing', createdAt: '2026-08-20T11:00:00.000Z' },
     ]),
-    { status: 'processing', completedAt: null },
+    { status: 'processing', completedAt: null, failureCode: null },
   )
   assert.equal(manualReauditRowLifecycle([]), null)
   assert.equal(

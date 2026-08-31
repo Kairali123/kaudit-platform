@@ -354,6 +354,97 @@ test('voicemail remains voicemail when an evidence block is identified', () => {
   assert.deepEqual(result.voicemailEvidenceBlockNumbers, [1])
 })
 
+test('a fixed recording-complete notice is affirmative voicemail evidence', () => {
+  const raw = reviewedClassification({
+    proposed: 'AGENT_FAILURE',
+    signals: {
+      counterpartyType: 'voicemail',
+      agentHandling: 'normal',
+      conversationOutcome: 'no_outcome',
+      durationOutcome: 'appropriate',
+      voicemailEvidence: 'recording_notice',
+    },
+  })
+  raw.voicemailEvidenceBlockNumbers = [1]
+
+  const result = validateClassification(
+    raw,
+    [
+      {
+        number: 1,
+        startMs: 0,
+        endMs: 1_000,
+        text: 'Synthetic system notice: recording completed; you may hang up.',
+      },
+    ],
+    2_000,
+  )
+
+  assert.equal(result.category, 'VOICEMAIL')
+})
+
+test('post-stop behavior separates agent failure, excess duration, and a normal close', () => {
+  const blocks = [
+    { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent prompt' },
+    { number: 2, startMs: 1_100, endMs: 2_000, text: 'Synthetic customer deferral' },
+    { number: 3, startMs: 2_100, endMs: 3_000, text: 'Synthetic agent response' },
+  ]
+  const base: ClassificationDecisionSignals = {
+    counterpartyType: 'human',
+    agentHandling: 'normal',
+    conversationOutcome: 'no_outcome',
+    durationOutcome: 'appropriate',
+    stopIntent: 'callback_or_defer',
+    successfulOutcome: 'none',
+  }
+  const cases: Array<{
+    behavior: NonNullable<ClassificationDecisionSignals['postStopBehavior']>
+    expected: ModelClassification['category']
+  }> = [
+    { behavior: 'continued_sales_flow', expected: 'AGENT_FAILURE' },
+    { behavior: 'administrative_extension', expected: 'TIME_DURATION' },
+    { behavior: 'appropriate_close', expected: 'CONNECT_NOT_FRUITFUL' },
+  ]
+
+  for (const item of cases) {
+    const result = validateClassification(
+      reviewedClassification({
+        proposed: 'CONNECT_NOT_FRUITFUL',
+        customerSpoke: true,
+        signals: { ...base, postStopBehavior: item.behavior },
+      }),
+      blocks,
+      4_000,
+    )
+    assert.equal(result.category, item.expected)
+  }
+})
+
+test('a completed outcome is not erased by a later deferral', () => {
+  const result = validateClassification(
+    reviewedClassification({
+      proposed: 'CONNECT_NOT_FRUITFUL',
+      customerSpoke: true,
+      signals: {
+        counterpartyType: 'human',
+        agentHandling: 'normal',
+        conversationOutcome: 'successful',
+        durationOutcome: 'appropriate',
+        stopIntent: 'callback_or_defer',
+        postStopBehavior: 'appropriate_close',
+        successfulOutcome: 'handoff_or_transfer',
+      },
+    }),
+    [
+      { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent handoff' },
+      { number: 2, startMs: 1_100, endMs: 2_000, text: 'Synthetic customer response' },
+    ],
+    3_000,
+  )
+
+  assert.equal(result.category, 'OK')
+})
+
 test('incorrect-duration category requires the independently verified mismatch', () => {
   const raw = reviewedClassification({
     proposed: 'INCORRECT_CALL_DURATION',

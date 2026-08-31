@@ -246,11 +246,13 @@ export interface AuditMonitorRow {
   auditedAt: string | null
   /**
    * Latest visible administrator-requested re-audit lifecycle for this row.
-   * The server exposes lifecycle and completion date only — no request id,
-   * queue item, baseline run, attempt count, error code, or internal call id.
+   * The server exposes lifecycle, completion date, and a bounded application
+   * failure code only — no request id, queue item, baseline run, attempt count,
+   * raw error, or internal call id.
    */
   reAuditStatus: ManualReauditRowStatus | null
   reAuditCompletedAt: string | null
+  reAuditFailureCode: string | null
   aiUsage: {
     inputTokens: number | null
     outputTokens: number | null

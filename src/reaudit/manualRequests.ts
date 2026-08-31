@@ -106,8 +106,8 @@ export type ManualReauditItemStatus =
 /**
  * The ONLY per-row re-audit lifecycle the monitor exposes.
  *
- * Deliberately not the item id, the request id, the baseline run, the attempt
- * count, or the error code.
+ * Deliberately not the item id, request id, baseline run, or attempt count.
+ * Failed items may carry only the already-sanitized application error code.
  */
 export type ManualReauditRowStatus =
   | 'queued'
@@ -118,6 +118,7 @@ export type ManualReauditRowStatus =
 export interface ManualReauditRowLifecycle {
   status: ManualReauditRowStatus
   completedAt: Date | string | null
+  failureCode: string | null
 }
 
 export interface ManualReauditRequestInput {
@@ -275,6 +276,7 @@ export function manualReauditRowLifecycle(
     status: ManualReauditItemStatus
     createdAt: Date | string
     completedAt?: Date | string | null
+    failureCode?: string | null
   }[],
 ): ManualReauditRowLifecycle | null {
   const latest = [...items].sort(
@@ -294,6 +296,10 @@ export function manualReauditRowLifecycle(
     completedAt:
       latest.status === 'completed' || latest.status === 'failed'
         ? latest.completedAt ?? null
+        : null,
+    failureCode:
+      latest.status === 'failed'
+        ? safeManualReauditErrorCode(latest.failureCode)
         : null,
   }
 }

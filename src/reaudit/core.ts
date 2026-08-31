@@ -19,8 +19,8 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.3.0'
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.5.0'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.4.0'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.6.0'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
@@ -35,7 +35,7 @@ const decimal = /^(0|1)(?:\.\d{1,8})?$/
  * check prevents an unsupported evidence-block assertion from becoming fact.
  */
 const AFFIRMATIVE_VOICEMAIL_CUE =
-  /\b(?:voice\s*mail|mailbox|beep|after (?:the )?(?:tone|beep)|at the tone|leave (?:a |your )?message|record (?:a |your |the )?message|you(?:'ve| have) reached|is not available|cannot (?:take|answer) (?:your )?call)\b|वॉइस\s*मेल|वॉइसमेल|संदेश छोड़|मैसेज छोड़|बीप|टोन के बाद|उपलब्ध नहीं|വോയ്സ്\s*മെയിൽ|വോയ്സ്മെയിൽ|സന്ദേശം|ബീപ്പ്|ലഭ്യമല്ല/iu
+  /\b(?:voice\s*mail|mailbox|beep|after (?:the )?(?:tone|beep)|at the tone|leave (?:a |your )?message|record (?:a |your |the )?message|you(?:'ve| have) reached|is not available|cannot (?:take|answer) (?:your )?call|(?:message|recording) (?:has been |is )?(?:recorded|complete(?:d)?|finished|ended)|you (?:may|can) (?:now )?hang up)\b|वॉइस\s*मेल|वॉइसमेल|संदेश छोड़|मैसेज छोड़|बीप|टोन के बाद|उपलब्ध नहीं|വോയ്സ്\s*മെയിൽ|വോയ്സ്മെയിൽ|സന്ദേശം|ബീപ്പ്|ലഭ്യമല്ല/iu
 
 const DECISION_SIGNAL_VALUES = {
   counterpartyType: [
@@ -53,10 +53,30 @@ const DECISION_SIGNAL_VALUES = {
     'continued_without_value',
     'unclear',
   ],
+  stopIntent: [
+    'none',
+    'busy_or_bad_time',
+    'callback_or_defer',
+    'decline_or_end',
+  ],
+  postStopBehavior: [
+    'not_applicable',
+    'appropriate_close',
+    'administrative_extension',
+    'continued_sales_flow',
+    'unclear',
+  ],
+  successfulOutcome: [
+    'none',
+    'qualified',
+    'handoff_or_transfer',
+    'resolved',
+  ],
   voicemailEvidence: [
     'fixed_greeting',
     'leave_message_request',
     'mailbox_notice',
+    'recording_notice',
     'beep',
     'none',
   ],
@@ -68,7 +88,12 @@ function validateDecisionSignals(
   for (const [name, allowed] of Object.entries(DECISION_SIGNAL_VALUES)) {
     const value = signals[name as keyof ClassificationDecisionSignals]
     if (value === undefined) {
-      if (name === 'voicemailEvidence') continue
+      if (
+        name === 'voicemailEvidence' ||
+        name === 'stopIntent' ||
+        name === 'postStopBehavior' ||
+        name === 'successfulOutcome'
+      ) continue
       throw new Error(`Classifier returned an unsupported ${name} signal`)
     }
     if (!(allowed as readonly string[]).includes(value)) {
@@ -128,6 +153,28 @@ export function resolveReviewedCategory(options: {
   if (signals.counterpartyType === 'interactive_automation') return 'AI_TO_AI'
   if (signals.counterpartyType === 'no_response') {
     return 'USER_SILENCE'
+  }
+  if (
+    signals.counterpartyType === 'human' &&
+    signals.successfulOutcome !== undefined &&
+    signals.successfulOutcome !== 'none' &&
+    signals.agentHandling === 'normal'
+  ) {
+    return 'OK'
+  }
+  if (
+    signals.stopIntent !== undefined &&
+    signals.stopIntent !== 'none' &&
+    signals.postStopBehavior === 'continued_sales_flow'
+  ) {
+    return 'AGENT_FAILURE'
+  }
+  if (
+    signals.stopIntent !== undefined &&
+    signals.stopIntent !== 'none' &&
+    signals.postStopBehavior === 'administrative_extension'
+  ) {
+    return 'TIME_DURATION'
   }
   if (signals.agentHandling === 'failed') return 'AGENT_FAILURE'
   if (

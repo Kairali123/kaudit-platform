@@ -85,6 +85,7 @@ interface RowStatusRow extends RowDataPacket {
   status: ManualReauditItemStatus
   created_at: Date | string
   completed_at: Date | string | null
+  last_error_code: string | null
 }
 
 interface LatestRunRow extends RowDataPacket {
@@ -711,7 +712,8 @@ export async function settleManualReauditItem(
 /**
  * The monitor's per-row read, for the calls ON SCREEN only.
  *
- * Returns only privacy-safe lifecycle and completion time per internal call id.
+ * Returns privacy-safe lifecycle, completion time, and a bounded failure code
+ * per internal call id.
  * The caller maps those onto displayed rows and never publishes the key. Absence
  * of the tables — a deployment where migration 0015 has not been applied yet —
  * reports every row as having no re-audit state rather than failing the page.
@@ -724,7 +726,8 @@ export async function readManualReauditRowStatuses(
   if (callIds.length === 0) return statuses
   try {
     const [rows] = await pool.query<RowStatusRow[]>(
-      `SELECT item.call_id, item.status, item.created_at, item.completed_at
+      `SELECT item.call_id, item.status, item.created_at, item.completed_at,
+              item.last_error_code
        FROM kaudit_billing_reaudit_item item
        WHERE item.status IN ('queued','processing','completed','failed')
          AND item.call_id IN (${placeholders(callIds.length)})
@@ -754,6 +757,7 @@ export async function readManualReauditRowStatuses(
         status: ManualReauditItemStatus
         createdAt: Date | string
         completedAt: Date | string | null
+        failureCode: string | null
       }[]
     >()
     for (const row of rows) {
@@ -763,6 +767,7 @@ export async function readManualReauditRowStatuses(
           status: row.status,
           createdAt: row.created_at,
           completedAt: row.completed_at,
+          failureCode: row.last_error_code,
         },
       ])
     }

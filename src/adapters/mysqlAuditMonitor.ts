@@ -50,6 +50,7 @@ export interface AuditMonitorRow {
    */
   reAuditStatus: ManualReauditRowStatus | null
   reAuditCompletedAt: string | null
+  reAuditFailureCode: string | null
   aiUsage: {
     inputTokens: number | null
     outputTokens: number | null
@@ -1065,6 +1066,9 @@ export async function collectAuditMonitor(
           ? isoDate(
               reAuditStatuses.get(row.internal_call_id)?.completedAt ?? null,
             )
+          : null,
+        reAuditFailureCode: row.internal_call_id
+          ? reAuditStatuses.get(row.internal_call_id)?.failureCode ?? null
           : null,
         aiUsage: {
           inputTokens: nullableNumber(row.ai_input_tokens),

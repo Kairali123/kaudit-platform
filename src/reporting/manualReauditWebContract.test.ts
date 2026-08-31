@@ -51,6 +51,7 @@ test('the row type carries safe lifecycle fields and nothing more', async () => 
   assert.ok(rowType)
   assert.match(source, /reAuditStatus: ManualReauditRowStatus \| null/)
   assert.match(source, /reAuditCompletedAt: string \| null/)
+  assert.match(source, /reAuditFailureCode: string \| null/)
   assert.match(source, /'queued'[\s\S]{0,80}'processing'[\s\S]{0,80}'completed'[\s\S]{0,80}'failed'/)
   // The queue's internals are never modelled in the browser.
   for (const forbidden of [
@@ -58,7 +59,6 @@ test('the row type carries safe lifecycle fields and nothing more', async () => 
     'itemId',
     'internalCallId',
     'reAuditAttemptCount',
-    'reAuditErrorCode',
     'lastErrorCode',
   ]) {
     assert.equal(
@@ -189,6 +189,8 @@ test('pending, success, and error are all visible states', async () => {
   assert.match(source, /Previous audit retained/)
   assert.match(source, /date\(row\.reAuditCompletedAt\)/)
   assert.match(source, /function reAuditLabel\(row: AuditMonitorRow\): string/)
+  assert.match(source, /function reAuditFailure\(row: AuditMonitorRow\): string/)
+  assert.match(source, /CLASSIFICATION_FAILED: 'Classification failed'/)
 })
 
 test('a success refreshes the monitor and the worker state', async () => {
