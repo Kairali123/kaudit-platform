@@ -14,6 +14,9 @@ const workflowRunbook = readFileSync(
   new URL('../../docs/runbooks/GITHUB_ACTIONS_AUDIT_WORKER.md', import.meta.url),
   'utf8',
 )
+const packageJson = JSON.parse(
+  readFileSync(new URL('../../package.json', import.meta.url), 'utf8'),
+) as { scripts: Record<string, string> }
 
 test('hosted worker is manual, bounded, and serialized per audit system', () => {
   assert.match(workflow, /workflow_dispatch:/)
@@ -167,17 +170,24 @@ test('disabled database TLS cannot retain dormant CA material', () => {
   assert.match(workflow, /unset DB_SSL_CA_PEM/)
 })
 
-test('scheduled workers prioritize Billing Audit while still running Call Audit', () => {
+test('scheduled workers run Billing Audit only', () => {
   assert.match(scheduledWorkflow, /name: Kaudit scheduled audit workers/)
   assert.match(scheduledWorkflow, /cron: '47 \*\/6 \* \* \*'/)
-  assert.match(scheduledWorkflow, /cron: '17 \*\/12 \* \* \*'/)
   assert.match(
     scheduledWorkflow,
     /billing-audit:[\s\S]{0,160}system: billing[\s\S]{0,80}mode: new/,
   )
-  assert.match(
-    scheduledWorkflow,
-    /call-audit:[\s\S]{0,160}system: call[\s\S]{0,80}mode: new/,
-  )
   assert.match(scheduledWorkflow, /secrets: inherit/)
+  assert.doesNotMatch(scheduledWorkflow, /system: call/)
+  assert.doesNotMatch(scheduledWorkflow, /call-audit:/)
+  assert.doesNotMatch(scheduledWorkflow, /cron: '17 \*\/12 \* \* \*'/)
+})
+
+test('automatic local operate command does not start Call Audit', () => {
+  const operate = packageJson.scripts['app:operate']
+  assert.ok(operate, 'package.json must define app:operate')
+  assert.match(operate, /npm run audit:worker/)
+  assert.match(operate, /npm run report:email-worker/)
+  assert.doesNotMatch(operate, /npm run callaudit:worker/)
+  assert.doesNotMatch(operate, /\bcall-audit\b/)
 })

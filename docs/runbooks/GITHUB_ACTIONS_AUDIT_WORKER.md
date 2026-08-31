@@ -6,9 +6,10 @@ GitHub-hosted worker from the Billing Audit or Call Audit report. The worker
 drains currently eligible database work and exits when it is idle, paused,
 faulted, or near its host deadline.
 
-It is not a persistent process. New source changes that arrive after a job exits
-wait for either the next administrator Run action or the next scheduled
-workflow. GitHub-hosted usage is also bounded by the repository owner's Actions
+It is not a persistent process. New Billing Audit source changes that arrive
+after a job exits wait for either the next administrator Run action or the next
+scheduled Billing workflow. Call Audit has no scheduled workflow while it is out
+of use. GitHub-hosted usage is also bounded by the repository owner's Actions
 allowance.
 
 ## Security boundary
@@ -89,7 +90,8 @@ It calls the same hosted worker workflow with inherited repository secrets:
 
 - Billing Audit runs every 6 hours at minute 47 UTC and drains new eligible
   billing calls until idle or near the GitHub job deadline.
-- Call Audit runs every 12 hours at minute 17 UTC.
+- Call Audit does not run on a schedule. It remains available only through an
+  explicit administrator dispatch of the reusable worker workflow.
 
 Every hosted Billing Audit mode sets `KAUDIT_AUDIT_CONCURRENCY=1` and
 `KAUDIT_AUDIT_BATCH=1`. Keep Billing work sequential until measured database

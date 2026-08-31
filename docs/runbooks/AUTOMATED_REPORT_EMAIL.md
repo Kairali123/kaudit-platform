@@ -27,8 +27,8 @@ The worker queues nothing unless all of these are true:
 7. an invoice exists for the exact billing month.
 
 `npm run app:start` starts the dashboard only. `npm run app:operate` starts the
-dashboard, audit worker, and report-email worker. The report worker remains
-inactive when its enable switch is false.
+dashboard, Billing Audit worker, and report-email worker. The report worker
+remains inactive when its enable switch is false.
 
 ## Configuration
 

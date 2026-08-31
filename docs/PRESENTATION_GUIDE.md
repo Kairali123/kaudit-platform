@@ -852,7 +852,7 @@ Altered evidence and unsafe URLs are terminal immediately.
 
 ### Concurrency protection
 
-A MySQL advisory lock permits only one full-call audit worker at a time.
+A MySQL advisory lock permits only one Billing Audit worker at a time.
 
 The worker processes each selected batch sequentially. Current local
 `app:operate` configuration requests batches of ten and watches for new/due
@@ -861,7 +861,7 @@ calls every 15 seconds.
 ### Start-command distinction
 
 - `npm run app:start`: dashboard only; does not spend OpenAI money.
-- `npm run app:operate`: dashboard plus continuous audit worker.
+- `npm run app:operate`: dashboard plus continuous Billing Audit worker.
 - opening a page never starts the audit by itself.
 
 At the time this guide was prepared, the combined process had been stopped at

@@ -36,7 +36,7 @@
     "app:dev:secure": "concurrently -k -n api,web -c cyan,green \"KAUDIT_SECURE_PORT=4175 npm run ui:secure\" \"npm run web:dev\"",
     "app:preview": "npm run web:build && KAUDIT_AUTH_MODE=preview KAUDIT_SECURE_PORT=4176 npm run ui:secure",
     "app:start": "npm run web:build && npm run ui:secure",
-    "app:operate": "npm run web:build && concurrently -k -n api,billing-audit,call-audit,report -c cyan,magenta,blue,yellow \"npm run ui:secure\" \"KAUDIT_AUDIT_MODE=EXECUTE KAUDIT_AUDIT_BATCH=10 KAUDIT_AUDIT_WATCH=true npm run audit:worker\" \"npm run callaudit:worker\" \"KAUDIT_REPORT_EMAIL_WATCH=true npm run report:email-worker\"",
+    "app:operate": "npm run web:build && concurrently -k -n api,billing-audit,report -c cyan,magenta,yellow \"npm run ui:secure\" \"KAUDIT_AUDIT_MODE=EXECUTE KAUDIT_AUDIT_BATCH=10 KAUDIT_AUDIT_WATCH=true npm run audit:worker\" \"KAUDIT_REPORT_EMAIL_WATCH=true npm run report:email-worker\"",
     "ui:monitor": "node --env-file-if-exists=.env src/cli/run-monitor.ts",
     "ui:sample": "node src/cli/render-sample.ts",
     "ui:dashboard": "node --env-file-if-exists=.env src/cli/run-full-dashboard.ts",
