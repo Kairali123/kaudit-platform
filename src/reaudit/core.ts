@@ -19,14 +19,23 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.2.0'
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.4.0'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.3.0'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.5.0'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
 export const MERGE_MAX_BLOCK_CHARS = 250
 
 const decimal = /^(0|1)(?:\.\d{1,8})?$/
+
+/**
+ * Positive voicemail language only. Silence, an agent introduction, and a
+ * request for the customer's name intentionally match none of these cues.
+ * The model still handles language and meaning; this bounded multilingual
+ * check prevents an unsupported evidence-block assertion from becoming fact.
+ */
+const AFFIRMATIVE_VOICEMAIL_CUE =
+  /\b(?:voice\s*mail|mailbox|beep|after (?:the )?(?:tone|beep)|at the tone|leave (?:a |your )?message|record (?:a |your |the )?message|you(?:'ve| have) reached|is not available|cannot (?:take|answer) (?:your )?call)\b|वॉइस\s*मेल|वॉइसमेल|संदेश छोड़|मैसेज छोड़|बीप|टोन के बाद|उपलब्ध नहीं|വോയ്സ്\s*മെയിൽ|വോയ്സ്മെയിൽ|സന്ദേശം|ബീപ്പ്|ലഭ്യമല്ല/iu
 
 const DECISION_SIGNAL_VALUES = {
   counterpartyType: [
@@ -44,6 +53,13 @@ const DECISION_SIGNAL_VALUES = {
     'continued_without_value',
     'unclear',
   ],
+  voicemailEvidence: [
+    'fixed_greeting',
+    'leave_message_request',
+    'mailbox_notice',
+    'beep',
+    'none',
+  ],
 } as const
 
 function validateDecisionSignals(
@@ -51,6 +67,10 @@ function validateDecisionSignals(
 ): void {
   for (const [name, allowed] of Object.entries(DECISION_SIGNAL_VALUES)) {
     const value = signals[name as keyof ClassificationDecisionSignals]
+    if (value === undefined) {
+      if (name === 'voicemailEvidence') continue
+      throw new Error(`Classifier returned an unsupported ${name} signal`)
+    }
     if (!(allowed as readonly string[]).includes(value)) {
       throw new Error(`Classifier returned an unsupported ${name} signal`)
     }
@@ -61,6 +81,7 @@ export function resolveReviewedCategory(options: {
   proposedCategory: ModelClassification['category']
   decisionSignals?: ClassificationDecisionSignals
   customerBlockCount: number
+  voicemailEvidenceBlockCount?: number
   durationMismatch?: boolean
 }): ModelClassification['category'] {
   const signals = options.decisionSignals
@@ -82,7 +103,28 @@ export function resolveReviewedCategory(options: {
     throw new Error('Non-human counterparty signal cannot contain customer speech')
   }
 
-  if (signals.counterpartyType === 'voicemail') return 'VOICEMAIL'
+  if (signals.counterpartyType === 'voicemail') {
+    // Legacy durable results predate affirmative voicemail evidence. New live
+    // classifiers always provide both fields and cannot turn mere silence into
+    // voicemail by assertion alone.
+    if (
+      signals.voicemailEvidence !== undefined &&
+      (signals.voicemailEvidence === 'none' ||
+        options.voicemailEvidenceBlockCount === 0)
+    ) {
+      return 'USER_SILENCE'
+    }
+    return 'VOICEMAIL'
+  }
+  if (
+    signals.voicemailEvidence !== undefined &&
+    (signals.voicemailEvidence !== 'none' ||
+      (options.voicemailEvidenceBlockCount ?? 0) > 0)
+  ) {
+    throw new Error(
+      'Voicemail evidence requires a voicemail counterparty signal',
+    )
+  }
   if (signals.counterpartyType === 'interactive_automation') return 'AI_TO_AI'
   if (signals.counterpartyType === 'no_response') {
     return 'USER_SILENCE'
@@ -170,10 +212,26 @@ export function validateClassification(
       .sort((left, right) => left - right)
   const customerBlockNumbers = normalizeBlocks(raw.customerBlockNumbers)
   const unclearBlockNumbers = normalizeBlocks(raw.unclearBlockNumbers)
+  const voicemailEvidenceBlockNumbers = normalizeBlocks(
+    raw.voicemailEvidenceBlockNumbers ?? [],
+  ).filter((number) => {
+    const block = blocks.find((candidate) => candidate.number === number)
+    return block != null && AFFIRMATIVE_VOICEMAIL_CUE.test(block.text)
+  })
   const customerBlocks = new Set(customerBlockNumbers)
   const unclearBlocks = new Set(unclearBlockNumbers)
+  const voicemailEvidenceBlocks = new Set(voicemailEvidenceBlockNumbers)
   if (customerBlockNumbers.some((number) => unclearBlocks.has(number))) {
     throw new Error('Customer and unclear speech blocks must not overlap')
+  }
+  if (
+    voicemailEvidenceBlockNumbers.some(
+      (number) => customerBlocks.has(number) || unclearBlocks.has(number),
+    )
+  ) {
+    throw new Error(
+      'Voicemail evidence blocks must be separate from customer and unclear speech',
+    )
   }
   // The model identifies roles; the engine owns the resulting time fact. This
   // avoids rejecting a valid role assignment because a model repeated a
@@ -191,6 +249,7 @@ export function validateClassification(
     proposedCategory: raw.category,
     decisionSignals: raw.decisionSignals,
     customerBlockCount: customerBlockNumbers.length,
+    voicemailEvidenceBlockCount: voicemailEvidenceBlockNumbers.length,
     durationMismatch: options.durationMismatch,
   })
   if (category === 'USER_SILENCE') {
@@ -200,7 +259,8 @@ export function validateClassification(
     const agentBlockCount = blocks.filter(
       (block) =>
         !customerBlocks.has(block.number) &&
-        !unclearBlocks.has(block.number),
+        !unclearBlocks.has(block.number) &&
+        !voicemailEvidenceBlocks.has(block.number),
     ).length
     if (agentBlockCount === 0) {
       throw new Error(
@@ -213,9 +273,14 @@ export function validateClassification(
     category,
     customerBlockNumbers,
     unclearBlockNumbers,
+    voicemailEvidenceBlockNumbers,
     customerSpoke,
     lastMeaningfulCustomerExchangeMs: last,
-    remarks: raw.remarks.trim().slice(0, 2_000),
+    remarks:
+      raw.decisionSignals?.counterpartyType === 'voicemail' &&
+      category === 'USER_SILENCE'
+        ? 'Agent speech was identified, but no customer or affirmative voicemail evidence was identified; this is user silence.'
+        : raw.remarks.trim().slice(0, 2_000),
   }
 }
 
@@ -225,12 +290,20 @@ function speechByRole(
 ): { customerSpeechMs: number; agentSpeechMs: number } {
   const customer = new Set(classification.customerBlockNumbers)
   const unclear = new Set(classification.unclearBlockNumbers)
+  const voicemailEvidence = new Set(
+    classification.voicemailEvidenceBlockNumbers ?? [],
+  )
   let customerSpeechMs = 0
   let agentSpeechMs = 0
   for (const block of blocks) {
     const duration = Math.max(0, block.endMs - block.startMs)
     if (customer.has(block.number)) customerSpeechMs += duration
-    else if (!unclear.has(block.number)) agentSpeechMs += duration
+    else if (
+      !unclear.has(block.number) &&
+      !voicemailEvidence.has(block.number)
+    ) {
+      agentSpeechMs += duration
+    }
   }
   return { customerSpeechMs, agentSpeechMs }
 }

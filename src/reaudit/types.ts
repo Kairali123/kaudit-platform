@@ -85,6 +85,13 @@ export interface ClassificationDecisionSignals {
     | 'ended_too_early'
     | 'continued_without_value'
     | 'unclear'
+  /** Required from live classifiers; absent only on durable legacy results. */
+  voicemailEvidence?:
+    | 'fixed_greeting'
+    | 'leave_message_request'
+    | 'mailbox_notice'
+    | 'beep'
+    | 'none'
 }
 
 export interface ModelClassification {
@@ -97,6 +104,8 @@ export interface ModelClassification {
   confidence: string
   customerBlockNumbers: number[]
   unclearBlockNumbers: number[]
+  /** Transcript blocks containing affirmative voicemail evidence. */
+  voicemailEvidenceBlockNumbers?: number[]
   customerSpoke: boolean
   lastMeaningfulCustomerExchangeMs: number | null
   remarks: string
