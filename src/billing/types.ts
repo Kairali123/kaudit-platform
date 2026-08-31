@@ -1,4 +1,6 @@
 import type { JsonValue } from '../messaging/canonicalJson.ts'
+import type { ReauditCategory } from '../reaudit/types.ts'
+import type { CategoryChargePolicyCode } from './categoryChargePolicy.ts'
 
 export type SensitivityTier = 'K0' | 'K1' | 'K2' | 'K3'
 export type ConversationAssessment =
@@ -56,6 +58,14 @@ export interface VerifiedBillingInput {
   speechDurationMs: number | null
   conversationAssessment: ConversationAssessment
   lastMeaningfulCustomerExchangeMs: number | null
+  categoryCharge?: {
+    category: ReauditCategory
+    serviceEndMs: number
+    graceMs: number
+    policyCode: CategoryChargePolicyCode
+    policyVersion: string
+    policySha256: string
+  }
   model: ModelIdentity
   classifierRulesetVersion: string
   classifierRulesetSha256: string
@@ -79,7 +89,7 @@ export type BillingNextAction =
   | 'retry_conversation_assessment'
 
 export interface BillingDecisionTrace {
-  schemaVersion: '1'
+  schemaVersion: '1' | '2'
   decisionType: 'verified_call_billing'
   engineVersion: string
   rulesetVersion: string
@@ -102,6 +112,7 @@ export interface BillingDecisionTrace {
     speechDurationMs: number | null
     conversationAssessment: ConversationAssessment
     lastMeaningfulCustomerExchangeMs: number | null
+    categoryCharge?: VerifiedBillingInput['categoryCharge']
   }
   calculation: JsonValue
   outcome: {

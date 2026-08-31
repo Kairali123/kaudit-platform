@@ -17,7 +17,7 @@ import {
 } from './openaiReaudit.ts'
 
 export const CONSENSUS_REVIEWER_VERSION =
-  'kairali-independent-consensus-review/1.5.0'
+  'kairali-independent-consensus-review/1.6.0'
 
 export const CONSENSUS_REVIEWER_PROMPT = `You are an independent automated
 verification pass for Kairali's call-audit system. Review the timestamped,
@@ -44,7 +44,7 @@ export const CONSENSUS_REVIEWER_RULESET_SHA256 =
     model: REAUDIT_CLASSIFICATION_MODEL,
     prompt: CONSENSUS_REVIEWER_PROMPT,
     categories: REAUDIT_CATEGORIES,
-    outputSchemaVersion: '5',
+    outputSchemaVersion: '6',
   } as unknown as JsonValue)
 
 export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
@@ -65,6 +65,10 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
         items: { type: 'integer', minimum: 1 },
       },
       voicemail_evidence_block_numbers: {
+        type: 'array',
+        items: { type: 'integer', minimum: 1 },
+      },
+      business_relevant_customer_block_numbers: {
         type: 'array',
         items: { type: 'integer', minimum: 1 },
       },
@@ -133,6 +137,7 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
       'customer_block_numbers',
       'unclear_block_numbers',
       'voicemail_evidence_block_numbers',
+      'business_relevant_customer_block_numbers',
       'counterparty_type',
       'agent_handling',
       'conversation_outcome',
@@ -213,6 +218,7 @@ ${transcript}`,
         customer_block_numbers: number[]
         unclear_block_numbers: number[]
         voicemail_evidence_block_numbers: number[]
+        business_relevant_customer_block_numbers: number[]
         counterparty_type:
           | 'human'
           | 'voicemail'
@@ -268,6 +274,8 @@ ${transcript}`,
         unclearBlockNumbers: raw.unclear_block_numbers,
         voicemailEvidenceBlockNumbers:
           raw.voicemail_evidence_block_numbers,
+        businessRelevantCustomerBlockNumbers:
+          raw.business_relevant_customer_block_numbers,
         customerSpoke: customerEnds.length > 0,
         lastMeaningfulCustomerExchangeMs:
           customerEnds.length > 0 ? Math.max(...customerEnds) : null,

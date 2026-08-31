@@ -377,6 +377,30 @@ export function auditedFinancialSummarySql(
    ) vendor ON vendor.call_id = scoped.id`
 }
 
+function categoryAdjustedDurationSql(alias: string): string {
+  const serviceEnd = `COALESCE(
+    CAST(JSON_EXTRACT(
+      ${alias}.metrics_json,
+      '$.chargeableServiceEndMs'
+    ) AS SIGNED),
+    ${alias}.conversation_end_ms
+  )`
+  const grace = `COALESCE(
+    CAST(JSON_EXTRACT(
+      ${alias}.metrics_json,
+      '$.appliedBillingGraceMs'
+    ) AS SIGNED),
+    60000
+  )`
+  return `CASE
+    WHEN ${serviceEnd} IS NULL THEN NULL
+    ELSE LEAST(
+      COALESCE(${alias}.decoded_duration_ms, ${serviceEnd} + ${grace}),
+      ${serviceEnd} + ${grace}
+    )
+  END`
+}
+
 const TASK_REFERENCE_SQL = `
   COALESCE(
     (
@@ -698,16 +722,8 @@ export async function collectAuditMonitor(
       auditedFinancialSummarySql(
         `SELECT DISTINCT
            c.id,
-           CASE
-             WHEN ma.conversation_end_ms IS NULL THEN NULL
-             ELSE LEAST(
-               COALESCE(
-                 ma.decoded_duration_ms,
-                 ma.conversation_end_ms + 60000
-               ),
-               ma.conversation_end_ms + 60000
-             )
-           END AS grace_adjusted_duration_ms
+           ${categoryAdjustedDurationSql('ma')}
+             AS grace_adjusted_duration_ms
          ${AUDITED_JOIN}
          ${filters.sql}`,
       ),
@@ -759,13 +775,8 @@ export async function collectAuditMonitor(
        ma.decoded_duration_ms,
        ma.speech_ms,
        ma.conversation_end_ms,
-       CASE
-         WHEN ma.conversation_end_ms IS NULL THEN NULL
-         ELSE LEAST(
-           COALESCE(ma.decoded_duration_ms, ma.conversation_end_ms + 60000),
-           ma.conversation_end_ms + 60000
-         )
-       END AS grace_adjusted_duration_ms,
+       ${categoryAdjustedDurationSql('ma')}
+         AS grace_adjusted_duration_ms,
        -- Read once per displayed row. The difference against the
        -- grace-adjusted duration is derived from these two columns after the
        -- fact instead of repeating the lookup.

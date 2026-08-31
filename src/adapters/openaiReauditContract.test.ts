@@ -101,6 +101,7 @@ test('classifier schemas require reviewed decision evidence before category reso
       'successful_outcome',
       'voicemail_evidence',
       'voicemail_evidence_block_numbers',
+      'business_relevant_customer_block_numbers',
     ]) {
       assert.ok(field in output.schema.properties)
       assert.ok((output.schema.required as readonly string[]).includes(field))

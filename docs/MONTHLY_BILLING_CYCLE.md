@@ -11,8 +11,11 @@ An audit resolution is one of:
 
 1. `independent_conversation_end` — recording fetched and hashed, AI audit
    completed, confidence/calibration policy passed, and deterministic billing
-   calculated from the verified duration; or
-2. `accepted_as_billed_unverified` — no usable recording remained after the
+   calculated from the verified duration;
+2. `independent_category_service_end` — the same verified evidence path with
+   the versioned management category policy selecting the service endpoint and
+   category-specific grace; or
+3. `accepted_as_billed_unverified` — no usable recording remained after the
    automatic retry window and, at cycle close, the approved fallback explicitly
    accepted KServe's supplied minutes.
 

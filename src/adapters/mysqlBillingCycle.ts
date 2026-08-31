@@ -132,11 +132,14 @@ export async function collectLatestBillingCycle(
          AND calculation.status = 'final'
          AND calculation.calculation_basis IN (
            'independent_conversation_end',
+           'independent_category_service_end',
            'accepted_as_billed_unverified'
          )
          AND (
-           (calculation.calculation_basis =
-              'independent_conversation_end'
+           (calculation.calculation_basis IN (
+              'independent_conversation_end',
+              'independent_category_service_end'
+            )
             AND calculation.audit_run_id IS NOT NULL)
            OR calculation.calculation_basis =
               'accepted_as_billed_unverified'

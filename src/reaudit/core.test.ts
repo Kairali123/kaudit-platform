@@ -549,6 +549,9 @@ test('projection adds 60-second wrap-up grace and remains uncalibrated', () => {
     lastMeaningfulCustomerExchangeMs: 61_000,
     customerSpeechMs: 20_000,
     agentSpeechMs: 60_000,
+    chargeableServiceEndMs: 61_000,
+    appliedBillingGraceMs: 60_000,
+    categoryChargePolicyCode: 'STANDARD_CUSTOMER_PLUS_GRACE',
     durationMismatch: false,
     evidenceSha256: 'a'.repeat(64),
     remarks: 'Synthetic',
@@ -560,6 +563,10 @@ test('projection adds 60-second wrap-up grace and remains uncalibrated', () => {
   assert.equal(projected.amount, '28.50000000')
   assert.equal(projected.authority, 'provisional_uncalibrated')
   assert.equal(projected.oneWayTailAlert, true)
+  assert.equal(
+    projected.categoryChargePolicyCode,
+    'STANDARD_CUSTOMER_PLUS_GRACE',
+  )
 })
 
 test('read-only audit hashes audio, classifies, and projects without a repository', async () => {

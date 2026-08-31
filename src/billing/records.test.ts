@@ -4,6 +4,10 @@ import {
   calculateVerifiedKServeCharge,
 } from './calculateVerifiedCharge.ts'
 import { KSERVE_RULESET_SHA256 } from './kserveRules.ts'
+import {
+  CATEGORY_CHARGE_POLICY_SHA256,
+  CATEGORY_CHARGE_POLICY_VERSION,
+} from './categoryChargePolicy.ts'
 import { buildVerifiedBillingRecords } from './records.ts'
 import type {
   PublishedRateCard,
@@ -94,4 +98,24 @@ test('unresolved decisions are logged without creating a final money row', () =>
   assert.equal(records.decision.nextAction, 'retry_with_secondary_model')
   assert.equal(records.calculation, null)
   assert.equal(records.component, null)
+})
+
+test('category policy records the independent service endpoint and grace', () => {
+  const source = input()
+  source.categoryCharge = {
+    category: 'VOICEMAIL',
+    serviceEndMs: 70_000,
+    graceMs: 30_000,
+    policyCode: 'VOICEMAIL_SERVICE_PLUS_30S',
+    policyVersion: CATEGORY_CHARGE_POLICY_VERSION,
+    policySha256: CATEGORY_CHARGE_POLICY_SHA256,
+  }
+  const result = calculateVerifiedKServeCharge(source, rateCard)
+  const records = buildVerifiedBillingRecords(source, rateCard, result)
+  assert.equal(
+    records.calculation?.calculationBasis,
+    'independent_category_service_end',
+  )
+  assert.equal(records.calculation?.conversationEndMs, 70_000)
+  assert.equal(records.calculation?.wrapUpGraceMs, 30_000)
 })

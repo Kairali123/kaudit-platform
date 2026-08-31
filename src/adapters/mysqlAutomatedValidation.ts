@@ -45,6 +45,7 @@ interface CandidateRow extends RowDataPacket {
   speech_duration_ms: number | string
   connected_duration_ms: number | string | null
   claimed_duration_ms: number | string | null
+  metrics_json: unknown
 }
 
 interface SegmentRow extends RowDataPacket {
@@ -61,6 +62,27 @@ interface RateCardRow extends RowDataPacket {
   ruleset_sha256: string | null
   approved_by: string | null
   approved_at: Date | null
+}
+
+function metricsRecord(value: unknown): Record<string, unknown> {
+  if (typeof value === 'string') {
+    try {
+      const parsed = JSON.parse(value) as unknown
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {}
+    } catch {
+      return {}
+    }
+  }
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+}
+
+function optionalMs(value: unknown): number | null {
+  const parsed = Number(value)
+  return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null
 }
 
 export interface AutomatedValidationCandidate {
@@ -130,6 +152,7 @@ export async function collectAutomatedValidationCandidates(
        ma.conversation_end_ms,
        ma.decoded_duration_ms AS recorded_duration_ms,
        ma.speech_ms AS speech_duration_ms,
+       ma.metrics_json,
        ROUND(connected.quantity_decimal * 1000)
          AS connected_duration_ms,
        ROUND(vendor_minutes.minutes_decimal * 60000)
@@ -167,8 +190,10 @@ export async function collectAutomatedValidationCandidates(
          FROM kaudit_billing_calculation calculation
          WHERE calculation.call_id = c.id
            AND calculation.status = 'final'
-           AND calculation.calculation_basis =
-                 'independent_conversation_end'
+          AND calculation.calculation_basis IN (
+                'independent_conversation_end',
+                'independent_category_service_end'
+              )
            AND NOT EXISTS (
              SELECT 1
              FROM kaudit_billing_calculation newer
@@ -199,6 +224,8 @@ export async function collectAutomatedValidationCandidates(
   )
   const result: AutomatedValidationCandidate[] = []
   for (const row of rows) {
+    const metrics = metricsRecord(row.metrics_json)
+    const serviceEndMs = optionalMs(metrics.chargeableServiceEndMs)
     const [segmentRows] = await pool.execute<SegmentRow[]>(
       `SELECT start_ms, end_ms, text
        FROM kaudit_transcript_segment
@@ -246,6 +273,16 @@ export async function collectAutomatedValidationCandidates(
           row.conversation_end_ms == null
             ? null
             : Number(row.conversation_end_ms),
+        lastMeaningfulAgentExchangeMs:
+          row.category === 'USER_SILENCE' ? serviceEndMs : null,
+        lastVoicemailExchangeMs:
+          row.category === 'VOICEMAIL' ? serviceEndMs : null,
+        lastBusinessRelevantCustomerExchangeMs:
+          row.category === 'JUNK_CALL' ? serviceEndMs : null,
+        lastVerifiedInteractionMs:
+          row.category === 'INCORRECT_CALL_DURATION'
+            ? serviceEndMs
+            : null,
         remarks: '',
         disputeRecommended: false,
       },

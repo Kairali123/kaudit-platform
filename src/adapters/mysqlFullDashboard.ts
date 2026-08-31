@@ -169,11 +169,14 @@ export async function collectBilling(
              WHEN current.status = 'final'
               AND current.calculation_basis IN (
                 'independent_conversation_end',
+                'independent_category_service_end',
                 'accepted_as_billed_unverified'
               )
               AND (
-                (current.calculation_basis =
-                   'independent_conversation_end'
+                (current.calculation_basis IN (
+                   'independent_conversation_end',
+                   'independent_category_service_end'
+                 )
                  AND current.audit_run_id IS NOT NULL)
                 OR current.calculation_basis =
                    'accepted_as_billed_unverified'
@@ -188,8 +191,10 @@ export async function collectBilling(
          SUM(
            CASE
              WHEN current.status = 'final'
-              AND current.calculation_basis =
-                'independent_conversation_end'
+             AND current.calculation_basis IN (
+                'independent_conversation_end',
+                'independent_category_service_end'
+              )
              THEN 1 ELSE 0
            END
          ) AS independent_final_calculations,

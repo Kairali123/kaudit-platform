@@ -1,9 +1,12 @@
 import { roundKServeChargeableDuration } from '../billing/calculateVerifiedCharge.ts'
-import { KSERVE_WRAP_UP_GRACE_MS } from '../billing/kserveRules.ts'
 import type { ModelClassification } from '../reaudit/types.ts'
+import {
+  resolveCategoryCharge,
+  type CategoryChargeDecision,
+} from '../billing/categoryChargePolicy.ts'
 
 export const AUTOMATED_VALIDATION_VERSION =
-  'leadership-approved-auto-consensus/1.0.0'
+  'leadership-approved-auto-consensus/1.1.0'
 export const AUTOMATED_VALIDATION_THRESHOLD = '0.80000000'
 
 export interface ConsensusInput {
@@ -21,6 +24,7 @@ export interface ConsensusResult {
   reasons: string[]
   selectedSource: 'primary' | 'secondary' | 'adjudicator' | null
   selectedClassification: ModelClassification | null
+  selectedChargeDecision: CategoryChargeDecision | null
   primaryBillableDurationMs: number
   secondaryBillableDurationMs: number
   adjudicatorBillableDurationMs: number | null
@@ -34,20 +38,30 @@ function confidence(value: string): number {
   return parsed
 }
 
-function projectedBillableDuration(
+function projectedCharge(
   classification: ModelClassification,
   recordedDurationMs: number,
-): number {
-  const adjusted =
-    classification.customerSpoke &&
-    classification.lastMeaningfulCustomerExchangeMs != null
-      ? Math.min(
-          recordedDurationMs,
-          classification.lastMeaningfulCustomerExchangeMs +
-            KSERVE_WRAP_UP_GRACE_MS,
-        )
-      : 0
-  return roundKServeChargeableDuration(adjusted).billableDurationMs
+): { decision: CategoryChargeDecision; billableDurationMs: number } {
+  const decision = resolveCategoryCharge({
+    category: classification.category,
+    recordedDurationMs,
+    lastCustomerExchangeMs:
+      classification.lastMeaningfulCustomerExchangeMs,
+    lastAgentExchangeMs:
+      classification.lastMeaningfulAgentExchangeMs ?? null,
+    lastVoicemailExchangeMs:
+      classification.lastVoicemailExchangeMs ?? null,
+    lastBusinessRelevantCustomerExchangeMs:
+      classification.lastBusinessRelevantCustomerExchangeMs ?? null,
+    lastVerifiedInteractionMs:
+      classification.lastVerifiedInteractionMs ?? null,
+  })
+  return {
+    decision,
+    billableDurationMs: roundKServeChargeableDuration(
+      decision.adjustedChargeableDurationMs,
+    ).billableDurationMs,
+  }
 }
 
 export function evaluateAutomatedConsensus(
@@ -68,10 +82,7 @@ export function evaluateAutomatedConsensus(
   ].map((output) => ({
     ...output,
     confidence: confidence(output.value.confidence),
-    billableDurationMs: projectedBillableDuration(
-      output.value,
-      input.recordedDurationMs,
-    ),
+    ...projectedCharge(output.value, input.recordedDurationMs),
   }))
   const groups = new Map<string, typeof outputs>()
   for (const output of outputs) {
@@ -119,6 +130,7 @@ export function evaluateAutomatedConsensus(
     reasons,
     selectedSource: selected?.source ?? null,
     selectedClassification: selected?.value ?? null,
+    selectedChargeDecision: selected?.decision ?? null,
     primaryBillableDurationMs: outputs[0].billableDurationMs,
     secondaryBillableDurationMs: outputs[1].billableDurationMs,
     adjudicatorBillableDurationMs:

@@ -23,6 +23,7 @@ export interface BillingCalculationRecord {
   status: 'final'
   calculationBasis:
     | 'independent_conversation_end'
+    | 'independent_category_service_end'
     | 'accepted_as_billed_unverified'
   claimedDurationMs: number | null
   connectedDurationMs: number | null
@@ -155,8 +156,9 @@ export function buildVerifiedBillingRecords(
   if (result.status === 'unresolved') {
     return { calculation: null, component: null, decision }
   }
-  const conversationEndMs =
-    input.conversationAssessment === 'no_meaningful_exchange'
+  const conversationEndMs = input.categoryCharge
+    ? input.categoryCharge.serviceEndMs
+    : input.conversationAssessment === 'no_meaningful_exchange'
       ? 0
       : (input.lastMeaningfulCustomerExchangeMs as number)
   const calculation: BillingCalculationRecord = {
@@ -166,13 +168,16 @@ export function buildVerifiedBillingRecords(
     engineVersion: KSERVE_BILLING_ENGINE_VERSION,
     inputManifestSha256: result.inputManifestSha256,
     status: 'final',
-    calculationBasis: 'independent_conversation_end',
+    calculationBasis: input.categoryCharge
+      ? 'independent_category_service_end'
+      : 'independent_conversation_end',
     claimedDurationMs: input.claimedDurationMs,
     connectedDurationMs: input.connectedDurationMs,
     recordedDurationMs: input.recordedDurationMs,
     speechDurationMs: input.speechDurationMs,
     conversationEndMs,
-    wrapUpGraceMs: KSERVE_WRAP_UP_GRACE_MS,
+    wrapUpGraceMs:
+      input.categoryCharge?.graceMs ?? KSERVE_WRAP_UP_GRACE_MS,
     adjustedChargeableDurationMs:
       result.adjustedChargeableDurationMs,
     billableDurationMs: result.billableDurationMs,
