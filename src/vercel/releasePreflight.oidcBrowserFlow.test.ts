@@ -27,7 +27,7 @@ const SYNTHETIC_CA_PEM = [
 ].join('\n')
 
 const SYNTHETIC_SECRET = 'synthetic-client-secret-not-a-credential'
-const NODE_INPUT = { nodeVersion: '24.3.0', engineNodeRange: '24.x' }
+const NODE_INPUT = { nodeVersion: '22.3.0', engineNodeRange: '22.x' }
 
 function productionEnv(): NodeJS.ProcessEnv {
   return {

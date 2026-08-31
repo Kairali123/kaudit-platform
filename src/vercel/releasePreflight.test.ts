@@ -24,7 +24,7 @@ const SYNTHETIC_CA_PEM = [
   '-----END CERTIFICATE-----',
 ].join('\n')
 
-const NODE_INPUT = { nodeVersion: '24.3.0', engineNodeRange: '24.x' }
+const NODE_INPUT = { nodeVersion: '22.3.0', engineNodeRange: '22.x' }
 
 function productionEnv(): NodeJS.ProcessEnv {
   return {
@@ -133,20 +133,20 @@ test('optional variables the runtime treats as optional are not required', () =>
 // ---------------------------------------------------------------------------
 
 test('a Node major other than the engine contract fails', () => {
-  const report = evaluate(productionEnv(), { nodeVersion: '22.14.0' })
+  const report = evaluate(productionEnv(), { nodeVersion: '24.14.0' })
   assert.deepEqual(codes(report), ['NODE_RUNTIME_UNSUPPORTED'])
   assert.deepEqual(variablesFor(report, 'NODE_RUNTIME_UNSUPPORTED'), [])
 })
 
 test('the matching Node major passes whatever the minor and patch are', () => {
-  assert.equal(evaluate(productionEnv(), { nodeVersion: '24.0.0' }).ok, true)
-  assert.equal(evaluate(productionEnv(), { nodeVersion: 'v24.99.1' }).ok, true)
+  assert.equal(evaluate(productionEnv(), { nodeVersion: '22.0.0' }).ok, true)
+  assert.equal(evaluate(productionEnv(), { nodeVersion: 'v22.99.1' }).ok, true)
 })
 
 test('a >= engine range accepts a newer major', () => {
   assert.equal(
     evaluate(productionEnv(), {
-      engineNodeRange: '>=24',
+      engineNodeRange: '>=22',
       nodeVersion: '26.0.0',
     }).ok,
     true,
