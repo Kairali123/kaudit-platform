@@ -126,8 +126,18 @@ export interface ModelClassification {
   unclearBlockNumbers: number[]
   /** Transcript blocks containing affirmative voicemail evidence. */
   voicemailEvidenceBlockNumbers?: number[]
+  /** Customer blocks that establish a meaningful Kairali business interaction. */
+  businessRelevantCustomerBlockNumbers?: number[]
   customerSpoke: boolean
   lastMeaningfulCustomerExchangeMs: number | null
+  /** Deterministically derived from attributed transcript blocks. */
+  lastMeaningfulAgentExchangeMs?: number | null
+  /** Deterministically derived from affirmative voicemail evidence blocks. */
+  lastVoicemailExchangeMs?: number | null
+  /** Deterministically derived from reviewed business-relevant customer blocks. */
+  lastBusinessRelevantCustomerExchangeMs?: number | null
+  /** Latest non-unclear interaction block, independent of speaker role. */
+  lastVerifiedInteractionMs?: number | null
   remarks: string
   disputeRecommended: boolean
   /** Required from live classifiers; optional for durable legacy results. */
@@ -148,6 +158,9 @@ export interface ReauditAnalysis {
   lastMeaningfulCustomerExchangeMs: number | null
   customerSpeechMs: number
   agentSpeechMs: number
+  chargeableServiceEndMs: number
+  appliedBillingGraceMs: number
+  categoryChargePolicyCode: string
   durationMismatch: boolean
   evidenceSha256: string
   remarks: string
@@ -162,6 +175,7 @@ export interface ReauditProjection {
   adjustedChargeableDurationMs: number
   oneWayTailMs: number
   oneWayTailAlert: boolean
+  categoryChargePolicyCode: string
   ruleCode:
     | 'ZERO_DURATION_NOT_BILLED'
     | 'SHORT_CALL_FLAT'

@@ -22,6 +22,11 @@ import type {
   VerifiedBillingInput,
   VerifiedBillingResult,
 } from './types.ts'
+import {
+  CATEGORY_CHARGE_POLICY_CODES,
+  CATEGORY_CHARGE_POLICY_SHA256,
+  CATEGORY_CHARGE_POLICY_VERSION,
+} from './categoryChargePolicy.ts'
 
 const SHA256 = /^[a-f0-9]{64}$/
 const DECIMAL = /^(0|1)(?:\.\d{1,8})?$/
@@ -141,6 +146,77 @@ function validateInput(input: VerifiedBillingInput): void {
     throw new Error(
       'An established conversation requires a positive final customer-exchange timestamp',
     )
+  }
+  if (input.categoryCharge) {
+    const categoryCharge = input.categoryCharge
+    requireMilliseconds(categoryCharge.serviceEndMs, 'categoryCharge.serviceEndMs')
+    requireMilliseconds(categoryCharge.graceMs, 'categoryCharge.graceMs')
+    if (categoryCharge.serviceEndMs > input.recordedDurationMs) {
+      throw new Error(
+        'Category service-end timestamp cannot exceed the decoded recording duration',
+      )
+    }
+    if (categoryCharge.policyVersion !== CATEGORY_CHARGE_POLICY_VERSION) {
+      throw new Error('Category charge policy version is not current')
+    }
+    requireSha256(categoryCharge.policySha256, 'categoryCharge.policySha256')
+    if (categoryCharge.policySha256 !== CATEGORY_CHARGE_POLICY_SHA256) {
+      throw new Error('Category charge policy hash does not match the locked policy')
+    }
+    if (!CATEGORY_CHARGE_POLICY_CODES.includes(categoryCharge.policyCode)) {
+      throw new Error('Category charge policy code is not recognized')
+    }
+    const zeroCategory = [
+      'INACTIVE_CALL',
+      'AGENT_FAILURE',
+      'AI_CONVERSATION_HANDLING',
+      'NETWORK_FAILURE_TELECOM',
+    ].includes(categoryCharge.category)
+    const structurallyValid = zeroCategory
+      ? categoryCharge.policyCode === 'MANAGEMENT_ZERO_CATEGORY' &&
+        categoryCharge.serviceEndMs === 0 &&
+        categoryCharge.graceMs === 0
+      : categoryCharge.category === 'AI_TO_AI'
+        ? categoryCharge.policyCode === 'AI_TO_AI_GRACE_ONLY' &&
+          categoryCharge.serviceEndMs === 0 &&
+          categoryCharge.graceMs === KSERVE_WRAP_UP_GRACE_MS
+        : categoryCharge.category === 'USER_SILENCE'
+          ? categoryCharge.policyCode ===
+              'USER_SILENCE_AGENT_PLUS_GRACE' &&
+            categoryCharge.serviceEndMs > 0 &&
+            categoryCharge.graceMs === KSERVE_WRAP_UP_GRACE_MS
+          : categoryCharge.category === 'VOICEMAIL'
+            ? categoryCharge.policyCode ===
+                'VOICEMAIL_SERVICE_PLUS_30S' &&
+              categoryCharge.serviceEndMs > 0 &&
+              categoryCharge.graceMs === 30_000
+            : categoryCharge.category === 'JUNK_CALL'
+              ? (categoryCharge.policyCode ===
+                    'JUNK_BUSINESS_INTERACTION_PLUS_GRACE' &&
+                  categoryCharge.serviceEndMs > 0 &&
+                  categoryCharge.graceMs === KSERVE_WRAP_UP_GRACE_MS) ||
+                (categoryCharge.policyCode ===
+                    'NO_VERIFIED_CHARGEABLE_INTERACTION' &&
+                  categoryCharge.serviceEndMs === 0 &&
+                  categoryCharge.graceMs === 0)
+              : categoryCharge.category === 'INCORRECT_CALL_DURATION'
+                ? (categoryCharge.policyCode ===
+                      'VERIFIED_INTERACTION_PLUS_GRACE' &&
+                    categoryCharge.serviceEndMs > 0 &&
+                    categoryCharge.graceMs === KSERVE_WRAP_UP_GRACE_MS) ||
+                  (categoryCharge.policyCode ===
+                      'NO_VERIFIED_CHARGEABLE_INTERACTION' &&
+                    categoryCharge.serviceEndMs === 0 &&
+                    categoryCharge.graceMs === 0)
+                : categoryCharge.policyCode ===
+                    'STANDARD_CUSTOMER_PLUS_GRACE' &&
+                  categoryCharge.serviceEndMs > 0 &&
+                  categoryCharge.graceMs === KSERVE_WRAP_UP_GRACE_MS
+    if (!structurallyValid) {
+      throw new Error(
+        'Category charge decision does not match the locked category rule',
+      )
+    }
   }
   if (
     input.lastMeaningfulCustomerExchangeMs != null &&
@@ -310,6 +386,7 @@ function manifestParts(input: VerifiedBillingInput): {
       conversationAssessment: input.conversationAssessment,
       lastMeaningfulCustomerExchangeMs:
         input.lastMeaningfulCustomerExchangeMs,
+      categoryCharge: input.categoryCharge ?? null,
     },
     billingRulesetSha256: KSERVE_RULESET_SHA256,
   } as unknown as JsonValue)
@@ -335,7 +412,7 @@ function createTrace(options: {
   outcome: AuthorityDecision
 }): BillingDecisionTrace {
   return {
-    schemaVersion: '1',
+    schemaVersion: options.input.categoryCharge ? '2' : '1',
     decisionType: 'verified_call_billing',
     engineVersion: KSERVE_BILLING_ENGINE_VERSION,
     rulesetVersion: KSERVE_RULESET_VERSION,
@@ -359,6 +436,9 @@ function createTrace(options: {
       conversationAssessment: options.input.conversationAssessment,
       lastMeaningfulCustomerExchangeMs:
         options.input.lastMeaningfulCustomerExchangeMs,
+      ...(options.input.categoryCharge
+        ? { categoryCharge: options.input.categoryCharge }
+        : {}),
     },
     calculation: options.calculation,
     outcome: {
@@ -406,21 +486,23 @@ export function calculateVerifiedKServeCharge(
     }
   }
 
-  const finalExchangeMs =
-    input.conversationAssessment === 'no_meaningful_exchange'
+  const categoryCharge = input.categoryCharge
+  const finalExchangeMs = categoryCharge
+    ? categoryCharge.serviceEndMs
+    : input.conversationAssessment === 'no_meaningful_exchange'
       ? 0
       : (input.lastMeaningfulCustomerExchangeMs as number)
-  const adjustedChargeableDurationMs =
-    input.conversationAssessment === 'no_meaningful_exchange'
+  const configuredWrapUpGraceMs = categoryCharge
+    ? categoryCharge.graceMs
+    : input.conversationAssessment === 'no_meaningful_exchange'
       ? 0
-      : finalExchangeMs >
-          input.recordedDurationMs - KSERVE_WRAP_UP_GRACE_MS
-        ? input.recordedDurationMs
-        : finalExchangeMs + KSERVE_WRAP_UP_GRACE_MS
+      : KSERVE_WRAP_UP_GRACE_MS
+  const adjustedChargeableDurationMs = Math.min(
+    input.recordedDurationMs,
+    finalExchangeMs + configuredWrapUpGraceMs,
+  )
   const appliedWrapUpGraceMs =
-    input.conversationAssessment === 'no_meaningful_exchange'
-      ? 0
-      : adjustedChargeableDurationMs - finalExchangeMs
+    adjustedChargeableDurationMs - finalExchangeMs
   const oneWayTailMs = Math.max(
     0,
     input.recordedDurationMs - adjustedChargeableDurationMs,
@@ -431,9 +513,15 @@ export function calculateVerifiedKServeCharge(
     adjustedChargeableDurationMs,
   )
   const calculation: JsonValue = {
-    basis: 'last_meaningful_customer_exchange_plus_wrap_up_grace',
-    finalMeaningfulCustomerExchangeMs: finalExchangeMs,
-    configuredWrapUpGraceMs: KSERVE_WRAP_UP_GRACE_MS,
+    basis: categoryCharge
+      ? 'category_service_end_plus_policy_grace'
+      : 'last_meaningful_customer_exchange_plus_wrap_up_grace',
+    finalMeaningfulCustomerExchangeMs: categoryCharge
+      ? null
+      : finalExchangeMs,
+    categoryServiceEndMs: categoryCharge ? finalExchangeMs : null,
+    categoryChargePolicy: categoryCharge ?? null,
+    configuredWrapUpGraceMs,
     appliedWrapUpGraceMs,
     adjustedChargeableDurationMs,
     rounding: {

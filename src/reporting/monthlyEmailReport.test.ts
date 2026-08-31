@@ -20,7 +20,7 @@ test('builds fixed-precision monthly variance without floating point money', () 
         callReference: 'synthetic-1',
         category: 'OK',
         confidence: '0.90000000',
-        resolution: 'independent_conversation_end',
+        resolution: 'independent_category_service_end',
         vendorBilledMinutes: '1.00000000',
         vendorBilledAmount: '10.00000000',
         verifiedBillableDurationMs: 30_000,
@@ -43,6 +43,7 @@ test('builds fixed-precision monthly variance without floating point money', () 
   assert.equal(report.summary.vendorUsageAmount, '19.5')
   assert.equal(report.summary.verifiedBillableRevenue, '14.25')
   assert.equal(report.summary.revenueVarianceVsInvoice, '4.75')
+  assert.equal(report.summary.independentlyAuditedCalls, 1)
   assert.equal(report.rows[0]?.verifiedBillableMinutes, '0.5')
   assert.equal(report.rows[0]?.variance, '5.25')
   assert.equal(

@@ -222,7 +222,8 @@ export function buildMonthlyEmailReport(options: {
       totalCalls: rows.length,
       independentlyAuditedCalls: rows.filter(
         (row) =>
-          row.resolution === 'independent_conversation_end',
+          row.resolution === 'independent_conversation_end' ||
+          row.resolution === 'independent_category_service_end',
       ).length,
       acceptedAsBilledCalls: rows.filter(
         (row) =>

@@ -158,6 +158,10 @@ Before proposing a category, extract these observable facts independently:
   not_applicable when there is no stop intent, otherwise unclear.
 - successful_outcome: qualified, handoff_or_transfer, or resolved only when that
   result was completed before the call ended; otherwise none.
+- business_relevant_customer_block_numbers: customer blocks that contain a
+  genuine Kairali business enquiry, need, qualification answer, or resolution.
+  Ordinary greetings, spam, tests, abuse, and unrelated speech are not business
+  relevant. Every number here must also appear in customer_block_numbers.
 
 The deterministic engine applies reviewed precedence to these signals. Do not
 alter a signal to justify the proposed category. A vendor-versus-recording
@@ -194,7 +198,7 @@ export const REAUDIT_CLASSIFIER_RULESET_SHA256 = canonicalJsonSha256({
   model: REAUDIT_CLASSIFICATION_MODEL,
   prompt: REAUDIT_CLASSIFIER_PROMPT,
   categories: REAUDIT_CATEGORIES,
-  outputSchemaVersion: '5',
+  outputSchemaVersion: '6',
 } as unknown as JsonValue)
 
 export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
@@ -215,6 +219,10 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
         items: { type: 'integer', minimum: 1 },
       },
       voicemail_evidence_block_numbers: {
+        type: 'array',
+        items: { type: 'integer', minimum: 1 },
+      },
+      business_relevant_customer_block_numbers: {
         type: 'array',
         items: { type: 'integer', minimum: 1 },
       },
@@ -283,6 +291,7 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
       'customer_block_numbers',
       'unclear_block_numbers',
       'voicemail_evidence_block_numbers',
+      'business_relevant_customer_block_numbers',
       'counterparty_type',
       'agent_handling',
       'conversation_outcome',
@@ -425,6 +434,7 @@ ${transcript}`,
         customer_block_numbers: number[]
         unclear_block_numbers: number[]
         voicemail_evidence_block_numbers: number[]
+        business_relevant_customer_block_numbers: number[]
         counterparty_type:
           | 'human'
           | 'voicemail'
@@ -480,6 +490,8 @@ ${transcript}`,
         unclearBlockNumbers: raw.unclear_block_numbers,
         voicemailEvidenceBlockNumbers:
           raw.voicemail_evidence_block_numbers,
+        businessRelevantCustomerBlockNumbers:
+          raw.business_relevant_customer_block_numbers,
         customerSpoke: customerEnds.length > 0,
         lastMeaningfulCustomerExchangeMs:
           customerEnds.length > 0 ? Math.max(...customerEnds) : null,

@@ -320,6 +320,7 @@ The monthly verified bill is withheld until every imported call has one
 explicit resolution:
 
 - `independent_conversation_end`, or
+- `independent_category_service_end`, or
 - `accepted_as_billed_unverified` at cycle close when no usable recording can
   be obtained after the automated retry policy.
 

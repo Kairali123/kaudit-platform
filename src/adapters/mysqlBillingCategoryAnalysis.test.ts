@@ -49,6 +49,8 @@ interface SyntheticArtifact {
     id: string
     decodedDurationMs?: number | null
     conversationEndMs?: number | null
+    categoryServiceEndMs?: number | null
+    categoryGraceMs?: number | null
     createdAt: string
   }[]
   /** Completed transcripts on this artifact. */
@@ -74,6 +76,8 @@ interface SyntheticCall {
   /** Latest completed media analysis, or null when the call is unaudited. */
   decodedDurationMs?: number | null
   conversationEndMs?: number | null
+  categoryServiceEndMs?: number | null
+  categoryGraceMs?: number | null
   transcriptCompleted?: boolean
   recordingUrl?: string | null
   taskReference?: string | null
@@ -123,6 +127,7 @@ const SCHEMA = `
     classification_status TEXT NOT NULL,
     decoded_duration_ms INTEGER,
     conversation_end_ms INTEGER,
+    metrics_json TEXT,
     created_at TEXT
   );
   CREATE TABLE kaudit_transcript (
@@ -195,6 +200,8 @@ function artifactsOf(call: SyntheticCall): SyntheticArtifact[] {
                 id: `media-${call.id}`,
                 decodedDurationMs: call.decodedDurationMs ?? null,
                 conversationEndMs: call.conversationEndMs,
+                categoryServiceEndMs: call.categoryServiceEndMs,
+                categoryGraceMs: call.categoryGraceMs,
                 createdAt: '2026-08-02 00:00:00',
               },
             ],
@@ -291,13 +298,21 @@ function synthetic(fixture: {
         db.prepare(
           `INSERT INTO kaudit_media_analysis
              (id, call_artifact_id, status, classification_status,
-              decoded_duration_ms, conversation_end_ms, created_at)
-           VALUES (?, ?, 'completed', 'completed', ?, ?, ?)`,
+              decoded_duration_ms, conversation_end_ms, metrics_json,
+              created_at)
+           VALUES (?, ?, 'completed', 'completed', ?, ?, ?, ?)`,
         ).run(
           analysis.id,
           artifact.id,
           analysis.decodedDurationMs ?? null,
           analysis.conversationEndMs ?? null,
+          analysis.categoryServiceEndMs === undefined
+            ? null
+            : JSON.stringify({
+                chargeableServiceEndMs:
+                  analysis.categoryServiceEndMs,
+                appliedBillingGraceMs: analysis.categoryGraceMs ?? 0,
+              }),
           analysis.createdAt,
         )
       }
@@ -565,6 +580,20 @@ test('billed minutes and the grace-adjusted audited duration define the gap', ()
   assert.equal(totals[0].aiAuditedDurationMs, 121_000)
   assert.equal(totals[0].gapMs, 59_000)
   assert.equal(totals[0].comparableCalls, 1)
+})
+
+test('category service endpoint makes user silence visible and chargeable', () => {
+  const totals = totalsOf({
+    calls: [{
+      ...AUDITED_CALL,
+      category: 'USER_SILENCE',
+      conversationEndMs: null,
+      categoryServiceEndMs: 45_000,
+      categoryGraceMs: 60_000,
+    }],
+  })
+  assert.equal(totals[0].aiAuditedDurationMs, 105_000)
+  assert.equal(totals[0].auditorFinalPricedCalls, 1)
 })
 
 test('aggregate gap is the displayed original total minus audited total', () => {

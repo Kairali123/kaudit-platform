@@ -7,6 +7,10 @@ import {
 import {
   KSERVE_RULESET_SHA256,
 } from './kserveRules.ts'
+import {
+  CATEGORY_CHARGE_POLICY_SHA256,
+  CATEGORY_CHARGE_POLICY_VERSION,
+} from './categoryChargePolicy.ts'
 import type {
   PublishedRateCard,
   VerifiedBillingInput,
@@ -145,6 +149,86 @@ test('no meaningful exchange is independently verified as zero, not missing', ()
   assert.equal(result.billableDurationMs, 0)
   assert.equal(result.amount, '0.00000000')
   assert.equal(result.ruleCode, 'ZERO_DURATION_NOT_BILLED')
+})
+
+test('category policy bills user silence through agent service plus grace', () => {
+  const result = calculateVerifiedKServeCharge(
+    input({
+      conversationAssessment: 'no_meaningful_exchange',
+      lastMeaningfulCustomerExchangeMs: null,
+      recordedDurationMs: 150_000,
+      categoryCharge: {
+        category: 'USER_SILENCE',
+        serviceEndMs: 45_000,
+        graceMs: 60_000,
+        policyCode: 'USER_SILENCE_AGENT_PLUS_GRACE',
+        policyVersion: CATEGORY_CHARGE_POLICY_VERSION,
+        policySha256: CATEGORY_CHARGE_POLICY_SHA256,
+      },
+    }),
+    publishedRateCard(),
+  )
+  assert.equal(result.status, 'final')
+  if (result.status !== 'final') return
+  assert.equal(result.adjustedChargeableDurationMs, 105_000)
+  assert.equal(result.trace.schemaVersion, '2')
+})
+
+test('category policy applies voicemail 30-second grace and management zero', () => {
+  const voicemail = calculateVerifiedKServeCharge(
+    input({
+      recordedDurationMs: 150_000,
+      categoryCharge: {
+        category: 'VOICEMAIL',
+        serviceEndMs: 45_000,
+        graceMs: 30_000,
+        policyCode: 'VOICEMAIL_SERVICE_PLUS_30S',
+        policyVersion: CATEGORY_CHARGE_POLICY_VERSION,
+        policySha256: CATEGORY_CHARGE_POLICY_SHA256,
+      },
+    }),
+    publishedRateCard(),
+  )
+  const failed = calculateVerifiedKServeCharge(
+    input({
+      categoryCharge: {
+        category: 'AGENT_FAILURE',
+        serviceEndMs: 0,
+        graceMs: 0,
+        policyCode: 'MANAGEMENT_ZERO_CATEGORY',
+        policyVersion: CATEGORY_CHARGE_POLICY_VERSION,
+        policySha256: CATEGORY_CHARGE_POLICY_SHA256,
+      },
+    }),
+    publishedRateCard(),
+  )
+  assert.equal(voicemail.status, 'final')
+  assert.equal(failed.status, 'final')
+  if (voicemail.status === 'final') {
+    assert.equal(voicemail.adjustedChargeableDurationMs, 75_000)
+  }
+  if (failed.status === 'final') {
+    assert.equal(failed.adjustedChargeableDurationMs, 0)
+  }
+})
+
+test('category policy identity is immutable', () => {
+  assert.throws(
+    () => calculateVerifiedKServeCharge(
+      input({
+        categoryCharge: {
+          category: 'OK',
+          serviceEndMs: 61_000,
+          graceMs: 60_000,
+          policyCode: 'STANDARD_CUSTOMER_PLUS_GRACE',
+          policyVersion: CATEGORY_CHARGE_POLICY_VERSION,
+          policySha256: HASH_A,
+        },
+      }),
+      publishedRateCard(),
+    ),
+    /policy hash does not match/,
+  )
 })
 
 test('uncalibrated and low-confidence decisions remain unresolved', () => {

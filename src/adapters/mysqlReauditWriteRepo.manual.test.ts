@@ -55,6 +55,9 @@ const SUCCESS: ReauditItemResult = {
     lastMeaningfulCustomerExchangeMs: 61_000,
     customerSpeechMs: 30_000,
     agentSpeechMs: 50_000,
+    chargeableServiceEndMs: 61_000,
+    appliedBillingGraceMs: 60_000,
+    categoryChargePolicyCode: 'STANDARD_CUSTOMER_PLUS_GRACE',
     durationMismatch: false,
     evidenceSha256: 'b'.repeat(64),
     remarks: 'Synthetic remark for a synthetic call.',
@@ -263,6 +266,26 @@ test('each appended media analysis has a bounded per-run config revision', async
   assert.match(firstVersion, /^2:[0-9a-f-]{36}$/)
   assert.ok(firstVersion.length <= 40)
   assert.notEqual(secondVersion, firstVersion)
+})
+
+test('re-audit evidence persists the category charge policy decision', async () => {
+  const fixture = manualPool({ itemStatus: 'processing' })
+  await manualRepo(fixture).persist(candidate, SUCCESS, new Date(0))
+
+  const media = fixture.find(/INSERT INTO kaudit_media_analysis/)
+  const finding = fixture.find(/INSERT INTO kaudit_audit_finding/)
+  const mediaMetrics = JSON.parse(String(media?.parameters[10]))
+  const findingSignals = JSON.parse(String(finding?.parameters[6]))
+  for (const document of [mediaMetrics, findingSignals]) {
+    assert.equal(
+      document.categoryChargePolicyCode,
+      'STANDARD_CUSTOMER_PLUS_GRACE',
+    )
+    assert.equal(document.chargeableServiceEndMs, 61_000)
+    assert.equal(document.appliedBillingGraceMs, 60_000)
+    assert.match(document.categoryChargePolicyVersion, /^management-category-charge\//)
+    assert.match(document.categoryChargePolicySha256, /^[a-f0-9]{64}$/)
+  }
 })
 
 test('a same-ruleset rerun gets its own outbox identity', async () => {

@@ -1,8 +1,8 @@
 import {
   KSERVE_ONE_WAY_TAIL_ALERT_MS,
-  KSERVE_WRAP_UP_GRACE_MS,
 } from '../billing/kserveRules.ts'
 import { roundKServeChargeableDuration } from '../billing/calculateVerifiedCharge.ts'
+import { resolveCategoryCharge } from '../billing/categoryChargePolicy.ts'
 import { sha256Hex } from '../lib/hash.ts'
 import { isSafeVendorUrl } from '../security/urlSafety.ts'
 import type { UrlFetcher } from '../storage/ports.ts'
@@ -19,8 +19,8 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.4.0'
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.6.0'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.5.0'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.7.0'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
@@ -265,9 +265,15 @@ export function validateClassification(
     const block = blocks.find((candidate) => candidate.number === number)
     return block != null && AFFIRMATIVE_VOICEMAIL_CUE.test(block.text)
   })
+  const businessRelevantCustomerBlockNumbers = normalizeBlocks(
+    raw.businessRelevantCustomerBlockNumbers ?? [],
+  )
   const customerBlocks = new Set(customerBlockNumbers)
   const unclearBlocks = new Set(unclearBlockNumbers)
   const voicemailEvidenceBlocks = new Set(voicemailEvidenceBlockNumbers)
+  const businessRelevantCustomerBlocks = new Set(
+    businessRelevantCustomerBlockNumbers,
+  )
   if (customerBlockNumbers.some((number) => unclearBlocks.has(number))) {
     throw new Error('Customer and unclear speech blocks must not overlap')
   }
@@ -280,6 +286,15 @@ export function validateClassification(
       'Voicemail evidence blocks must be separate from customer and unclear speech',
     )
   }
+  if (
+    businessRelevantCustomerBlockNumbers.some(
+      (number) => !customerBlocks.has(number),
+    )
+  ) {
+    throw new Error(
+      'Business-relevant customer blocks must also be customer blocks',
+    )
+  }
   // The model identifies roles; the engine owns the resulting time fact. This
   // avoids rejecting a valid role assignment because a model repeated a
   // displayed, rounded timestamp that differed from the source block by a few
@@ -289,6 +304,23 @@ export function validateClassification(
     .map((block) => block.endMs)
   const customerSpoke = customerEnds.length > 0
   const last = customerEnds.length > 0 ? Math.max(...customerEnds) : null
+  const agentEnds = blocks
+    .filter(
+      (block) =>
+        !customerBlocks.has(block.number) &&
+        !unclearBlocks.has(block.number) &&
+        !voicemailEvidenceBlocks.has(block.number),
+    )
+    .map((block) => block.endMs)
+  const voicemailEnds = blocks
+    .filter((block) => voicemailEvidenceBlocks.has(block.number))
+    .map((block) => block.endMs)
+  const businessEnds = blocks
+    .filter((block) => businessRelevantCustomerBlocks.has(block.number))
+    .map((block) => block.endMs)
+  const verifiedEnds = blocks
+    .filter((block) => !unclearBlocks.has(block.number))
+    .map((block) => block.endMs)
   if (last != null && last > recordedDurationMs) {
     throw new Error('Customer block end falls outside the recording')
   }
@@ -321,8 +353,17 @@ export function validateClassification(
     customerBlockNumbers,
     unclearBlockNumbers,
     voicemailEvidenceBlockNumbers,
+    businessRelevantCustomerBlockNumbers,
     customerSpoke,
     lastMeaningfulCustomerExchangeMs: last,
+    lastMeaningfulAgentExchangeMs:
+      agentEnds.length > 0 ? Math.max(...agentEnds) : null,
+    lastVoicemailExchangeMs:
+      voicemailEnds.length > 0 ? Math.max(...voicemailEnds) : null,
+    lastBusinessRelevantCustomerExchangeMs:
+      businessEnds.length > 0 ? Math.max(...businessEnds) : null,
+    lastVerifiedInteractionMs:
+      verifiedEnds.length > 0 ? Math.max(...verifiedEnds) : null,
     remarks:
       raw.decisionSignals?.counterpartyType === 'voicemail' &&
       category === 'USER_SILENCE'
@@ -358,27 +399,22 @@ function speechByRole(
 export function projectVerifiedCharge(
   analysis: ReauditAnalysis,
 ): ReauditProjection {
-  const end =
-    analysis.conversationAssessment === 'established'
-      ? (analysis.lastMeaningfulCustomerExchangeMs as number)
-      : 0
-  const adjusted =
-    analysis.conversationAssessment === 'established'
-      ? Math.min(
-          analysis.recordedDurationMs,
-          end + KSERVE_WRAP_UP_GRACE_MS,
-        )
-      : 0
-  const rounded = roundKServeChargeableDuration(adjusted)
-  const oneWayTailMs = Math.max(0, analysis.recordedDurationMs - adjusted)
+  const adjusted = analysis.chargeableServiceEndMs + analysis.appliedBillingGraceMs
+  const boundedAdjusted = Math.min(analysis.recordedDurationMs, adjusted)
+  const rounded = roundKServeChargeableDuration(boundedAdjusted)
+  const oneWayTailMs = Math.max(
+    0,
+    analysis.recordedDurationMs - boundedAdjusted,
+  )
   return {
     amount: rounded.amount,
     amountPaise: rounded.amountPaise,
     billableMinutes: rounded.billableMinutes,
     billableDurationMs: rounded.billableDurationMs,
-    adjustedChargeableDurationMs: adjusted,
+    adjustedChargeableDurationMs: boundedAdjusted,
     oneWayTailMs,
     oneWayTailAlert: oneWayTailMs > KSERVE_ONE_WAY_TAIL_ALERT_MS,
+    categoryChargePolicyCode: analysis.categoryChargePolicyCode,
     ruleCode: rounded.ruleCode,
     authority: 'provisional_uncalibrated',
   }
@@ -443,6 +479,15 @@ export async function auditOneCall(options: {
   let analysis: ReauditAnalysis
   let modelClassification: ModelClassification | null = null
   if (transcript.segments.length === 0 || !transcript.text.trim()) {
+    const categoryCharge = resolveCategoryCharge({
+      category: 'INACTIVE_CALL',
+      recordedDurationMs: transcript.durationMs,
+      lastCustomerExchangeMs: null,
+      lastAgentExchangeMs: null,
+      lastVoicemailExchangeMs: null,
+      lastBusinessRelevantCustomerExchangeMs: null,
+      lastVerifiedInteractionMs: null,
+    })
     analysis = {
       category: 'INACTIVE_CALL',
       confidence: '1.00000000',
@@ -453,6 +498,9 @@ export async function auditOneCall(options: {
       lastMeaningfulCustomerExchangeMs: null,
       customerSpeechMs: 0,
       agentSpeechMs: 0,
+      chargeableServiceEndMs: categoryCharge.serviceEndMs,
+      appliedBillingGraceMs: categoryCharge.graceMs,
+      categoryChargePolicyCode: categoryCharge.policyCode,
       durationMismatch,
       evidenceSha256,
       remarks: 'No detectable speech; no independently verified conversation.',
@@ -486,6 +534,20 @@ export async function auditOneCall(options: {
     }
     modelClassification = classification
     const roleSpeech = speechByRole(blocks, classification)
+    const categoryCharge = resolveCategoryCharge({
+      category: classification.category,
+      recordedDurationMs: transcript.durationMs,
+      lastCustomerExchangeMs:
+        classification.lastMeaningfulCustomerExchangeMs,
+      lastAgentExchangeMs:
+        classification.lastMeaningfulAgentExchangeMs ?? null,
+      lastVoicemailExchangeMs:
+        classification.lastVoicemailExchangeMs ?? null,
+      lastBusinessRelevantCustomerExchangeMs:
+        classification.lastBusinessRelevantCustomerExchangeMs ?? null,
+      lastVerifiedInteractionMs:
+        classification.lastVerifiedInteractionMs ?? null,
+    })
     analysis = {
       category: classification.category,
       confidence: classification.confidence,
@@ -498,6 +560,9 @@ export async function auditOneCall(options: {
       lastMeaningfulCustomerExchangeMs:
         classification.lastMeaningfulCustomerExchangeMs,
       ...roleSpeech,
+      chargeableServiceEndMs: categoryCharge.serviceEndMs,
+      appliedBillingGraceMs: categoryCharge.graceMs,
+      categoryChargePolicyCode: categoryCharge.policyCode,
       durationMismatch,
       evidenceSha256,
       remarks: classification.remarks,

@@ -72,21 +72,42 @@ test('a third independent pass resolves a two-pass category disagreement by majo
   )
 })
 
-test('no-customer-speech agreement deterministically validates zero minutes', () => {
+test('user-silence agreement charges through the final agent exchange', () => {
   const consensus = evaluateAutomatedConsensus({
     primary: result({
       category: 'USER_SILENCE',
       customerSpoke: false,
       lastMeaningfulCustomerExchangeMs: null,
+      lastMeaningfulAgentExchangeMs: 20_000,
     }),
     secondary: result({
       category: 'USER_SILENCE',
       customerSpoke: false,
       lastMeaningfulCustomerExchangeMs: null,
+      lastMeaningfulAgentExchangeMs: 20_000,
     }),
+    recordedDurationMs: 100_000,
+  })
+  assert.equal(consensus.status, 'accepted')
+  assert.equal(consensus.primaryBillableDurationMs, 120_000)
+  assert.equal(consensus.secondaryBillableDurationMs, 120_000)
+  assert.equal(
+    consensus.selectedChargeDecision?.policyCode,
+    'USER_SILENCE_AGENT_PLUS_GRACE',
+  )
+})
+
+test('management-zero categories remain zero even when customer speech exists', () => {
+  const consensus = evaluateAutomatedConsensus({
+    primary: result({ category: 'AGENT_FAILURE' }),
+    secondary: result({ category: 'AGENT_FAILURE' }),
     recordedDurationMs: 100_000,
   })
   assert.equal(consensus.status, 'accepted')
   assert.equal(consensus.primaryBillableDurationMs, 0)
   assert.equal(consensus.secondaryBillableDurationMs, 0)
+  assert.equal(
+    consensus.selectedChargeDecision?.policyCode,
+    'MANAGEMENT_ZERO_CATEGORY',
+  )
 })

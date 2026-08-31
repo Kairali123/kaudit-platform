@@ -3,7 +3,7 @@ import {
   type JsonValue,
 } from '../messaging/canonicalJson.ts'
 
-export const KSERVE_BILLING_ENGINE_VERSION = 'kserve-verified-billing/1.0.0'
+export const KSERVE_BILLING_ENGINE_VERSION = 'kserve-verified-billing/1.1.0'
 export const KSERVE_RULESET_VERSION = '2026-07-27.1'
 
 export const KSERVE_RATE_PER_MINUTE_PAISE = 950n
@@ -15,9 +15,10 @@ export const KSERVE_MINUTE_MS = 60_000
 /**
  * Finance-approved KServe interpretation, locked by leadership on 2026-07-27.
  *
- * This is deterministic configuration only. Model output supplies the final
- * meaningful-customer-exchange fact; it never supplies a rate, rounded quantity,
- * or amount.
+ * This remains the locked rate and rounding layer. Category-specific service
+ * endpoints and grace are separately versioned by categoryChargePolicy.ts, so
+ * management policy can evolve without silently changing the published rate
+ * card identity.
  */
 export const KSERVE_RULESET_DOCUMENT = {
   schemaVersion: '1',

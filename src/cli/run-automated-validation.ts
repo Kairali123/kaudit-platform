@@ -30,6 +30,10 @@ import {
 import { calculateVerifiedKServeCharge } from '../billing/calculateVerifiedCharge.ts'
 import { persistVerifiedBillingDecision } from '../adapters/mysqlVerifiedBilling.ts'
 import { parseBillingMonth } from '../reporting/billingMonth.ts'
+import {
+  CATEGORY_CHARGE_POLICY_SHA256,
+  CATEGORY_CHARGE_POLICY_VERSION,
+} from '../billing/categoryChargePolicy.ts'
 
 function required(name: string): string {
   const value = process.env[name]?.trim()
@@ -233,6 +237,21 @@ async function main(): Promise<void> {
         lastMeaningfulCustomerExchangeMs:
           consensus.selectedClassification
             ?.lastMeaningfulCustomerExchangeMs ?? null,
+        ...(consensus.selectedClassification &&
+        consensus.selectedChargeDecision
+          ? {
+              categoryCharge: {
+                category: consensus.selectedClassification.category,
+                serviceEndMs:
+                  consensus.selectedChargeDecision.serviceEndMs,
+                graceMs: consensus.selectedChargeDecision.graceMs,
+                policyCode:
+                  consensus.selectedChargeDecision.policyCode,
+                policyVersion: CATEGORY_CHARGE_POLICY_VERSION,
+                policySha256: CATEGORY_CHARGE_POLICY_SHA256,
+              },
+            }
+          : {}),
         model:
           consensus.selectedClassification?.model ??
           candidate.primary.model,

@@ -134,6 +134,7 @@ export async function collectMonthlyEmailReport(
       AND calculation.status = 'final'
       AND calculation.calculation_basis IN (
         'independent_conversation_end',
+        'independent_category_service_end',
         'accepted_as_billed_unverified'
       )
       AND calculation.input_manifest_sha256 IS NOT NULL

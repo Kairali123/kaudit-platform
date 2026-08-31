@@ -51,6 +51,7 @@ Every decision trace contains:
 
 - model provider/name/version;
 - classifier and deterministic ruleset versions/hashes;
+- category charge policy version/hash/code when category billing is applied;
 - confidence and applied threshold;
 - opaque evidence references and hashes;
 - input-manifest hash;
@@ -58,8 +59,9 @@ Every decision trace contains:
 - decision time, status, reason, and next action.
 
 Migration `0006_verified_billing_trace.sql` is additive. Existing 43,245 calculations
-remain unchanged with a null calculation basis. New authoritative rows use
-`calculation_basis = independent_conversation_end` and supersede—not overwrite—the
+remain unchanged with a null calculation basis. Legacy authoritative rows use
+`calculation_basis = independent_conversation_end`; category-policy rows use
+`independent_category_service_end`. Both supersede, rather than overwrite, the
 current calculation for that call.
 
 ## Intentional architecture overrides

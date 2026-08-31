@@ -194,12 +194,14 @@ const AUDITED_EVIDENCE_SQL = `
   SELECT
     ranked.call_id,
     ranked.decoded_duration_ms,
-    ranked.conversation_end_ms
+    ranked.conversation_end_ms,
+    ranked.metrics_json
   FROM (
     SELECT
       artifact.call_id,
       analysis.decoded_duration_ms,
       analysis.conversation_end_ms,
+      analysis.metrics_json,
       ROW_NUMBER() OVER (
         PARTITION BY artifact.call_id
         ORDER BY analysis.created_at DESC, analysis.id DESC
@@ -310,21 +312,37 @@ const SCOPED_VENDOR_BILLING_SQL = vendorBilledAssertionsSql(
  *   * `kserve_charge_time_ms` — final vendor BILLED minutes, in milliseconds.
  *     This is the time KServe charges for.
  *   * `ai_audited_duration_ms` — the grace-adjusted audited duration: the
- *     recorded duration capped at one wrap-up grace minute after the last
- *     customer exchange. Non-monetary audit metadata, null when the audit
- *     recorded no conversation end.
+ *     recorded duration capped at the category-policy grace after its verified
+ *     service endpoint. Legacy rows fall back to customer end plus one minute.
  *   * `gap_ms` — KServe billed duration MINUS AI-audited duration, sign
  *     preserved, null unless both sides exist.
  *
  * No rounding rule, cutoff, or minute ceiling from the locked billing ruleset is
  * reproduced here: these are durations for review, not a calculation.
  */
+const CATEGORY_SERVICE_END_SQL = `COALESCE(
+      CAST(JSON_EXTRACT(
+        media.metrics_json,
+        '$.chargeableServiceEndMs'
+      ) AS SIGNED),
+      media.conversation_end_ms
+    )`
+
+const CATEGORY_GRACE_SQL = `COALESCE(
+      CAST(JSON_EXTRACT(
+        media.metrics_json,
+        '$.appliedBillingGraceMs'
+      ) AS SIGNED),
+      60000
+    )`
+
 const AI_AUDITED_DURATION_SQL = `CASE
-      WHEN media.conversation_end_ms IS NULL THEN NULL
+      WHEN ${CATEGORY_SERVICE_END_SQL} IS NULL THEN NULL
       WHEN media.decoded_duration_ms IS NOT NULL
-       AND media.decoded_duration_ms < media.conversation_end_ms + 60000
+       AND media.decoded_duration_ms <
+         ${CATEGORY_SERVICE_END_SQL} + ${CATEGORY_GRACE_SQL}
         THEN media.decoded_duration_ms
-      ELSE media.conversation_end_ms + 60000
+      ELSE ${CATEGORY_SERVICE_END_SQL} + ${CATEGORY_GRACE_SQL}
     END`
 
 const DURATION_COLUMNS_SQL = `

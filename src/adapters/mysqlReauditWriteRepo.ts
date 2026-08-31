@@ -32,6 +32,10 @@ import {
 } from '../messaging/canonicalJson.ts'
 import { createMysqlOutboxWriter } from './mysqlOutbox.ts'
 import { insertAiUsageEvent } from './mysqlAiUsage.ts'
+import {
+  CATEGORY_CHARGE_POLICY_SHA256,
+  CATEGORY_CHARGE_POLICY_VERSION,
+} from '../billing/categoryChargePolicy.ts'
 
 interface CountRow extends RowDataPacket {
   n: number | string
@@ -513,6 +517,16 @@ export function createMysqlReauditWriteRepo(
                 REAUDIT_CLASSIFIER_RULESET_VERSION,
               classifierRulesetSha256:
                 REAUDIT_CLASSIFIER_RULESET_SHA256,
+              categoryChargePolicyVersion:
+                CATEGORY_CHARGE_POLICY_VERSION,
+              categoryChargePolicySha256:
+                CATEGORY_CHARGE_POLICY_SHA256,
+              categoryChargePolicyCode:
+                analysis.categoryChargePolicyCode,
+              chargeableServiceEndMs:
+                analysis.chargeableServiceEndMs,
+              appliedBillingGraceMs:
+                analysis.appliedBillingGraceMs,
             }),
           ],
         )
@@ -576,6 +590,16 @@ export function createMysqlReauditWriteRepo(
               speechDurationMs: analysis.speechDurationMs,
               conversationEndMs:
                 analysis.lastMeaningfulCustomerExchangeMs,
+              chargeableServiceEndMs:
+                analysis.chargeableServiceEndMs,
+              appliedBillingGraceMs:
+                analysis.appliedBillingGraceMs,
+              categoryChargePolicyVersion:
+                CATEGORY_CHARGE_POLICY_VERSION,
+              categoryChargePolicySha256:
+                CATEGORY_CHARGE_POLICY_SHA256,
+              categoryChargePolicyCode:
+                analysis.categoryChargePolicyCode,
               durationMismatch: analysis.durationMismatch,
               disputeRecommended: analysis.disputeRecommended,
             }),
