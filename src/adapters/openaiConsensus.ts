@@ -17,7 +17,7 @@ import {
 } from './openaiReaudit.ts'
 
 export const CONSENSUS_REVIEWER_VERSION =
-  'kairali-independent-consensus-review/1.3.0'
+  'kairali-independent-consensus-review/1.4.0'
 
 export const CONSENSUS_REVIEWER_PROMPT = `You are an independent automated
 verification pass for Kairali's call-audit system. Review the timestamped,
@@ -44,7 +44,7 @@ export const CONSENSUS_REVIEWER_RULESET_SHA256 =
     model: REAUDIT_CLASSIFICATION_MODEL,
     prompt: CONSENSUS_REVIEWER_PROMPT,
     categories: REAUDIT_CATEGORIES,
-    outputSchemaVersion: '3',
+    outputSchemaVersion: '4',
   } as unknown as JsonValue)
 
 export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
@@ -61,6 +61,10 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
         items: { type: 'integer', minimum: 1 },
       },
       unclear_block_numbers: {
+        type: 'array',
+        items: { type: 'integer', minimum: 1 },
+      },
+      voicemail_evidence_block_numbers: {
         type: 'array',
         items: { type: 'integer', minimum: 1 },
       },
@@ -91,6 +95,16 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
           'unclear',
         ],
       },
+      voicemail_evidence: {
+        type: 'string',
+        enum: [
+          'fixed_greeting',
+          'leave_message_request',
+          'mailbox_notice',
+          'beep',
+          'none',
+        ],
+      },
       remarks: { type: 'string', maxLength: 1200 },
       dispute_recommended: { type: 'boolean' },
     },
@@ -99,10 +113,12 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
       'confidence',
       'customer_block_numbers',
       'unclear_block_numbers',
+      'voicemail_evidence_block_numbers',
       'counterparty_type',
       'agent_handling',
       'conversation_outcome',
       'duration_outcome',
+      'voicemail_evidence',
       'remarks',
       'dispute_recommended',
     ],
@@ -174,6 +190,7 @@ ${transcript}`,
         confidence: number
         customer_block_numbers: number[]
         unclear_block_numbers: number[]
+        voicemail_evidence_block_numbers: number[]
         counterparty_type:
           | 'human'
           | 'voicemail'
@@ -187,6 +204,12 @@ ${transcript}`,
           | 'ended_too_early'
           | 'continued_without_value'
           | 'unclear'
+        voicemail_evidence:
+          | 'fixed_greeting'
+          | 'leave_message_request'
+          | 'mailbox_notice'
+          | 'beep'
+          | 'none'
         remarks: string
         dispute_recommended: boolean
       }
@@ -204,6 +227,8 @@ ${transcript}`,
         confidence: Number(raw.confidence).toFixed(8),
         customerBlockNumbers: raw.customer_block_numbers,
         unclearBlockNumbers: raw.unclear_block_numbers,
+        voicemailEvidenceBlockNumbers:
+          raw.voicemail_evidence_block_numbers,
         customerSpoke: customerEnds.length > 0,
         lastMeaningfulCustomerExchangeMs:
           customerEnds.length > 0 ? Math.max(...customerEnds) : null,
@@ -214,6 +239,7 @@ ${transcript}`,
           agentHandling: raw.agent_handling,
           conversationOutcome: raw.conversation_outcome,
           durationOutcome: raw.duration_outcome,
+          voicemailEvidence: raw.voicemail_evidence,
         },
         usage: {
           inputTokens: completion.usage?.prompt_tokens ?? null,

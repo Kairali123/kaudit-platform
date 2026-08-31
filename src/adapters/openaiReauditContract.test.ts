@@ -38,6 +38,10 @@ test('primary and consensus classifiers share speaker-attribution guardrails', (
       prompt,
       /answering-machine greeting is VOICEMAIL/,
     )
+    assert.match(
+      prompt,
+      /absence of a[\s\S]+human reply are NEVER voicemail evidence/,
+    )
   }
 })
 
@@ -89,6 +93,8 @@ test('classifier schemas require reviewed decision evidence before category reso
       'agent_handling',
       'conversation_outcome',
       'duration_outcome',
+      'voicemail_evidence',
+      'voicemail_evidence_block_numbers',
     ]) {
       assert.ok(field in output.schema.properties)
       assert.ok((output.schema.required as readonly string[]).includes(field))

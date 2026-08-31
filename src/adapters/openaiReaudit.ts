@@ -48,6 +48,9 @@ Apply the first rule supported by the transcript evidence. Do not use a broad
 category when a more specific rule below matches:
 1. A fixed voicemail greeting, leave-a-message request, mailbox notice, or beep
    is VOICEMAIL. It is not customer speech and is not AI_TO_AI.
+   Silence, a short call, Saanvi's scripted introduction, and the absence of a
+   human reply are NEVER voicemail evidence. Do not claim a voicemail greeting
+   unless a non-Saanvi transcript block contains affirmative mailbox evidence.
 2. AI_TO_AI requires an interactive automated system, IVR, or screening agent
    that exchanges prompts with Saanvi. A one-way voicemail greeting is VOICEMAIL.
 3. When Saanvi speaks and the called person gives no response at all, choose
@@ -121,6 +124,12 @@ Before proposing a category, extract these observable facts independently:
   mailbox greeting or beep; interactive_automation for an IVR or automated
   system that exchanges prompts; no_response when only Saanvi speaks; otherwise
   unclear.
+- voicemail_evidence: the affirmative voicemail feature actually present in the
+  transcript: fixed_greeting, leave_message_request, mailbox_notice, or beep.
+  Return none unless that feature appears in one or more non-Saanvi blocks, and
+  put exactly those block numbers in voicemail_evidence_block_numbers. A
+  voicemail counterparty requires non-none evidence and at least one evidence
+  block. When only Saanvi speaks, return none and no_response.
 - agent_handling: failed when Saanvi ignores or mishandles a human response,
   abandons the exchange, repeats without value, or continues against the stated
   response; normal when handling is appropriate; otherwise unclear.
@@ -166,7 +175,7 @@ export const REAUDIT_CLASSIFIER_RULESET_SHA256 = canonicalJsonSha256({
   model: REAUDIT_CLASSIFICATION_MODEL,
   prompt: REAUDIT_CLASSIFIER_PROMPT,
   categories: REAUDIT_CATEGORIES,
-  outputSchemaVersion: '3',
+  outputSchemaVersion: '4',
 } as unknown as JsonValue)
 
 export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
@@ -183,6 +192,10 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
         items: { type: 'integer', minimum: 1 },
       },
       unclear_block_numbers: {
+        type: 'array',
+        items: { type: 'integer', minimum: 1 },
+      },
+      voicemail_evidence_block_numbers: {
         type: 'array',
         items: { type: 'integer', minimum: 1 },
       },
@@ -213,6 +226,16 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
           'unclear',
         ],
       },
+      voicemail_evidence: {
+        type: 'string',
+        enum: [
+          'fixed_greeting',
+          'leave_message_request',
+          'mailbox_notice',
+          'beep',
+          'none',
+        ],
+      },
       remarks: { type: 'string', maxLength: 1200 },
       dispute_recommended: { type: 'boolean' },
     },
@@ -221,10 +244,12 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
       'confidence',
       'customer_block_numbers',
       'unclear_block_numbers',
+      'voicemail_evidence_block_numbers',
       'counterparty_type',
       'agent_handling',
       'conversation_outcome',
       'duration_outcome',
+      'voicemail_evidence',
       'remarks',
       'dispute_recommended',
     ],
@@ -358,6 +383,7 @@ ${transcript}`,
         confidence: number
         customer_block_numbers: number[]
         unclear_block_numbers: number[]
+        voicemail_evidence_block_numbers: number[]
         counterparty_type:
           | 'human'
           | 'voicemail'
@@ -371,6 +397,12 @@ ${transcript}`,
           | 'ended_too_early'
           | 'continued_without_value'
           | 'unclear'
+        voicemail_evidence:
+          | 'fixed_greeting'
+          | 'leave_message_request'
+          | 'mailbox_notice'
+          | 'beep'
+          | 'none'
         remarks: string
         dispute_recommended: boolean
       }
@@ -388,6 +420,8 @@ ${transcript}`,
         confidence: fixedConfidence(raw.confidence),
         customerBlockNumbers: raw.customer_block_numbers,
         unclearBlockNumbers: raw.unclear_block_numbers,
+        voicemailEvidenceBlockNumbers:
+          raw.voicemail_evidence_block_numbers,
         customerSpoke: customerEnds.length > 0,
         lastMeaningfulCustomerExchangeMs:
           customerEnds.length > 0 ? Math.max(...customerEnds) : null,
@@ -398,6 +432,7 @@ ${transcript}`,
           agentHandling: raw.agent_handling,
           conversationOutcome: raw.conversation_outcome,
           durationOutcome: raw.duration_outcome,
+          voicemailEvidence: raw.voicemail_evidence,
         },
         usage: {
           inputTokens: completion.usage?.prompt_tokens ?? null,

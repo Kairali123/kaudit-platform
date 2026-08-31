@@ -293,6 +293,67 @@ test('reviewed decision signals correct the quality-team disagreement patterns',
   }
 })
 
+test('unsupported voicemail evidence is corrected to user silence', () => {
+  const raw = reviewedClassification({
+    proposed: 'VOICEMAIL',
+    signals: {
+      counterpartyType: 'voicemail',
+      agentHandling: 'normal',
+      conversationOutcome: 'no_outcome',
+      durationOutcome: 'appropriate',
+      voicemailEvidence: 'fixed_greeting',
+    },
+  })
+  raw.voicemailEvidenceBlockNumbers = [1]
+  raw.remarks =
+    'Synthetic hallucinated voicemail rationale based only on non-response.'
+
+  const result = validateClassification(
+    raw,
+    [
+      { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent intro' },
+      { number: 2, startMs: 2_000, endMs: 3_000, text: 'Synthetic agent prompt' },
+    ],
+    5_000,
+  )
+
+  assert.equal(result.category, 'USER_SILENCE')
+  assert.equal(
+    result.remarks,
+    'Agent speech was identified, but no customer or affirmative voicemail evidence was identified; this is user silence.',
+  )
+})
+
+test('voicemail remains voicemail when an evidence block is identified', () => {
+  const raw = reviewedClassification({
+    proposed: 'VOICEMAIL',
+    signals: {
+      counterpartyType: 'voicemail',
+      agentHandling: 'normal',
+      conversationOutcome: 'no_outcome',
+      durationOutcome: 'appropriate',
+      voicemailEvidence: 'leave_message_request',
+    },
+  })
+  raw.voicemailEvidenceBlockNumbers = [1]
+
+  const result = validateClassification(
+    raw,
+    [
+      {
+        number: 1,
+        startMs: 0,
+        endMs: 1_000,
+        text: 'Synthetic mailbox asks for a message',
+      },
+    ],
+    2_000,
+  )
+
+  assert.equal(result.category, 'VOICEMAIL')
+  assert.deepEqual(result.voicemailEvidenceBlockNumbers, [1])
+})
+
 test('incorrect-duration category requires the independently verified mismatch', () => {
   const raw = reviewedClassification({
     proposed: 'INCORRECT_CALL_DURATION',
