@@ -86,6 +86,20 @@ function reAuditLabel(row: AuditMonitorRow): string {
   return row.reAuditStatus === 'failed' ? 'Re-audit failed' : ''
 }
 
+function reAuditFailure(row: AuditMonitorRow): string {
+  const labels: Record<string, string> = {
+    REAUDIT_WORKER_INTERRUPTED: 'Worker interrupted',
+    REAUDIT_RECORDING_UNAVAILABLE: 'Recording unavailable',
+    TRANSCRIPTION_FAILED: 'Transcription failed',
+    CLASSIFICATION_FAILED: 'Classification failed',
+    AUDIT_SPEND_STATE_UNKNOWN: 'Model request state unknown',
+    AUDIT_PROCESSOR_FAILED: 'Audit processor failed',
+  }
+  return row.reAuditFailureCode
+    ? labels[row.reAuditFailureCode] ?? 'Re-audit processing failed'
+    : 'Re-audit processing failed'
+}
+
 function reAuditIcon(row: AuditMonitorRow) {
   if (row.reAuditStatus === 'processing') {
     return <RefreshCw size={13} aria-hidden />
@@ -697,7 +711,7 @@ export function AuditMonitorPage() {
                           <small className="cell-sub">
                             {date(row.reAuditCompletedAt)}
                             {row.reAuditStatus === 'failed'
-                              ? ' · Previous audit retained'
+                              ? ` · ${reAuditFailure(row)} · Previous audit retained`
                               : ''}
                           </small>
                         )}

@@ -86,10 +86,30 @@ export interface ClassificationDecisionSignals {
     | 'continued_without_value'
     | 'unclear'
   /** Required from live classifiers; absent only on durable legacy results. */
+  stopIntent?:
+    | 'none'
+    | 'busy_or_bad_time'
+    | 'callback_or_defer'
+    | 'decline_or_end'
+  /** Required from live classifiers; absent only on durable legacy results. */
+  postStopBehavior?:
+    | 'not_applicable'
+    | 'appropriate_close'
+    | 'administrative_extension'
+    | 'continued_sales_flow'
+    | 'unclear'
+  /** Required from live classifiers; absent only on durable legacy results. */
+  successfulOutcome?:
+    | 'none'
+    | 'qualified'
+    | 'handoff_or_transfer'
+    | 'resolved'
+  /** Required from live classifiers; absent only on durable legacy results. */
   voicemailEvidence?:
     | 'fixed_greeting'
     | 'leave_message_request'
     | 'mailbox_notice'
+    | 'recording_notice'
     | 'beep'
     | 'none'
 }

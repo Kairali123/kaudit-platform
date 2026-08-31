@@ -46,7 +46,9 @@ const CATEGORY_RULEBOOK: Record<ReauditCategory, string> = {
 export const REAUDIT_KAIRALI_REFERENCE_RULES = `KAIRALI-REVIEWED DECISION RULES
 Apply the first rule supported by the transcript evidence. Do not use a broad
 category when a more specific rule below matches:
-1. A fixed voicemail greeting, leave-a-message request, mailbox notice, or beep
+1. A fixed voicemail greeting, leave-a-message request, mailbox notice, beep,
+   or fixed system notice that a message/recording completed and the caller may
+   hang up
    is VOICEMAIL. It is not customer speech and is not AI_TO_AI.
    Silence, a short call, Saanvi's scripted introduction, and the absence of a
    human reply are NEVER voicemail evidence. Do not claim a voicemail greeting
@@ -56,9 +58,12 @@ category when a more specific rule below matches:
 3. When Saanvi speaks and the called person gives no response at all, choose
    USER_SILENCE. Any human reply, including hello, wrong number, busy, callback,
    or not interested, means USER_SILENCE is not allowed.
-4. When a human speaks but Saanvi fails to answer substantively, abandons the
-   exchange, ignores the answer, or continues against the person's response,
-   choose AGENT_FAILURE. This outranks CONNECT_NOT_FRUITFUL.
+4. When a human says they are busy, asks for a callback, declines, or asks to
+   end, distinguish what happens next. Continued qualification or sales
+   questions are AGENT_FAILURE. Acknowledging the stop but extending the call
+   only for unnecessary contact/admin details is TIME_DURATION. An appropriate
+   close with no successful outcome is CONNECT_NOT_FRUITFUL. For substantive
+   continuation after stop intent, AGENT_FAILURE outranks CONNECT_NOT_FRUITFUL.
 5. Choose CONNECT_NOT_FRUITFUL for a legitimate human connection that ends
    without an outcome, such as wrong number, busy, callback, not interested, or
    an early hang-up, when Saanvi did not itself fail. Wrong number is not JUNK_CALL.
@@ -68,8 +73,9 @@ category when a more specific rule below matches:
    duration-mismatch fact. TIME_DURATION instead describes a recording that
    continued too long or ended too early for the conversational outcome. Never
    infer either category merely because a displayed duration is absent.
-8. Choose OK when a legitimate two-way conversation was handled normally and
-   none of the specific failure rules applies. Do not invent a defect.
+8. Choose OK when qualification, resolution, or a handoff/transfer was already
+   completed normally. A later callback or deferral statement does not erase
+   that successful outcome. Do not invent a defect.
 
 REFERENCE DECISIONS (SYNTHETIC)
 - Saanvi introduces herself and receives no human response: USER_SILENCE.
@@ -79,6 +85,10 @@ REFERENCE DECISIONS (SYNTHETIC)
 - A human answers or asks a question and Saanvi gives no useful response:
   AGENT_FAILURE.
 - An automated menu interactively prompts Saanvi: AI_TO_AI.
+- A person requests a callback and Saanvi continues qualification: AGENT_FAILURE.
+- A person requests a callback, Saanvi accepts, then needlessly collects only
+  administrative contact details: TIME_DURATION.
+- Qualification or handoff completes before a later deferral: OK.
 - A normal completed two-way exchange with no independent defect: OK.
 
 REMARK REQUIREMENTS
@@ -125,7 +135,8 @@ Before proposing a category, extract these observable facts independently:
   system that exchanges prompts; no_response when only Saanvi speaks; otherwise
   unclear.
 - voicemail_evidence: the affirmative voicemail feature actually present in the
-  transcript: fixed_greeting, leave_message_request, mailbox_notice, or beep.
+  transcript: fixed_greeting, leave_message_request, mailbox_notice,
+  recording_notice, or beep.
   Return none unless that feature appears in one or more non-Saanvi blocks, and
   put exactly those block numbers in voicemail_evidence_block_numbers. A
   voicemail counterparty requires non-none evidence and at least one evidence
@@ -139,6 +150,14 @@ Before proposing a category, extract these observable facts independently:
 - duration_outcome: ended_too_early or continued_without_value only when the
   conversational sequence itself demonstrates that behavior; appropriate when
   timing fits the outcome; otherwise unclear.
+- stop_intent: the human's explicit busy/bad-time, callback/defer, decline, or
+  end request; otherwise none.
+- post_stop_behavior: what Saanvi does after stop_intent: appropriate_close,
+  administrative_extension for unnecessary contact/admin collection only,
+  continued_sales_flow for substantive qualification/sales continuation,
+  not_applicable when there is no stop intent, otherwise unclear.
+- successful_outcome: qualified, handoff_or_transfer, or resolved only when that
+  result was completed before the call ended; otherwise none.
 
 The deterministic engine applies reviewed precedence to these signals. Do not
 alter a signal to justify the proposed category. A vendor-versus-recording
@@ -175,7 +194,7 @@ export const REAUDIT_CLASSIFIER_RULESET_SHA256 = canonicalJsonSha256({
   model: REAUDIT_CLASSIFICATION_MODEL,
   prompt: REAUDIT_CLASSIFIER_PROMPT,
   categories: REAUDIT_CATEGORIES,
-  outputSchemaVersion: '4',
+  outputSchemaVersion: '5',
 } as unknown as JsonValue)
 
 export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
@@ -226,12 +245,31 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
           'unclear',
         ],
       },
+      stop_intent: {
+        type: 'string',
+        enum: ['none', 'busy_or_bad_time', 'callback_or_defer', 'decline_or_end'],
+      },
+      post_stop_behavior: {
+        type: 'string',
+        enum: [
+          'not_applicable',
+          'appropriate_close',
+          'administrative_extension',
+          'continued_sales_flow',
+          'unclear',
+        ],
+      },
+      successful_outcome: {
+        type: 'string',
+        enum: ['none', 'qualified', 'handoff_or_transfer', 'resolved'],
+      },
       voicemail_evidence: {
         type: 'string',
         enum: [
           'fixed_greeting',
           'leave_message_request',
           'mailbox_notice',
+          'recording_notice',
           'beep',
           'none',
         ],
@@ -249,6 +287,9 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
       'agent_handling',
       'conversation_outcome',
       'duration_outcome',
+      'stop_intent',
+      'post_stop_behavior',
+      'successful_outcome',
       'voicemail_evidence',
       'remarks',
       'dispute_recommended',
@@ -397,10 +438,27 @@ ${transcript}`,
           | 'ended_too_early'
           | 'continued_without_value'
           | 'unclear'
+        stop_intent:
+          | 'none'
+          | 'busy_or_bad_time'
+          | 'callback_or_defer'
+          | 'decline_or_end'
+        post_stop_behavior:
+          | 'not_applicable'
+          | 'appropriate_close'
+          | 'administrative_extension'
+          | 'continued_sales_flow'
+          | 'unclear'
+        successful_outcome:
+          | 'none'
+          | 'qualified'
+          | 'handoff_or_transfer'
+          | 'resolved'
         voicemail_evidence:
           | 'fixed_greeting'
           | 'leave_message_request'
           | 'mailbox_notice'
+          | 'recording_notice'
           | 'beep'
           | 'none'
         remarks: string
@@ -432,6 +490,9 @@ ${transcript}`,
           agentHandling: raw.agent_handling,
           conversationOutcome: raw.conversation_outcome,
           durationOutcome: raw.duration_outcome,
+          stopIntent: raw.stop_intent,
+          postStopBehavior: raw.post_stop_behavior,
+          successfulOutcome: raw.successful_outcome,
           voicemailEvidence: raw.voicemail_evidence,
         },
         usage: {

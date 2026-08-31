@@ -61,6 +61,9 @@ test('primary and consensus classifiers share Kairali-reviewed precedence', () =
       /INCORRECT_CALL_DURATION[\s\S]+vendor-versus-recording[\s\S]+TIME_DURATION/,
     )
     assert.match(prompt, /Do not invent a defect/)
+    assert.match(prompt, /Continued qualification or sales[\s\S]+AGENT_FAILURE/)
+    assert.match(prompt, /administrative contact details[\s\S]+TIME_DURATION/)
+    assert.match(prompt, /later callback or deferral[\s\S]+does not erase/)
     assert.match(
       prompt,
       /observable facts[\s\S]+decision signals[\s\S]+nearest plausible alternative/,
@@ -93,6 +96,9 @@ test('classifier schemas require reviewed decision evidence before category reso
       'agent_handling',
       'conversation_outcome',
       'duration_outcome',
+      'stop_intent',
+      'post_stop_behavior',
+      'successful_outcome',
       'voicemail_evidence',
       'voicemail_evidence_block_numbers',
     ]) {

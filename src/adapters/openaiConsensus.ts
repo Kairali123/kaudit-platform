@@ -17,7 +17,7 @@ import {
 } from './openaiReaudit.ts'
 
 export const CONSENSUS_REVIEWER_VERSION =
-  'kairali-independent-consensus-review/1.4.0'
+  'kairali-independent-consensus-review/1.5.0'
 
 export const CONSENSUS_REVIEWER_PROMPT = `You are an independent automated
 verification pass for Kairali's call-audit system. Review the timestamped,
@@ -44,7 +44,7 @@ export const CONSENSUS_REVIEWER_RULESET_SHA256 =
     model: REAUDIT_CLASSIFICATION_MODEL,
     prompt: CONSENSUS_REVIEWER_PROMPT,
     categories: REAUDIT_CATEGORIES,
-    outputSchemaVersion: '4',
+    outputSchemaVersion: '5',
   } as unknown as JsonValue)
 
 export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
@@ -95,12 +95,31 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
           'unclear',
         ],
       },
+      stop_intent: {
+        type: 'string',
+        enum: ['none', 'busy_or_bad_time', 'callback_or_defer', 'decline_or_end'],
+      },
+      post_stop_behavior: {
+        type: 'string',
+        enum: [
+          'not_applicable',
+          'appropriate_close',
+          'administrative_extension',
+          'continued_sales_flow',
+          'unclear',
+        ],
+      },
+      successful_outcome: {
+        type: 'string',
+        enum: ['none', 'qualified', 'handoff_or_transfer', 'resolved'],
+      },
       voicemail_evidence: {
         type: 'string',
         enum: [
           'fixed_greeting',
           'leave_message_request',
           'mailbox_notice',
+          'recording_notice',
           'beep',
           'none',
         ],
@@ -118,6 +137,9 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
       'agent_handling',
       'conversation_outcome',
       'duration_outcome',
+      'stop_intent',
+      'post_stop_behavior',
+      'successful_outcome',
       'voicemail_evidence',
       'remarks',
       'dispute_recommended',
@@ -204,10 +226,27 @@ ${transcript}`,
           | 'ended_too_early'
           | 'continued_without_value'
           | 'unclear'
+        stop_intent:
+          | 'none'
+          | 'busy_or_bad_time'
+          | 'callback_or_defer'
+          | 'decline_or_end'
+        post_stop_behavior:
+          | 'not_applicable'
+          | 'appropriate_close'
+          | 'administrative_extension'
+          | 'continued_sales_flow'
+          | 'unclear'
+        successful_outcome:
+          | 'none'
+          | 'qualified'
+          | 'handoff_or_transfer'
+          | 'resolved'
         voicemail_evidence:
           | 'fixed_greeting'
           | 'leave_message_request'
           | 'mailbox_notice'
+          | 'recording_notice'
           | 'beep'
           | 'none'
         remarks: string
@@ -239,6 +278,9 @@ ${transcript}`,
           agentHandling: raw.agent_handling,
           conversationOutcome: raw.conversation_outcome,
           durationOutcome: raw.duration_outcome,
+          stopIntent: raw.stop_intent,
+          postStopBehavior: raw.post_stop_behavior,
+          successfulOutcome: raw.successful_outcome,
           voicemailEvidence: raw.voicemail_evidence,
         },
         usage: {

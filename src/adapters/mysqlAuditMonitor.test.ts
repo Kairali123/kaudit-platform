@@ -451,6 +451,7 @@ test('a row carries only safe re-audit lifecycle fields, never a queue internal'
           status: 'failed',
           created_at: '2026-08-20 09:00:00',
           completed_at: '2026-08-20 09:05:00',
+          last_error_code: 'CLASSIFICATION_FAILED',
         },
       ],
     },
@@ -459,6 +460,7 @@ test('a row carries only safe re-audit lifecycle fields, never a queue internal'
   const row = data.rows[0]
 
   assert.equal(row.reAuditStatus, 'failed')
+  assert.equal(row.reAuditFailureCode, 'CLASSIFICATION_FAILED')
   assert.match(row.reAuditCompletedAt ?? '', /^2026-08-20T/)
   // The internal key used to join the queue never reaches the DTO.
   assert.equal('internal_call_id' in row, false)
