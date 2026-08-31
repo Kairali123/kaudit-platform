@@ -19,7 +19,7 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.5.0'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.5.1'
 export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.7.0'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
@@ -265,12 +265,15 @@ export function validateClassification(
     const block = blocks.find((candidate) => candidate.number === number)
     return block != null && AFFIRMATIVE_VOICEMAIL_CUE.test(block.text)
   })
-  const businessRelevantCustomerBlockNumbers = normalizeBlocks(
-    raw.businessRelevantCustomerBlockNumbers ?? [],
-  )
   const customerBlocks = new Set(customerBlockNumbers)
   const unclearBlocks = new Set(unclearBlockNumbers)
   const voicemailEvidenceBlocks = new Set(voicemailEvidenceBlockNumbers)
+  // This field affects only the JUNK_CALL billing endpoint. Keep the model's
+  // customer-role assignment authoritative and discard contradictory extras
+  // instead of failing the entire quality audit over a derived billing tag.
+  const businessRelevantCustomerBlockNumbers = normalizeBlocks(
+    raw.businessRelevantCustomerBlockNumbers ?? [],
+  ).filter((number) => customerBlocks.has(number))
   const businessRelevantCustomerBlocks = new Set(
     businessRelevantCustomerBlockNumbers,
   )
@@ -284,15 +287,6 @@ export function validateClassification(
   ) {
     throw new Error(
       'Voicemail evidence blocks must be separate from customer and unclear speech',
-    )
-  }
-  if (
-    businessRelevantCustomerBlockNumbers.some(
-      (number) => !customerBlocks.has(number),
-    )
-  ) {
-    throw new Error(
-      'Business-relevant customer blocks must also be customer blocks',
     )
   }
   // The model identifies roles; the engine owns the resulting time fact. This
@@ -509,17 +503,28 @@ export async function auditOneCall(options: {
     }
   } else {
     const blocks = mergeTranscriptSegments(transcript.segments)
+    let rawClassification: ModelClassification
+    try {
+      rawClassification = await ai.classify({
+        blocks,
+        language: transcript.language || 'unknown',
+        recordedDurationMs: transcript.durationMs,
+        speechDurationMs: transcript.speechMs,
+        connectedDurationMs: candidate.connectedDurationMs,
+        durationMismatch,
+      })
+    } catch {
+      return {
+        callId: candidate.callId,
+        artifactId: candidate.artifactId,
+        outcome: 'classification_failed',
+        errorCode: 'CLASSIFICATION_MODEL_FAILED',
+      }
+    }
     let classification: ModelClassification
     try {
       classification = validateClassification(
-        await ai.classify({
-          blocks,
-          language: transcript.language || 'unknown',
-          recordedDurationMs: transcript.durationMs,
-          speechDurationMs: transcript.speechMs,
-          connectedDurationMs: candidate.connectedDurationMs,
-          durationMismatch,
-        }),
+        rawClassification,
         blocks,
         transcript.durationMs,
         { durationMismatch },
@@ -529,7 +534,7 @@ export async function auditOneCall(options: {
         callId: candidate.callId,
         artifactId: candidate.artifactId,
         outcome: 'classification_failed',
-        errorCode: 'CLASSIFICATION_FAILED',
+        errorCode: 'CLASSIFICATION_VALIDATION_FAILED',
       }
     }
     modelClassification = classification

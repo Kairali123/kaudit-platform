@@ -191,6 +191,14 @@ test('pending, success, and error are all visible states', async () => {
   assert.match(source, /function reAuditLabel\(row: AuditMonitorRow\): string/)
   assert.match(source, /function reAuditFailure\(row: AuditMonitorRow\): string/)
   assert.match(source, /CLASSIFICATION_FAILED: 'Classification failed'/)
+  assert.match(
+    source,
+    /CLASSIFICATION_MODEL_FAILED: 'Classification model failed'/,
+  )
+  assert.match(
+    source,
+    /CLASSIFICATION_VALIDATION_FAILED: 'Classification output inconsistent'/,
+  )
 })
 
 test('a success refreshes the monitor and the worker state', async () => {
