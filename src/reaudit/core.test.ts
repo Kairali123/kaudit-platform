@@ -1,6 +1,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  REAUDIT_ENGINE_VERSION,
   auditOneCall,
   mergeTranscriptSegments,
   projectVerifiedCharge,
@@ -47,6 +48,10 @@ const candidate: ReauditCandidate = {
   connectedDurationMs: 120_000,
   vendorBilledMinutes: '2.00000000',
 }
+
+test('engine version identifies the classification repair', () => {
+  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.5.1')
+})
 
 test('merges fragments using the approved pause, duration, and character limits', () => {
   const blocks = mergeTranscriptSegments([
@@ -164,6 +169,36 @@ test('classification clears redundant customer facts when no customer block exis
   )
   assert.equal(result.customerSpoke, false)
   assert.equal(result.lastMeaningfulCustomerExchangeMs, null)
+})
+
+test('classification intersects business-relevant blocks with customer blocks', () => {
+  const raw: ModelClassification = {
+    model: {
+      provider: 'openai',
+      name: 'synthetic-classifier',
+      version: 'synthetic-v1',
+    },
+    category: 'JUNK_CALL',
+    confidence: '0.90000000',
+    customerBlockNumbers: [2],
+    unclearBlockNumbers: [],
+    businessRelevantCustomerBlockNumbers: [1, 2],
+    customerSpoke: true,
+    lastMeaningfulCustomerExchangeMs: 2_000,
+    remarks: 'Synthetic inconsistent business relevance.',
+    disputeRecommended: false,
+  }
+  const result = validateClassification(
+    raw,
+    [
+      { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent prompt' },
+      { number: 2, startMs: 1_100, endMs: 2_000, text: 'Synthetic customer reply' },
+    ],
+    3_000,
+  )
+
+  assert.deepEqual(result.businessRelevantCustomerBlockNumbers, [2])
+  assert.equal(result.lastBusinessRelevantCustomerExchangeMs, 2_000)
 })
 
 test('reviewed decision signals correct the quality-team disagreement patterns', () => {
@@ -535,7 +570,55 @@ test('classification failure stores a bounded code instead of thrown prose', asy
     ai,
   })
   assert.equal(result.outcome, 'classification_failed')
-  assert.equal(result.errorCode, 'CLASSIFICATION_FAILED')
+  assert.equal(result.errorCode, 'CLASSIFICATION_MODEL_FAILED')
+})
+
+test('classification validation failure has a distinct bounded code', async () => {
+  const ai: ReauditAi = {
+    async transcribe() {
+      return {
+        model: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
+        language: 'english',
+        durationMs: 10_000,
+        speechMs: 2_000,
+        text: 'Synthetic speech',
+        segments: [{ startMs: 0, endMs: 2_000, text: 'Synthetic speech' }],
+      }
+    },
+    async classify() {
+      return {
+        ...reviewedClassification({
+          proposed: 'USER_SILENCE',
+          customerSpoke: true,
+          signals: {
+            counterpartyType: 'no_response',
+            agentHandling: 'normal',
+            conversationOutcome: 'no_outcome',
+            durationOutcome: 'appropriate',
+          },
+        }),
+        customerBlockNumbers: [1],
+      }
+    },
+  }
+  const result = await auditOneCall({
+    candidate,
+    allowedHosts: ['cdr-storage-recs.s3.ap-south-1.amazonaws.com'],
+    fetcher: {
+      async fetch() {
+        return {
+          ok: true,
+          status: 200,
+          bytes: Buffer.from('synthetic-audio'),
+          contentType: 'audio/ogg',
+        }
+      },
+    },
+    ai,
+  })
+
+  assert.equal(result.outcome, 'classification_failed')
+  assert.equal(result.errorCode, 'CLASSIFICATION_VALIDATION_FAILED')
 })
 
 test('projection adds 60-second wrap-up grace and remains uncalibrated', () => {
