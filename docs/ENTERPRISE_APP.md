@@ -182,7 +182,7 @@ Production-shaped authenticated build:
 npm run app:start
 ```
 
-Local dashboard plus the continuous skip-completed audit worker:
+Local dashboard plus the continuous skip-completed Billing Audit worker:
 
 ```bash
 npm run app:operate

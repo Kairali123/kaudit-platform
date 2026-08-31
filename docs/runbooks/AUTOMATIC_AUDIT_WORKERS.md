@@ -2,7 +2,9 @@
 
 Billing Audit and Call Audit run independently and default to `running` in
 `kaudit_audit_worker_control`. The dashboard reports persisted results only; a
-report request never triggers model work.
+report request never triggers model work. Call Audit currently has no automatic
+launcher: it must be started only by an explicit administrator operation while
+the system is out of use.
 
 ## Billing Audit
 
@@ -58,10 +60,10 @@ capacity; production evidence showed heavy DB latency under parallel runs.
 
 ## Call Audit
 
-`npm run callaudit:worker` polls the external source every 60 seconds using
-`SELECT`-only keyset pagination over `(change timestamp, source row id)`. Raw
-transcripts stay in memory for one model request and are never returned by the
-control API.
+When explicitly started, `npm run callaudit:worker` polls the external source
+every 60 seconds using `SELECT`-only keyset pagination over `(change timestamp,
+source row id)`. Raw transcripts stay in memory for one model request and are
+never returned by the control API.
 
 The durable checkpoint advances only through settled candidates. Model failures
 are persisted as failed results and processing continues. Infrastructure/source
@@ -121,26 +123,27 @@ facts without copying secret values into a ticket, shell history, or this file:
    file, container secret, or the host's existing secret manager.
 5. Outbound access to MySQL, the model provider, and the recording proxy.
 
-The selected supervisor must run Billing Audit and Call Audit as independent
-services, restart on failure with a bounded delay, send SIGTERM for graceful
-stop, cap retained logs, and start only after networking and secret mounts are
-available. Never put an environment value on a command line.
+The selected supervisor must run Billing Audit as an independent service,
+restart on failure with a bounded delay, send SIGTERM for graceful stop, cap
+retained logs, and start only after networking and secret mounts are available.
+Do not configure a Call Audit service while Call Audit is out of use. Never put
+an environment value on a command line.
 
 ## Release shape
 
 Build and verify an immutable release directory, then repoint the host's
 `current` reference and restart one worker at a time. Keep the previous release
-available for rollback. The worker processes need these fixed commands:
+available for rollback. The Billing worker process needs this fixed command:
 
 ```text
 npm run audit:worker
-npm run callaudit:worker
 ```
 
 Billing Audit must receive `KAUDIT_AUDIT_MODE=EXECUTE` and
-`KAUDIT_AUDIT_WATCH=true`. Call Audit must retain the approved
-`KAUDIT_CALL_AUDIT_AUTO_START` boundary for first initialization; once the SQL
-checkpoint exists, changing the environment does not rewrite it.
+`KAUDIT_AUDIT_WATCH=true`. If Call Audit is later re-enabled by reviewed
+administrator decision, it must retain the approved `KAUDIT_CALL_AUDIT_AUTO_START`
+boundary for first initialization; once the SQL checkpoint exists, changing the
+environment does not rewrite it.
 
 ## Safe smoke checks
 
@@ -148,12 +151,12 @@ After each service starts, verify only process status and the bounded public
 worker state. Do not run `callaudit:batch`, the rule test lab, a sample audit, or
 any command that sends evidence to a paid model. Confirm that:
 
-- both service processes remain active and hold separate advisory locks;
+- the Billing service process remains active and holds its advisory lock;
 - heartbeats advance while desired state is `running`;
 - Stop settles after the current candidate and Resume returns to polling;
 - service logs contain only bounded codes and aggregate counters; and
 - a second copy exits without processing because it cannot acquire the lock.
 
-Rollback repoints `current` to the prior verified release and restarts the two
-services separately. Database checkpoints, results, usage events, and permanent
-spend claims are never rolled back or deleted with application code.
+Rollback repoints `current` to the prior verified release and restarts services
+separately. Database checkpoints, results, usage events, and permanent spend
+claims are never rolled back or deleted with application code.

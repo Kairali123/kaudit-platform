@@ -18,7 +18,7 @@ supervised operator process, exactly as it is today:
 | --- | --- |
 | Monthly billing cycle close | `npm run billing:cycle-close` |
 | Continuous re-audit worker | `npm run audit:worker` |
-| Continuous Call Audit worker | `npm run callaudit:worker` |
+| Call Audit worker while out of use | explicit administrator operation only |
 | Call Audit backfill/batch processing | `npm run callaudit:batch`, `docs/runbooks/CALL_AUDIT_BATCH.md` |
 | Automated report email worker | `npm run report:email-worker`, `docs/runbooks/AUTOMATED_REPORT_EMAIL.md` |
 | Automated validation pass | `npm run automation:validate` |
@@ -29,8 +29,9 @@ There are **no Cron entries** in `vercel.json` and no scheduler in the function.
 is enforced by `src/vercel/deploymentContract.test.ts`, not only by convention.
 
 Vercel does expose the authenticated administrator Stop/Resume API. It writes
-only durable desired state in MySQL; it never executes a model call. The two
-persistent workers observe that state before claiming each next call.
+only durable desired state in MySQL; it never executes a model call. The Billing
+worker observes that state before claiming each next call. Call Audit remains
+explicit-only while it is out of use.
 
 ### Imports on Vercel use a Shared Drive boundary
 
