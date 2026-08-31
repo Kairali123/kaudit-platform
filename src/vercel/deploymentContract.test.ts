@@ -158,15 +158,15 @@ test('the function duration is sized for a web request, not a batch', () => {
   assert.ok(maxDuration >= 5)
 })
 
-test('Node 24 is selected through the existing engine contract', () => {
+test('Node 22 is selected through the existing engine contract', () => {
   const node = PACKAGE.engines?.node
   assert.ok(typeof node === 'string')
-  assert.match(node, /24/)
-  for (const older of ['18', '20', '22']) {
+  assert.match(node, /22/)
+  for (const unsupported of ['18', '20', '24']) {
     assert.equal(
-      node.includes(older),
+      node.includes(unsupported),
       false,
-      'the project must not be downgraded to reach the platform',
+      'the project must use the supported platform runtime',
     )
   }
 })

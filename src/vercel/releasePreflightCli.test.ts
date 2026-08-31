@@ -35,7 +35,7 @@ const SYNTHETIC_CA_PEM = [
   '-----END CERTIFICATE-----',
 ].join('\n')
 
-const SYNTHETIC_MANIFEST = JSON.stringify({ engines: { node: '24.x' } })
+const SYNTHETIC_MANIFEST = JSON.stringify({ engines: { node: '22.x' } })
 
 /** A marker that must never appear in output, whatever throws carries it. */
 const MARKER = 'synthetic-startup-failure-detail'
@@ -73,7 +73,7 @@ function run(overrides: Partial<PreflightCliDependencies> = {}): Run {
   const status = runVercelPreflightCli({
     readManifest: () => SYNTHETIC_MANIFEST,
     env: productionEnv(),
-    nodeVersion: '24.3.0',
+    nodeVersion: '22.3.0',
     evaluate: evaluateVercelReleasePreflight,
     format: formatPreflightReport,
     write: (line) => {
@@ -128,7 +128,7 @@ test('a failing environment writes the evaluator report and exits nonzero', () =
 })
 
 test('the engine contract comes from the manifest the reader returns', () => {
-  const result = run({ readManifest: () => JSON.stringify({ engines: { node: '22.x' } }) })
+  const result = run({ readManifest: () => JSON.stringify({ engines: { node: '24.x' } }) })
   assert.equal(result.status, 1)
   assert.match(result.output, /NODE_RUNTIME_UNSUPPORTED/)
 })
@@ -252,7 +252,7 @@ test('a failing output stream still exits nonzero and writes nothing twice', () 
   const status = runVercelPreflightCli({
     readManifest: () => SYNTHETIC_MANIFEST,
     env: productionEnv(),
-    nodeVersion: '24.3.0',
+    nodeVersion: '22.3.0',
     evaluate: evaluateVercelReleasePreflight,
     format: formatPreflightReport,
     write: (line) => {
@@ -352,7 +352,7 @@ test('a startup failure in a real process prints one line, no stack, nonzero', (
       'process.exitCode = cli.runVercelPreflightCli({',
       `  readManifest: () => { throw new Error(${JSON.stringify(MARKER)}) },`,
       '  env: {},',
-      "  nodeVersion: '24.3.0',",
+      "  nodeVersion: '22.3.0',",
       '  evaluate: () => { throw new Error("unreachable") },',
       '  format: () => { throw new Error("unreachable") },',
       '  write: (line) => process.stdout.write(line),',

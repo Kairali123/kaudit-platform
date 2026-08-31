@@ -5,7 +5,7 @@
   "type": "module",
   "description": "Kairali Voice Agent Call Audit & Billing Platform — decoupled audit application (separate from the KCRM app; connects to the same MySQL kaudit_* tables).",
   "engines": {
-    "node": "24.x"
+    "node": "22.x"
   },
   "scripts": {
     "check": "npm run secrets:scan && npm run typecheck && npm run web:typecheck && npm run web:build && npm test",

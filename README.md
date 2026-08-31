@@ -124,7 +124,7 @@ or `npm run app:start`. See `docs/ENTERPRISE_APP.md`.
 ## Vercel web/API deployment candidate
 
 `vercel.json` and `api/index.ts` make the authenticated web/API application
-deployable as a Git-backed Vercel candidate on a Node.js 24 Function, sharing the
+deployable as a Git-backed Vercel candidate on a Node.js 22 Function, sharing the
 persistent server's dependency bootstrap so the two cannot drift on security posture.
 A web deployment hosts pages and API reads only — the billing worker, Call Audit batch,
 report-email worker, migrations, and durable imports are not started by it, and there
