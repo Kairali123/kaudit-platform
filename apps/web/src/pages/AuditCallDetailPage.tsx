@@ -33,6 +33,13 @@ function timestamp(value: number): string {
   return `${minutes}:${String(seconds % 60).padStart(2, '0')}`
 }
 
+function auditState(value: string | null): string {
+  if (!value) return 'Not finalized'
+  return value === 'model_output'
+    ? 'Model output'
+    : value.replaceAll('_', ' ')
+}
+
 export function AuditCallDetailPage() {
   const period = useBillingPeriod()
   const [params] = useSearchParams()
@@ -68,6 +75,8 @@ export function AuditCallDetailPage() {
     )
   }
   const data = query.data!
+  const projected = data.comparison.auditor.authority === 'projected'
+  const finalized = data.comparison.auditor.authority === 'final'
   return (
     <>
       <Link
@@ -82,7 +91,7 @@ export function AuditCallDetailPage() {
         description={data.call.reference}
         badge={
           <span className="status-badge automated">
-            {data.call.confirmationStatus || 'Not finalized'}
+            {auditState(data.call.confirmationStatus)}
           </span>
         }
       />
@@ -106,17 +115,23 @@ export function AuditCallDetailPage() {
           <small>{data.comparison.kserve.basis}</small>
         </article>
         <article className="review-card">
-          <span>Auditor verified charge</span>
+          <span>
+            {finalized ? 'Auditor verified charge' : 'AI audit charge'}
+          </span>
           <strong>{money(data.comparison.auditor.amount)}</strong>
           <p>
-            {data.comparison.auditor.billableMinutes || '—'} minutes × ₹
+            {data.comparison.auditor.billableMinutes || '—'} billable minutes
+            {' · '}₹
             {data.comparison.auditor.unitRate
               ? Number(data.comparison.auditor.unitRate).toFixed(2)
-              : '—'}
+              : '—'} per minute
           </p>
           <small>
             {data.comparison.auditor.ruleCode || 'No calculation'} ·{' '}
             {data.comparison.auditor.billingIncrement || '—'}
+            {data.comparison.auditor.cappedByVendorAmount
+              ? ' · capped at KServe charge'
+              : ''}
           </small>
         </article>
         <article className="review-card variance-card">
@@ -124,15 +139,20 @@ export function AuditCallDetailPage() {
           <strong>{money(data.comparison.variance)}</strong>
           <p>KServe amount minus auditor amount</p>
           <small>
-            Rate card {data.comparison.auditor.rateCardVersion || '—'} ·{' '}
-            {data.comparison.auditor.rateCardStatus || '—'}
+            {projected
+              ? `Ruleset ${data.comparison.auditor.projectionRulesetVersion || '—'} · projected`
+              : finalized
+                ? `Rate card ${data.comparison.auditor.rateCardVersion || '—'} · ${data.comparison.auditor.rateCardStatus || '—'}`
+                : 'Projection unavailable'}
           </small>
         </article>
       </section>
       <p className="calculation-footnote">
-        Per-call amounts are pre-tax subtotals. IGST, TDS, and invoice
-        round-off are applied only when the complete billing cycle is
-        reconciled.
+        {projected
+          ? 'The AI audit amount is a deterministic projection from the stored category endpoint and grace policy. It remains provisional until automated consensus finalizes billing.'
+          : finalized
+            ? 'Per-call amounts are pre-tax subtotals. IGST, TDS, and invoice round-off are applied only when the complete billing cycle is reconciled.'
+            : 'No charge is projected when the audit has no verified service endpoint. The dashboard never converts missing evidence into zero.'}
       </p>
 
       <section className="call-detail-facts content-section">
@@ -142,6 +162,9 @@ export function AuditCallDetailPage() {
         <div><span>Recorded</span><strong>{seconds(data.durations.recordedMs)}</strong></div>
         <div><span>Speech</span><strong>{seconds(data.durations.speechMs)}</strong></div>
         <div><span>Customer end</span><strong>{seconds(data.durations.finalCustomerExchangeMs)}</strong></div>
+        <div><span>Service end</span><strong>{seconds(data.durations.chargeableServiceEndMs)}</strong></div>
+        <div><span>Applied grace</span><strong>{seconds(data.durations.appliedBillingGraceMs)}</strong></div>
+        <div><span>AI chargeable</span><strong>{seconds(data.durations.adjustedChargeableMs)}</strong></div>
         <div><span>KServe connected</span><strong>{seconds(data.durations.vendorConnectedMs)}</strong></div>
         <div><span>Auditor billable</span><strong>{seconds(data.comparison.auditor.billableDurationMs)}</strong></div>
       </section>

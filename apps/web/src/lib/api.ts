@@ -609,6 +609,9 @@ export interface AdminCallDetailData {
     recordedMs: number | null
     speechMs: number | null
     finalCustomerExchangeMs: number | null
+    chargeableServiceEndMs: number | null
+    appliedBillingGraceMs: number | null
+    adjustedChargeableMs: number | null
     vendorConnectedMs: number | null
   }
   comparison: {
@@ -620,6 +623,7 @@ export interface AdminCallDetailData {
       amount: string | null
     }
     auditor: {
+      authority: 'final' | 'projected' | 'unavailable'
       basis: string | null
       status: string | null
       billableDurationMs: number | null
@@ -630,6 +634,8 @@ export interface AdminCallDetailData {
       billingIncrement: string | null
       rateCardVersion: string | null
       rateCardStatus: string | null
+      projectionRulesetVersion: string | null
+      cappedByVendorAmount: boolean
     }
     variance: string | null
   }

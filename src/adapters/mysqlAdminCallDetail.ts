@@ -1,5 +1,9 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
 import { subtract } from '../ui/decimal.ts'
+import {
+  projectAuditedCharge,
+  resolveAuditedChargeBoundary,
+} from '../billing/auditedChargeProjection.ts'
 
 interface AccessRow extends RowDataPacket {
   call_id: string
@@ -19,11 +23,14 @@ interface DetailRow extends RowDataPacket {
   recorded_duration_ms: number | string | null
   speech_duration_ms: number | string | null
   conversation_end_ms: number | string | null
+  audited_service_end_ms: number | string | null
+  audited_grace_ms: number | string | null
   vendor_billed_minutes: string | null
   vendor_connected_duration_ms: number | string | null
   vendor_amount: string | null
   calculation_basis: string | null
   calculation_status: string | null
+  auditor_adjusted_duration_ms: number | string | null
   auditor_billable_duration_ms: number | string | null
   auditor_billable_minutes: string | null
   auditor_amount: string | null
@@ -122,6 +129,14 @@ export async function collectAdminCallDetail(
        media.decoded_duration_ms AS recorded_duration_ms,
        media.speech_ms AS speech_duration_ms,
        media.conversation_end_ms,
+       CAST(JSON_EXTRACT(
+         media.metrics_json,
+         '$.chargeableServiceEndMs'
+       ) AS SIGNED) AS audited_service_end_ms,
+       CAST(JSON_EXTRACT(
+         media.metrics_json,
+         '$.appliedBillingGraceMs'
+       ) AS SIGNED) AS audited_grace_ms,
        CAST(vendor_minutes.minutes_decimal AS CHAR)
          AS vendor_billed_minutes,
        ROUND(vendor_connected.quantity_decimal * 1000)
@@ -133,6 +148,8 @@ export async function collectAdminCallDetail(
          AS vendor_amount,
        calculation.calculation_basis,
        calculation.status AS calculation_status,
+       calculation.adjusted_chargeable_duration_ms
+         AS auditor_adjusted_duration_ms,
        calculation.billable_duration_ms
          AS auditor_billable_duration_ms,
        CAST(component.billable_quantity AS CHAR)
@@ -184,13 +201,13 @@ export async function collectAdminCallDetail(
      LEFT JOIN kaudit_audit_finding finding
        ON finding.call_id = c.id
       AND finding.audit_run_id = c.latest_audit_run_id
-      AND finding.confirmation_status = 'confirmed'
+      AND finding.finding_code = c.canonical_outcome_code
       AND finding.id = (
         SELECT latest_finding.id
         FROM kaudit_audit_finding latest_finding
         WHERE latest_finding.call_id = c.id
           AND latest_finding.audit_run_id = c.latest_audit_run_id
-          AND latest_finding.confirmation_status = 'confirmed'
+          AND latest_finding.finding_code = c.canonical_outcome_code
         ORDER BY latest_finding.created_at DESC,
                  latest_finding.id DESC
         LIMIT 1
@@ -249,10 +266,39 @@ export async function collectAdminCallDetail(
     row.vendor_amount == null ? null : row.vendor_amount
   const auditorAmount =
     row.auditor_amount == null ? null : row.auditor_amount
+  const hasFinalCalculation = row.calculation_status === 'final'
+  const finalCustomerExchangeMs = numberOrNull(row.conversation_end_ms)
+  const finalTranscriptSegmentEndMs = segments.reduce(
+    (latest, segment) => Math.max(latest, segment.endMs),
+    -1,
+  )
+  const boundary = resolveAuditedChargeBoundary({
+    category: row.category,
+    policyServiceEndMs: numberOrNull(row.audited_service_end_ms),
+    policyGraceMs: numberOrNull(row.audited_grace_ms),
+    finalCustomerExchangeMs,
+    finalTranscriptSegmentEndMs:
+      finalTranscriptSegmentEndMs < 0
+        ? null
+        : finalTranscriptSegmentEndMs,
+  })
+  const auditedServiceEndMs = boundary?.serviceEndMs ?? null
+  const auditedGraceMs = boundary?.graceMs ?? null
+  const projection = !hasFinalCalculation
+    ? projectAuditedCharge({
+        recordedDurationMs: numberOrNull(row.recorded_duration_ms),
+        serviceEndMs: auditedServiceEndMs,
+        graceMs: auditedGraceMs,
+        vendorAmount,
+      })
+    : null
+  const displayedAuditorAmount = hasFinalCalculation
+    ? auditorAmount
+    : projection?.amount ?? null
   const variance =
-    vendorAmount == null || auditorAmount == null
+    vendorAmount == null || displayedAuditorAmount == null
       ? null
-      : subtract(vendorAmount, auditorAmount)
+      : subtract(vendorAmount, displayedAuditorAmount)
   return {
     generatedAt: new Date().toISOString(),
     call: {
@@ -274,9 +320,13 @@ export async function collectAdminCallDetail(
     durations: {
       recordedMs: numberOrNull(row.recorded_duration_ms),
       speechMs: numberOrNull(row.speech_duration_ms),
-      finalCustomerExchangeMs: numberOrNull(
-        row.conversation_end_ms,
-      ),
+      finalCustomerExchangeMs,
+      chargeableServiceEndMs: auditedServiceEndMs,
+      appliedBillingGraceMs: auditedGraceMs,
+      adjustedChargeableMs:
+        numberOrNull(row.auditor_adjusted_duration_ms) ??
+        projection?.adjustedChargeableDurationMs ??
+        null,
       vendorConnectedMs: numberOrNull(
         row.vendor_connected_duration_ms,
       ),
@@ -291,18 +341,31 @@ export async function collectAdminCallDetail(
         amount: vendorAmount,
       },
       auditor: {
-        basis: row.calculation_basis,
-        status: row.calculation_status,
+        authority: hasFinalCalculation
+          ? 'final'
+          : projection
+            ? 'projected'
+            : 'unavailable',
+        basis:
+          row.calculation_basis ??
+          (projection ? 'independent_category_service_end_projection' : null),
+        status:
+          row.calculation_status ?? (projection ? 'projected' : null),
         billableDurationMs: numberOrNull(
           row.auditor_billable_duration_ms,
-        ),
-        billableMinutes: row.auditor_billable_minutes,
-        unitRate: row.auditor_unit_rate,
-        amount: auditorAmount,
-        ruleCode: row.auditor_rule_code,
-        billingIncrement: row.auditor_increment,
+        ) ?? projection?.billableDurationMs ?? null,
+        billableMinutes:
+          row.auditor_billable_minutes ?? projection?.billableMinutes ?? null,
+        unitRate: row.auditor_unit_rate ?? projection?.unitRate ?? null,
+        amount: displayedAuditorAmount,
+        ruleCode: row.auditor_rule_code ?? projection?.ruleCode ?? null,
+        billingIncrement:
+          row.auditor_increment ?? projection?.billingIncrement ?? null,
         rateCardVersion: row.rate_card_version,
         rateCardStatus: row.rate_card_status,
+        projectionRulesetVersion: projection?.rulesetVersion ?? null,
+        cappedByVendorAmount:
+          projection?.cappedByVendorAmount ?? false,
       },
       variance,
     },
