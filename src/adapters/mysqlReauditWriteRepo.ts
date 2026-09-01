@@ -12,6 +12,7 @@ import {
   REAUDIT_ENGINE_VERSION,
 } from '../reaudit/core.ts'
 import type {
+  ClassificationDecisionSignals,
   ReauditCandidate,
   ReauditItemResult,
 } from '../reaudit/types.ts'
@@ -43,6 +44,24 @@ interface CountRow extends RowDataPacket {
 
 interface AttemptRow extends RowDataPacket {
   audio_attempt_count: number | string
+}
+
+function decisionSignalsJson(
+  signals: ClassificationDecisionSignals | undefined,
+): JsonValue {
+  if (signals == null) return null
+  return {
+    counterpartyType: signals.counterpartyType,
+    agentHandling: signals.agentHandling,
+    conversationOutcome: signals.conversationOutcome,
+    durationOutcome: signals.durationOutcome,
+    stopIntent: signals.stopIntent ?? null,
+    postStopBehavior: signals.postStopBehavior ?? null,
+    successfulOutcome: signals.successfulOutcome ?? null,
+    voicemailEvidence: signals.voicemailEvidence ?? null,
+    automationEvidence: signals.automationEvidence ?? null,
+    junkEvidence: signals.junkEvidence ?? null,
+  }
 }
 
 interface ManualItemStateRow extends RowDataPacket {
@@ -586,6 +605,17 @@ export function createMysqlReauditWriteRepo(
               model: classification.model,
               rulesetVersion: REAUDIT_CLASSIFIER_RULESET_VERSION,
               rulesetSha256: REAUDIT_CLASSIFIER_RULESET_SHA256,
+              decisionSignals: decisionSignalsJson(
+                classification.decisionSignals,
+              ),
+              customerBlockNumbers: classification.customerBlockNumbers,
+              unclearBlockNumbers: classification.unclearBlockNumbers,
+              voicemailEvidenceBlockNumbers:
+                classification.voicemailEvidenceBlockNumbers ?? [],
+              automationEvidenceBlockNumbers:
+                classification.automationEvidenceBlockNumbers ?? [],
+              junkEvidenceBlockNumbers:
+                classification.junkEvidenceBlockNumbers ?? [],
               recordedDurationMs: analysis.recordedDurationMs,
               speechDurationMs: analysis.speechDurationMs,
               conversationEndMs:

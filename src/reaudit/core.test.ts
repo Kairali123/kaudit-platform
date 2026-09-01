@@ -50,7 +50,7 @@ const candidate: ReauditCandidate = {
 }
 
 test('engine version identifies the classification repair', () => {
-  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.5.1')
+  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.6.0')
 })
 
 test('merges fragments using the approved pause, duration, and character limits', () => {
@@ -453,6 +453,145 @@ test('post-stop behavior separates agent failure, excess duration, and a normal 
     )
     assert.equal(result.category, item.expected)
   }
+})
+
+test('an appropriate close outranks an erroneous generic duration signal', () => {
+  const result = validateClassification(
+    reviewedClassification({
+      proposed: 'TIME_DURATION',
+      customerSpoke: true,
+      signals: {
+        counterpartyType: 'human',
+        agentHandling: 'normal',
+        conversationOutcome: 'no_outcome',
+        durationOutcome: 'ended_too_early',
+        stopIntent: 'callback_or_defer',
+        postStopBehavior: 'appropriate_close',
+        successfulOutcome: 'none',
+      },
+    }),
+    [
+      { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent prompt' },
+      { number: 2, startMs: 1_100, endMs: 2_000, text: 'Synthetic customer deferral' },
+      { number: 3, startMs: 2_100, endMs: 3_000, text: 'Synthetic agent close' },
+    ],
+    4_000,
+  )
+
+  assert.equal(result.category, 'CONNECT_NOT_FRUITFUL')
+})
+
+test('repeated customer greetings with no agent response override junk', () => {
+  const raw = reviewedClassification({
+    proposed: 'JUNK_CALL',
+    signals: {
+      counterpartyType: 'human',
+      agentHandling: 'normal',
+      conversationOutcome: 'no_outcome',
+      durationOutcome: 'appropriate',
+      junkEvidence: 'none',
+    },
+  })
+  raw.customerBlockNumbers = []
+  raw.junkEvidenceBlockNumbers = [1]
+
+  const result = validateClassification(
+    raw,
+    [{ number: 1, startMs: 0, endMs: 4_000, text: 'Hello, hello, hello!' }],
+    5_000,
+  )
+
+  assert.deepEqual(result.customerBlockNumbers, [1])
+  assert.deepEqual(result.junkEvidenceBlockNumbers, [])
+  assert.equal(result.category, 'AGENT_FAILURE')
+})
+
+test('a standalone language preference is human speech, not AI to AI', () => {
+  const raw = reviewedClassification({
+    proposed: 'AI_TO_AI',
+    signals: {
+      counterpartyType: 'interactive_automation',
+      agentHandling: 'normal',
+      conversationOutcome: 'no_outcome',
+      durationOutcome: 'appropriate',
+      automationEvidence: 'screening_prompt',
+    },
+  })
+  raw.customerBlockNumbers = []
+  raw.automationEvidenceBlockNumbers = [2]
+
+  const result = validateClassification(
+    raw,
+    [
+      { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent prompt' },
+      { number: 2, startMs: 1_100, endMs: 2_000, text: 'English, Tamil' },
+      { number: 3, startMs: 2_100, endMs: 3_000, text: 'Synthetic agent close' },
+    ],
+    4_000,
+  )
+
+  assert.deepEqual(result.customerBlockNumbers, [2])
+  assert.deepEqual(result.automationEvidenceBlockNumbers, [])
+  assert.equal(result.decisionSignals?.counterpartyType, 'human')
+  assert.equal(result.category, 'CONNECT_NOT_FRUITFUL')
+})
+
+test('AI to AI requires a supported automation block and an agent exchange', () => {
+  const raw = reviewedClassification({
+    proposed: 'AI_TO_AI',
+    signals: {
+      counterpartyType: 'interactive_automation',
+      agentHandling: 'normal',
+      conversationOutcome: 'no_outcome',
+      durationOutcome: 'appropriate',
+      automationEvidence: 'virtual_assistant_disclosure',
+    },
+  })
+  raw.automationEvidenceBlockNumbers = [2]
+
+  const result = validateClassification(
+    raw,
+    [
+      { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent prompt' },
+      {
+        number: 2,
+        startMs: 1_100,
+        endMs: 2_000,
+        text: 'This is an automated assistant. Please state your name.',
+      },
+    ],
+    3_000,
+  )
+
+  assert.equal(result.category, 'AI_TO_AI')
+  assert.deepEqual(result.automationEvidenceBlockNumbers, [2])
+})
+
+test('junk calls require a supported test, spam, or illegitimate-purpose block', () => {
+  const raw = reviewedClassification({
+    proposed: 'JUNK_CALL',
+    customerSpoke: true,
+    signals: {
+      counterpartyType: 'human',
+      agentHandling: 'normal',
+      conversationOutcome: 'no_outcome',
+      durationOutcome: 'appropriate',
+      junkEvidence: 'test_call',
+    },
+  })
+  raw.junkEvidenceBlockNumbers = [2]
+
+  const result = validateClassification(
+    raw,
+    [
+      { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent prompt' },
+      { number: 2, startMs: 1_100, endMs: 2_000, text: 'This is a test call.' },
+    ],
+    3_000,
+  )
+
+  assert.equal(result.category, 'JUNK_CALL')
+  assert.deepEqual(result.junkEvidenceBlockNumbers, [2])
 })
 
 test('a completed outcome is not erased by a later deferral', () => {

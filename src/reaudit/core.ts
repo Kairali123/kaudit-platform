@@ -19,8 +19,8 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.5.1'
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.7.0'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.6.0'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.8.0'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
@@ -36,6 +36,18 @@ const decimal = /^(0|1)(?:\.\d{1,8})?$/
  */
 const AFFIRMATIVE_VOICEMAIL_CUE =
   /\b(?:voice\s*mail|mailbox|beep|after (?:the )?(?:tone|beep)|at the tone|leave (?:a |your )?message|record (?:a |your |the )?message|you(?:'ve| have) reached|is not available|cannot (?:take|answer) (?:your )?call|(?:message|recording) (?:has been |is )?(?:recorded|complete(?:d)?|finished|ended)|you (?:may|can) (?:now )?hang up)\b|वॉइस\s*मेल|वॉइसमेल|संदेश छोड़|मैसेज छोड़|बीप|टोन के बाद|उपलब्ध नहीं|വോയ്സ്\s*മെയിൽ|വോയ്സ്മെയിൽ|സന്ദേശം|ബീപ്പ്|ലഭ്യമല്ല/iu
+
+const AFFIRMATIVE_AUTOMATION_CUE =
+  /\b(?:press|dial|choose|select)\s+(?:a\s+)?(?:number|option|one|two|three|[0-9])\b|\b(?:virtual|automated|digital)\s+(?:assistant|agent|system|service|menu)\b|\b(?:state|say)\s+(?:your\s+)?(?:name|purpose|reason for (?:the )?call)\b|\b(?:call is being screened|screening (?:assistant|service))\b|(?:बटन|विकल्प)\s*(?:दबाएँ|चुनें)|ഓപ്ഷൻ\s*(?:തിരഞ്ഞെടുക്കുക|അമർത്തുക)/iu
+
+const AFFIRMATIVE_JUNK_CUE =
+  /\b(?:test(?:ing)?(?:\s+(?:call|audio|system|line))?|spam|scam|prank|robocall)\b|\b(?:fake|fraudulent)\s+(?:call|enquiry|inquiry)\b|टेस्ट\s*कॉल|स्पैम|स्कैम|തമാശ\s*കോൾ/iu
+
+const REPEATED_CUSTOMER_GREETING_CUE =
+  /^(?:(?:hello|hallo|helo|hi|हेलो|हलो|ഹലോ)[\s,!?]*){2,}$/iu
+
+const CUSTOMER_LANGUAGE_CHOICE_CUE =
+  /^(?:(?:english|hindi|hinglish|tamil|malayalam|telugu|kannada|marathi|bengali|ગુજરાતી|हिंदी|தமிழ்|മലയാളം)[\s,/&]*)+$/iu
 
 const DECISION_SIGNAL_VALUES = {
   counterpartyType: [
@@ -80,6 +92,18 @@ const DECISION_SIGNAL_VALUES = {
     'beep',
     'none',
   ],
+  automationEvidence: [
+    'menu_prompt',
+    'virtual_assistant_disclosure',
+    'screening_prompt',
+    'none',
+  ],
+  junkEvidence: [
+    'test_call',
+    'spam_or_scam',
+    'prank_or_illegitimate_purpose',
+    'none',
+  ],
 } as const
 
 function validateDecisionSignals(
@@ -90,6 +114,8 @@ function validateDecisionSignals(
     if (value === undefined) {
       if (
         name === 'voicemailEvidence' ||
+        name === 'automationEvidence' ||
+        name === 'junkEvidence' ||
         name === 'stopIntent' ||
         name === 'postStopBehavior' ||
         name === 'successfulOutcome'
@@ -106,7 +132,10 @@ export function resolveReviewedCategory(options: {
   proposedCategory: ModelClassification['category']
   decisionSignals?: ClassificationDecisionSignals
   customerBlockCount: number
+  agentBlockCount?: number
   voicemailEvidenceBlockCount?: number
+  automationEvidenceBlockCount?: number
+  junkEvidenceBlockCount?: number
   durationMismatch?: boolean
 }): ModelClassification['category'] {
   const signals = options.decisionSignals
@@ -150,9 +179,56 @@ export function resolveReviewedCategory(options: {
       'Voicemail evidence requires a voicemail counterparty signal',
     )
   }
-  if (signals.counterpartyType === 'interactive_automation') return 'AI_TO_AI'
+  if (signals.counterpartyType === 'interactive_automation') {
+    if (
+      signals.automationEvidence !== undefined &&
+      (signals.automationEvidence === 'none' ||
+        options.automationEvidenceBlockCount === 0 ||
+        options.agentBlockCount === 0)
+    ) {
+      throw new Error(
+        'AI-to-AI requires affirmative interactive-automation evidence',
+      )
+    }
+    return 'AI_TO_AI'
+  }
+  if (
+    signals.automationEvidence !== undefined &&
+    (signals.automationEvidence !== 'none' ||
+      (options.automationEvidenceBlockCount ?? 0) > 0)
+  ) {
+    throw new Error(
+      'Automation evidence requires an interactive-automation counterparty',
+    )
+  }
   if (signals.counterpartyType === 'no_response') {
     return 'USER_SILENCE'
+  }
+  const explicitJunkEvidence =
+    signals.junkEvidence !== undefined &&
+    signals.junkEvidence !== 'none' &&
+    (options.junkEvidenceBlockCount ?? 0) > 0
+  if (options.proposedCategory === 'JUNK_CALL' && explicitJunkEvidence) {
+    return 'JUNK_CALL'
+  }
+  if (
+    signals.counterpartyType === 'human' &&
+    options.customerBlockCount > 0 &&
+    options.agentBlockCount === 0
+  ) {
+    return 'AGENT_FAILURE'
+  }
+  if (
+    options.proposedCategory === 'JUNK_CALL' &&
+    signals.junkEvidence !== undefined
+  ) {
+    throw new Error('Junk call requires affirmative junk evidence')
+  }
+  if (
+    options.proposedCategory !== 'JUNK_CALL' &&
+    (explicitJunkEvidence || (options.junkEvidenceBlockCount ?? 0) > 0)
+  ) {
+    throw new Error('Junk evidence requires the junk-call category')
   }
   if (
     signals.counterpartyType === 'human' &&
@@ -183,6 +259,16 @@ export function resolveReviewedCategory(options: {
     signals.agentHandling === 'normal'
   ) {
     return 'OK'
+  }
+  if (
+    signals.counterpartyType === 'human' &&
+    signals.stopIntent !== undefined &&
+    signals.stopIntent !== 'none' &&
+    signals.postStopBehavior === 'appropriate_close' &&
+    signals.conversationOutcome === 'no_outcome' &&
+    signals.agentHandling === 'normal'
+  ) {
+    return 'CONNECT_NOT_FRUITFUL'
   }
   if (
     signals.durationOutcome === 'ended_too_early' ||
@@ -257,7 +343,24 @@ export function validateClassification(
     [...new Set(values)]
       .filter((value) => Number.isInteger(value) && value >= 1 && value <= maxBlock)
       .sort((left, right) => left - right)
-  const customerBlockNumbers = normalizeBlocks(raw.customerBlockNumbers)
+  const deterministicCustomerBlockNumbers = blocks
+    .filter((block) => {
+      const text = block.text.trim()
+      return (
+        (raw.category === 'JUNK_CALL' &&
+          REPEATED_CUSTOMER_GREETING_CUE.test(text)) ||
+        ((raw.category === 'AI_TO_AI' ||
+          raw.decisionSignals?.counterpartyType ===
+            'interactive_automation') &&
+          CUSTOMER_LANGUAGE_CHOICE_CUE.test(text))
+      )
+    })
+    .map((block) => block.number)
+  const rawCustomerBlockNumbers = normalizeBlocks(raw.customerBlockNumbers)
+  const customerBlockNumbers = normalizeBlocks([
+    ...rawCustomerBlockNumbers,
+    ...deterministicCustomerBlockNumbers,
+  ])
   const unclearBlockNumbers = normalizeBlocks(raw.unclearBlockNumbers)
   const voicemailEvidenceBlockNumbers = normalizeBlocks(
     raw.voicemailEvidenceBlockNumbers ?? [],
@@ -266,8 +369,45 @@ export function validateClassification(
     return block != null && AFFIRMATIVE_VOICEMAIL_CUE.test(block.text)
   })
   const customerBlocks = new Set(customerBlockNumbers)
-  const unclearBlocks = new Set(unclearBlockNumbers)
+  if (
+    rawCustomerBlockNumbers.some((number) =>
+      unclearBlockNumbers.includes(number),
+    )
+  ) {
+    throw new Error('Customer and unclear speech blocks must not overlap')
+  }
+  const deterministicCustomerBlocks = new Set(
+    deterministicCustomerBlockNumbers,
+  )
+  const unclearBlocks = new Set(
+    unclearBlockNumbers.filter(
+      (number) => !deterministicCustomerBlocks.has(number),
+    ),
+  )
+  const normalizedUnclearBlockNumbers = [...unclearBlocks].sort(
+    (left, right) => left - right,
+  )
   const voicemailEvidenceBlocks = new Set(voicemailEvidenceBlockNumbers)
+  const automationEvidenceBlockNumbers = normalizeBlocks(
+    raw.automationEvidenceBlockNumbers ?? [],
+  ).filter((number) => {
+    const block = blocks.find((candidate) => candidate.number === number)
+    return (
+      block != null &&
+      !customerBlocks.has(number) &&
+      !unclearBlocks.has(number) &&
+      AFFIRMATIVE_AUTOMATION_CUE.test(block.text)
+    )
+  })
+  const automationEvidenceBlocks = new Set(
+    automationEvidenceBlockNumbers,
+  )
+  const junkEvidenceBlockNumbers = normalizeBlocks(
+    raw.junkEvidenceBlockNumbers ?? [],
+  ).filter((number) => {
+    const block = blocks.find((candidate) => candidate.number === number)
+    return block != null && AFFIRMATIVE_JUNK_CUE.test(block.text)
+  })
   // This field affects only the JUNK_CALL billing endpoint. Keep the model's
   // customer-role assignment authoritative and discard contradictory extras
   // instead of failing the entire quality audit over a derived billing tag.
@@ -277,9 +417,6 @@ export function validateClassification(
   const businessRelevantCustomerBlocks = new Set(
     businessRelevantCustomerBlockNumbers,
   )
-  if (customerBlockNumbers.some((number) => unclearBlocks.has(number))) {
-    throw new Error('Customer and unclear speech blocks must not overlap')
-  }
   if (
     voicemailEvidenceBlockNumbers.some(
       (number) => customerBlocks.has(number) || unclearBlocks.has(number),
@@ -303,7 +440,8 @@ export function validateClassification(
       (block) =>
         !customerBlocks.has(block.number) &&
         !unclearBlocks.has(block.number) &&
-        !voicemailEvidenceBlocks.has(block.number),
+        !voicemailEvidenceBlocks.has(block.number) &&
+        !automationEvidenceBlocks.has(block.number),
     )
     .map((block) => block.endMs)
   const voicemailEnds = blocks
@@ -318,11 +456,23 @@ export function validateClassification(
   if (last != null && last > recordedDurationMs) {
     throw new Error('Customer block end falls outside the recording')
   }
+  const decisionSignals =
+    raw.decisionSignals?.counterpartyType === 'interactive_automation' &&
+    customerBlockNumbers.length > 0
+      ? {
+          ...raw.decisionSignals,
+          counterpartyType: 'human' as const,
+          automationEvidence: 'none' as const,
+        }
+      : raw.decisionSignals
   const category = resolveReviewedCategory({
     proposedCategory: raw.category,
-    decisionSignals: raw.decisionSignals,
+    decisionSignals,
     customerBlockCount: customerBlockNumbers.length,
+    agentBlockCount: agentEnds.length,
     voicemailEvidenceBlockCount: voicemailEvidenceBlockNumbers.length,
+    automationEvidenceBlockCount: automationEvidenceBlockNumbers.length,
+    junkEvidenceBlockCount: junkEvidenceBlockNumbers.length,
     durationMismatch: options.durationMismatch,
   })
   if (category === 'USER_SILENCE') {
@@ -333,7 +483,8 @@ export function validateClassification(
       (block) =>
         !customerBlocks.has(block.number) &&
         !unclearBlocks.has(block.number) &&
-        !voicemailEvidenceBlocks.has(block.number),
+        !voicemailEvidenceBlocks.has(block.number) &&
+        !automationEvidenceBlocks.has(block.number),
     ).length
     if (agentBlockCount === 0) {
       throw new Error(
@@ -345,9 +496,12 @@ export function validateClassification(
     ...raw,
     category,
     customerBlockNumbers,
-    unclearBlockNumbers,
+    unclearBlockNumbers: normalizedUnclearBlockNumbers,
     voicemailEvidenceBlockNumbers,
+    automationEvidenceBlockNumbers,
+    junkEvidenceBlockNumbers,
     businessRelevantCustomerBlockNumbers,
+    decisionSignals,
     customerSpoke,
     lastMeaningfulCustomerExchangeMs: last,
     lastMeaningfulAgentExchangeMs:
@@ -359,7 +513,7 @@ export function validateClassification(
     lastVerifiedInteractionMs:
       verifiedEnds.length > 0 ? Math.max(...verifiedEnds) : null,
     remarks:
-      raw.decisionSignals?.counterpartyType === 'voicemail' &&
+      decisionSignals?.counterpartyType === 'voicemail' &&
       category === 'USER_SILENCE'
         ? 'Agent speech was identified, but no customer or affirmative voicemail evidence was identified; this is user silence.'
         : raw.remarks.trim().slice(0, 2_000),
@@ -375,6 +529,9 @@ function speechByRole(
   const voicemailEvidence = new Set(
     classification.voicemailEvidenceBlockNumbers ?? [],
   )
+  const automationEvidence = new Set(
+    classification.automationEvidenceBlockNumbers ?? [],
+  )
   let customerSpeechMs = 0
   let agentSpeechMs = 0
   for (const block of blocks) {
@@ -382,7 +539,8 @@ function speechByRole(
     if (customer.has(block.number)) customerSpeechMs += duration
     else if (
       !unclear.has(block.number) &&
-      !voicemailEvidence.has(block.number)
+      !voicemailEvidence.has(block.number) &&
+      !automationEvidence.has(block.number)
     ) {
       agentSpeechMs += duration
     }

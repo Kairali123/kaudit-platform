@@ -136,6 +136,18 @@ test('requested re-audit mode is billing-only, bounded, and queue-driven', () =>
   assert.match(workflow, /group: kaudit-audit-worker-\$\{\{ inputs\.system \}\}/)
 })
 
+test('failure diagnostic is read-only, billing-only, and model-free', () => {
+  assert.match(workflow, /- diagnose-failures/)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "diagnose-failures"[\s\S]{0,120}node scripts\/report-billing-failure-breakdown\.mjs/,
+  )
+  assert.match(
+    workflow,
+    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then[\s\S]{0,200}if \[\[ "\$AUDIT_MODE" != "new" \]\]; then\s+exit 2/,
+  )
+})
+
 test('workflow configuration is secret-backed and minimally permissioned', () => {
   assert.match(workflow, /permissions:\n  contents: read/)
   for (const name of [

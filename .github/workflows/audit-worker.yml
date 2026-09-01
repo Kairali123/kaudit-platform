@@ -44,6 +44,7 @@ on:
           - migration-0017
           - diagnose-requested
           - diagnose-monitor
+          - diagnose-failures
       migration_confirmation:
         description: Type APPLY_0015 or APPLY_0017 for the matching migration mode
         required: false
@@ -103,6 +104,8 @@ jobs:
             elif [[ "$AUDIT_MODE" == "diagnose-monitor" ]]; then
               KAUDIT_DIAGNOSTIC_MONTH="${{ inputs.diagnostic_month }}" \
               node scripts/report-audit-monitor-health.mjs
+            elif [[ "$AUDIT_MODE" == "diagnose-failures" ]]; then
+              node scripts/report-billing-failure-breakdown.mjs
             elif [[ "$AUDIT_MODE" == "migration-0015" ]]; then
               if [[ "${{ inputs.migration_confirmation }}" != "APPLY_0015" ]]; then
                 exit 2

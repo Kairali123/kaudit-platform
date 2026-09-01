@@ -112,6 +112,18 @@ export interface ClassificationDecisionSignals {
     | 'recording_notice'
     | 'beep'
     | 'none'
+  /** Required from live classifiers; absent only on durable legacy results. */
+  automationEvidence?:
+    | 'menu_prompt'
+    | 'virtual_assistant_disclosure'
+    | 'screening_prompt'
+    | 'none'
+  /** Required from live classifiers; absent only on durable legacy results. */
+  junkEvidence?:
+    | 'test_call'
+    | 'spam_or_scam'
+    | 'prank_or_illegitimate_purpose'
+    | 'none'
 }
 
 export interface ModelClassification {
@@ -126,6 +138,10 @@ export interface ModelClassification {
   unclearBlockNumbers: number[]
   /** Transcript blocks containing affirmative voicemail evidence. */
   voicemailEvidenceBlockNumbers?: number[]
+  /** Transcript blocks containing affirmative interactive-automation evidence. */
+  automationEvidenceBlockNumbers?: number[]
+  /** Transcript blocks containing affirmative test, spam, or illegitimate-purpose evidence. */
+  junkEvidenceBlockNumbers?: number[]
   /** Customer blocks that establish a meaningful Kairali business interaction. */
   businessRelevantCustomerBlockNumbers?: number[]
   customerSpoke: boolean

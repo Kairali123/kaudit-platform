@@ -17,7 +17,7 @@ import {
 } from './openaiReaudit.ts'
 
 export const CONSENSUS_REVIEWER_VERSION =
-  'kairali-independent-consensus-review/1.6.0'
+  'kairali-independent-consensus-review/1.7.0'
 
 export const CONSENSUS_REVIEWER_PROMPT = `You are an independent automated
 verification pass for Kairali's call-audit system. Review the timestamped,
@@ -44,7 +44,7 @@ export const CONSENSUS_REVIEWER_RULESET_SHA256 =
     model: REAUDIT_CLASSIFICATION_MODEL,
     prompt: CONSENSUS_REVIEWER_PROMPT,
     categories: REAUDIT_CATEGORIES,
-    outputSchemaVersion: '6',
+    outputSchemaVersion: '7',
   } as unknown as JsonValue)
 
 export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
@@ -65,6 +65,14 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
         items: { type: 'integer', minimum: 1 },
       },
       voicemail_evidence_block_numbers: {
+        type: 'array',
+        items: { type: 'integer', minimum: 1 },
+      },
+      automation_evidence_block_numbers: {
+        type: 'array',
+        items: { type: 'integer', minimum: 1 },
+      },
+      junk_evidence_block_numbers: {
         type: 'array',
         items: { type: 'integer', minimum: 1 },
       },
@@ -128,6 +136,24 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
           'none',
         ],
       },
+      automation_evidence: {
+        type: 'string',
+        enum: [
+          'menu_prompt',
+          'virtual_assistant_disclosure',
+          'screening_prompt',
+          'none',
+        ],
+      },
+      junk_evidence: {
+        type: 'string',
+        enum: [
+          'test_call',
+          'spam_or_scam',
+          'prank_or_illegitimate_purpose',
+          'none',
+        ],
+      },
       remarks: { type: 'string', maxLength: 1200 },
       dispute_recommended: { type: 'boolean' },
     },
@@ -137,6 +163,8 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
       'customer_block_numbers',
       'unclear_block_numbers',
       'voicemail_evidence_block_numbers',
+      'automation_evidence_block_numbers',
+      'junk_evidence_block_numbers',
       'business_relevant_customer_block_numbers',
       'counterparty_type',
       'agent_handling',
@@ -146,6 +174,8 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
       'post_stop_behavior',
       'successful_outcome',
       'voicemail_evidence',
+      'automation_evidence',
+      'junk_evidence',
       'remarks',
       'dispute_recommended',
     ],
@@ -218,6 +248,8 @@ ${transcript}`,
         customer_block_numbers: number[]
         unclear_block_numbers: number[]
         voicemail_evidence_block_numbers: number[]
+        automation_evidence_block_numbers: number[]
+        junk_evidence_block_numbers: number[]
         business_relevant_customer_block_numbers: number[]
         counterparty_type:
           | 'human'
@@ -255,6 +287,16 @@ ${transcript}`,
           | 'recording_notice'
           | 'beep'
           | 'none'
+        automation_evidence:
+          | 'menu_prompt'
+          | 'virtual_assistant_disclosure'
+          | 'screening_prompt'
+          | 'none'
+        junk_evidence:
+          | 'test_call'
+          | 'spam_or_scam'
+          | 'prank_or_illegitimate_purpose'
+          | 'none'
         remarks: string
         dispute_recommended: boolean
       }
@@ -274,6 +316,9 @@ ${transcript}`,
         unclearBlockNumbers: raw.unclear_block_numbers,
         voicemailEvidenceBlockNumbers:
           raw.voicemail_evidence_block_numbers,
+        automationEvidenceBlockNumbers:
+          raw.automation_evidence_block_numbers,
+        junkEvidenceBlockNumbers: raw.junk_evidence_block_numbers,
         businessRelevantCustomerBlockNumbers:
           raw.business_relevant_customer_block_numbers,
         customerSpoke: customerEnds.length > 0,
@@ -290,6 +335,8 @@ ${transcript}`,
           postStopBehavior: raw.post_stop_behavior,
           successfulOutcome: raw.successful_outcome,
           voicemailEvidence: raw.voicemail_evidence,
+          automationEvidence: raw.automation_evidence,
+          junkEvidence: raw.junk_evidence,
         },
         usage: {
           inputTokens: completion.usage?.prompt_tokens ?? null,

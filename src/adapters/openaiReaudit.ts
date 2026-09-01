@@ -54,7 +54,10 @@ category when a more specific rule below matches:
    human reply are NEVER voicemail evidence. Do not claim a voicemail greeting
    unless a non-Saanvi transcript block contains affirmative mailbox evidence.
 2. AI_TO_AI requires an interactive automated system, IVR, or screening agent
-   that exchanges prompts with Saanvi. A one-way voicemail greeting is VOICEMAIL.
+   that exchanges prompts with Saanvi. Require an explicit menu prompt, virtual-
+   assistant disclosure, or screening prompt in a non-Saanvi block. A language
+   choice, short human reply, accent, unclear audio, or synthetic-sounding voice
+   is never enough. A one-way voicemail greeting is VOICEMAIL.
 3. When Saanvi speaks and the called person gives no response at all, choose
    USER_SILENCE. Any human reply, including hello, wrong number, busy, callback,
    or not interested, means USER_SILENCE is not allowed.
@@ -68,7 +71,9 @@ category when a more specific rule below matches:
    without an outcome, such as wrong number, busy, callback, not interested, or
    an early hang-up, when Saanvi did not itself fail. Wrong number is not JUNK_CALL.
 6. JUNK_CALL is only for a test, spam, or clearly illegitimate interaction. It
-   is never a fallback for silence, voicemail, wrong number, or a short call.
+   requires an explicit test, spam/scam, prank, or illegitimate-purpose block.
+   It is never a fallback for silence, voicemail, wrong number, repeated hello,
+   agent non-response, unclear audio, or a short call.
 7. INCORRECT_CALL_DURATION is only for the supplied vendor-versus-recording
    duration-mismatch fact. TIME_DURATION instead describes a recording that
    continued too long or ended too early for the conversational outcome. Never
@@ -76,6 +81,9 @@ category when a more specific rule below matches:
 8. Choose OK when qualification, resolution, or a handoff/transfer was already
    completed normally. A later callback or deferral statement does not erase
    that successful outcome. Do not invent a defect.
+9. A human stop, defer, wrong-number, busy, or decline response followed by an
+   appropriate Saanvi close is CONNECT_NOT_FRUITFUL when no successful outcome
+   occurred. A vendor-duration difference never changes that quality category.
 
 REFERENCE DECISIONS (SYNTHETIC)
 - Saanvi introduces herself and receives no human response: USER_SILENCE.
@@ -90,6 +98,10 @@ REFERENCE DECISIONS (SYNTHETIC)
   administrative contact details: TIME_DURATION.
 - Qualification or handoff completes before a later deferral: OK.
 - A normal completed two-way exchange with no independent defect: OK.
+- A customer repeatedly says hello while Saanvi never meaningfully responds:
+  AGENT_FAILURE.
+- A customer gives a language preference and no successful outcome follows:
+  CONNECT_NOT_FRUITFUL, not AI_TO_AI.
 
 REMARK REQUIREMENTS
 Write one or two concise sentences explaining the observable facts behind the
@@ -107,6 +119,9 @@ speaker roles from conversational meaning before choosing a category:
   repeatedly says hello while waiting for a response, or otherwise speaks as the
   called person. Long or continuous speech is NOT evidence that the speaker is
   Saanvi.
+- A block containing only repeated greetings while waiting for Saanvi, or only
+  a language choice such as English, Hindi, Tamil, or Malayalam, is customer
+  speech. It is not automation and not junk.
 - Leave a block out of customer_block_numbers and unclear_block_numbers only when
   its wording positively identifies it as Saanvi's Kairali introduction, scripted
   question, explanation, acknowledgement, or closing.
@@ -162,6 +177,14 @@ Before proposing a category, extract these observable facts independently:
   genuine Kairali business enquiry, need, qualification answer, or resolution.
   Ordinary greetings, spam, tests, abuse, and unrelated speech are not business
   relevant. Every number here must also appear in customer_block_numbers.
+- automation_evidence: menu_prompt only for explicit interactive menu choices;
+  virtual_assistant_disclosure only when the counterparty identifies itself as
+  automated; screening_prompt only for an automated name/purpose screening
+  exchange. Otherwise none. Put only the supporting non-Saanvi blocks in
+  automation_evidence_block_numbers.
+- junk_evidence: test_call, spam_or_scam, or prank_or_illegitimate_purpose only
+  when an explicit supporting block exists. Otherwise none. Put only those
+  supporting blocks in junk_evidence_block_numbers.
 
 The deterministic engine applies reviewed precedence to these signals. Do not
 alter a signal to justify the proposed category. A vendor-versus-recording
@@ -198,7 +221,7 @@ export const REAUDIT_CLASSIFIER_RULESET_SHA256 = canonicalJsonSha256({
   model: REAUDIT_CLASSIFICATION_MODEL,
   prompt: REAUDIT_CLASSIFIER_PROMPT,
   categories: REAUDIT_CATEGORIES,
-  outputSchemaVersion: '6',
+  outputSchemaVersion: '7',
 } as unknown as JsonValue)
 
 export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
@@ -219,6 +242,14 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
         items: { type: 'integer', minimum: 1 },
       },
       voicemail_evidence_block_numbers: {
+        type: 'array',
+        items: { type: 'integer', minimum: 1 },
+      },
+      automation_evidence_block_numbers: {
+        type: 'array',
+        items: { type: 'integer', minimum: 1 },
+      },
+      junk_evidence_block_numbers: {
         type: 'array',
         items: { type: 'integer', minimum: 1 },
       },
@@ -282,6 +313,24 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
           'none',
         ],
       },
+      automation_evidence: {
+        type: 'string',
+        enum: [
+          'menu_prompt',
+          'virtual_assistant_disclosure',
+          'screening_prompt',
+          'none',
+        ],
+      },
+      junk_evidence: {
+        type: 'string',
+        enum: [
+          'test_call',
+          'spam_or_scam',
+          'prank_or_illegitimate_purpose',
+          'none',
+        ],
+      },
       remarks: { type: 'string', maxLength: 1200 },
       dispute_recommended: { type: 'boolean' },
     },
@@ -291,6 +340,8 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
       'customer_block_numbers',
       'unclear_block_numbers',
       'voicemail_evidence_block_numbers',
+      'automation_evidence_block_numbers',
+      'junk_evidence_block_numbers',
       'business_relevant_customer_block_numbers',
       'counterparty_type',
       'agent_handling',
@@ -300,6 +351,8 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
       'post_stop_behavior',
       'successful_outcome',
       'voicemail_evidence',
+      'automation_evidence',
+      'junk_evidence',
       'remarks',
       'dispute_recommended',
     ],
@@ -434,6 +487,8 @@ ${transcript}`,
         customer_block_numbers: number[]
         unclear_block_numbers: number[]
         voicemail_evidence_block_numbers: number[]
+        automation_evidence_block_numbers: number[]
+        junk_evidence_block_numbers: number[]
         business_relevant_customer_block_numbers: number[]
         counterparty_type:
           | 'human'
@@ -471,6 +526,16 @@ ${transcript}`,
           | 'recording_notice'
           | 'beep'
           | 'none'
+        automation_evidence:
+          | 'menu_prompt'
+          | 'virtual_assistant_disclosure'
+          | 'screening_prompt'
+          | 'none'
+        junk_evidence:
+          | 'test_call'
+          | 'spam_or_scam'
+          | 'prank_or_illegitimate_purpose'
+          | 'none'
         remarks: string
         dispute_recommended: boolean
       }
@@ -490,6 +555,9 @@ ${transcript}`,
         unclearBlockNumbers: raw.unclear_block_numbers,
         voicemailEvidenceBlockNumbers:
           raw.voicemail_evidence_block_numbers,
+        automationEvidenceBlockNumbers:
+          raw.automation_evidence_block_numbers,
+        junkEvidenceBlockNumbers: raw.junk_evidence_block_numbers,
         businessRelevantCustomerBlockNumbers:
           raw.business_relevant_customer_block_numbers,
         customerSpoke: customerEnds.length > 0,
@@ -506,6 +574,8 @@ ${transcript}`,
           postStopBehavior: raw.post_stop_behavior,
           successfulOutcome: raw.successful_outcome,
           voicemailEvidence: raw.voicemail_evidence,
+          automationEvidence: raw.automation_evidence,
+          junkEvidence: raw.junk_evidence,
         },
         usage: {
           inputTokens: completion.usage?.prompt_tokens ?? null,

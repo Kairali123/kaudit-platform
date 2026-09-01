@@ -114,6 +114,11 @@ bounded result. It performs no worker or model work.
 Run `diagnose-requested` after the migration and before enabling Billing worker
 runs. Do not combine schema application and worker startup in one operation.
 
+Run `diagnose-failures` with `system=billing` to inspect aggregate failure
+families, classification subcodes, current retry-state buckets, and worker
+totals. This mode is read-only and model-free. It emits no identifiers, URLs,
+transcript content, prompts, raw errors, or amounts.
+
 ## Operation
 
 1. Open the matching audit report as an administrator.

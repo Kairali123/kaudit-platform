@@ -77,10 +77,25 @@ const SUCCESS: ReauditItemResult = {
     confidence: '0.94000000',
     customerBlockNumbers: [1],
     unclearBlockNumbers: [],
+    voicemailEvidenceBlockNumbers: [],
+    automationEvidenceBlockNumbers: [],
+    junkEvidenceBlockNumbers: [],
     customerSpoke: true,
     lastMeaningfulCustomerExchangeMs: 61_000,
     remarks: 'Synthetic remark for a synthetic call.',
     disputeRecommended: false,
+    decisionSignals: {
+      counterpartyType: 'human',
+      agentHandling: 'normal',
+      conversationOutcome: 'successful',
+      durationOutcome: 'appropriate',
+      stopIntent: 'none',
+      postStopBehavior: 'not_applicable',
+      successfulOutcome: 'resolved',
+      voicemailEvidence: 'none',
+      automationEvidence: 'none',
+      junkEvidence: 'none',
+    },
   },
 }
 
@@ -286,6 +301,10 @@ test('re-audit evidence persists the category charge policy decision', async () 
     assert.match(document.categoryChargePolicyVersion, /^management-category-charge\//)
     assert.match(document.categoryChargePolicySha256, /^[a-f0-9]{64}$/)
   }
+  assert.deepEqual(findingSignals.decisionSignals, SUCCESS.classification?.decisionSignals)
+  assert.deepEqual(findingSignals.customerBlockNumbers, [1])
+  assert.deepEqual(findingSignals.automationEvidenceBlockNumbers, [])
+  assert.deepEqual(findingSignals.junkEvidenceBlockNumbers, [])
 })
 
 test('a same-ruleset rerun gets its own outbox identity', async () => {
