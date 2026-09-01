@@ -69,6 +69,36 @@ export interface ReauditWorkerSummary {
   fatal?: { phase: string; category: string }
 }
 
+const MAX_PERSIST_DEADLOCK_RETRIES = 3
+
+async function persistWithDeadlockRetry(options: {
+  results: ReauditResultRepository
+  candidate: ReauditCandidate
+  result: ReauditItemResult
+  at: Date
+}): Promise<Awaited<ReturnType<ReauditResultRepository['persist']>>> {
+  for (let retry = 0; ; retry += 1) {
+    try {
+      return await options.results.persist(
+        options.candidate,
+        options.result,
+        options.at,
+      )
+    } catch (error) {
+      const fatal = asReauditFatalError('persist', error)
+      if (
+        fatal.category !== 'DB_DEADLOCK' ||
+        retry >= MAX_PERSIST_DEADLOCK_RETRIES
+      ) {
+        throw error
+      }
+      await new Promise((resolve) =>
+        setTimeout(resolve, 25 * 2 ** retry),
+      )
+    }
+  }
+}
+
 export async function runReauditBatch(options: {
   candidates: ReauditCandidateRepository
   results: ReauditResultRepository
@@ -229,7 +259,12 @@ export async function runReauditBatch(options: {
       ReturnType<ReauditResultRepository['persist']>
     >
     try {
-      persistOutcome = await options.results.persist(candidate, result, now())
+      persistOutcome = await persistWithDeadlockRetry({
+        results: options.results,
+        candidate,
+        result,
+        at: now(),
+      })
     } catch (error) {
       if (options.spendGuard && spendClaimed) {
         // Best-effort settle so the lease — not the retry policy — owns the

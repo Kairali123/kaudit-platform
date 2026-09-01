@@ -103,6 +103,9 @@ uses a four-connection MySQL pool, and the MySQL advisory lock still allows only
 one Billing Audit worker process. The dashboard terminal-failure counter no
 longer increments for scheduled retries; its pre-change historical value still
 includes retry attempts.
+Concurrent persistence locks the call row before audit history and retries a
+rolled-back deadlock transaction up to three times with bounded backoff. These
+retries reuse the staged result and never invoke a model again.
 A new worker waits for that lock for at most 30 seconds. If another database
 session still owns it, the worker performs no queue or model work, records
 `BILLING_AUDIT_LOCK_BUSY`, marks the monitor faulted, and exits. Never

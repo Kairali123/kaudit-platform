@@ -478,6 +478,7 @@ test('a persistence failure is classified by phase and allowlisted category', as
   const deadlock = Object.assign(new Error('synthetic'), {
     code: 'ER_LOCK_DEADLOCK',
   })
+  let persistCalls = 0
   const failure = await runReauditBatch({
     batchSize: 1,
     candidates: {
@@ -490,6 +491,7 @@ test('a persistence failure is classified by phase and allowlisted category', as
         return 'acquired'
       },
       async persist() {
+        persistCalls += 1
         throw deadlock
       },
     },
@@ -510,6 +512,54 @@ test('a persistence failure is classified by phase and allowlisted category', as
   assert.equal(failure.phase, 'persist')
   assert.equal(failure.category, 'DB_DEADLOCK')
   assert.ok(!String(failure).includes('synthetic'))
+  assert.equal(persistCalls, 4)
+})
+
+test('a transient persistence deadlock reuses staged output without another model call', async () => {
+  let processCalls = 0
+  let persistCalls = 0
+  let stageCalls = 0
+  const settled: string[] = []
+  const summary = await runReauditBatch({
+    batchSize: 1,
+    candidates: {
+      async listCandidates() { return [candidate('transient-deadlock')] },
+    },
+    results: {
+      async markStarted() { return 'acquired' },
+      async persist() {
+        persistCalls += 1
+        if (persistCalls < 3) {
+          throw Object.assign(new Error('synthetic'), {
+            code: 'ER_LOCK_DEADLOCK',
+          })
+        }
+        return 'completed'
+      },
+    },
+    spendGuard: {
+      async claim() { return { outcome: 'acquired' } },
+      async stageResult() { stageCalls += 1 },
+      async settle(_candidate, outcome) { settled.push(outcome) },
+    },
+    processor: {
+      async process(item) {
+        processCalls += 1
+        return {
+          callId: item.callId,
+          artifactId: item.artifactId,
+          outcome: 'classification_failed',
+          errorCode: 'CLASSIFICATION_VALIDATION_FAILED',
+        }
+      },
+    },
+  })
+
+  assert.equal(processCalls, 1)
+  assert.equal(stageCalls, 1)
+  assert.equal(persistCalls, 3)
+  assert.deepEqual(settled, ['model_spent'])
+  assert.equal(summary.completed, 1)
 })
 
 test('a no-model result is released for a free retry when persistence fails', async () => {

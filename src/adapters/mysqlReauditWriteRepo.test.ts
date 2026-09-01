@@ -112,3 +112,32 @@ test('failed append re-audit records history and preserves current call state', 
     false,
   )
 })
+
+test('ordinary persistence locks the call row instead of an audit-run gap', async () => {
+  const fixture = appendPool()
+  const repo = createMysqlReauditWriteRepo(fixture.pool)
+
+  await repo.persist(
+    candidate,
+    {
+      callId: candidate.callId,
+      artifactId: candidate.artifactId,
+      outcome: 'source_missing',
+      errorCode: 'SOURCE_MISSING',
+    },
+    new Date(0),
+  )
+
+  assert.equal(
+    fixture.statements.some(
+      (sql) => /FROM kaudit_call\s+WHERE id = \?\s+FOR UPDATE/.test(sql),
+    ),
+    true,
+  )
+  assert.equal(
+    fixture.statements.some(
+      (sql) => /FROM kaudit_audit_run[^]*FOR UPDATE/.test(sql),
+    ),
+    false,
+  )
+})

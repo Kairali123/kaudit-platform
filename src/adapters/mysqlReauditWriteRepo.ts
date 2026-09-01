@@ -307,6 +307,16 @@ export function createMysqlReauditWriteRepo(
         // this call, and asking again whether a completed run exists would
         // refuse every administrator-requested re-audit, since one always does.
         if (!manualRequest) {
+          // Lock one concrete parent row before probing or inserting audit
+          // history. Locking an empty audit-run range first creates gap-lock
+          // cycles when several different calls persist concurrently.
+          await connection.execute<RowDataPacket[]>(
+            `SELECT id
+             FROM kaudit_call
+             WHERE id = ?
+             FOR UPDATE`,
+            [candidate.callId],
+          )
           const [completed] = await connection.execute<CountRow[]>(
             allowCompletedReaudit
               ? `SELECT EXISTS (
@@ -317,12 +327,10 @@ export function createMysqlReauditWriteRepo(
                      AND c.outcome_taxonomy_version = ?
                  ) AS n
                  FROM kaudit_call c
-                 WHERE c.id = ?
-                 FOR UPDATE`
+                 WHERE c.id = ?`
               : `SELECT COUNT(*) AS n
                  FROM kaudit_audit_run
-                 WHERE call_id = ? AND status = 'completed'
-                 FOR UPDATE`,
+                 WHERE call_id = ? AND status = 'completed'`,
             allowCompletedReaudit
               ? [REAUDIT_CLASSIFIER_RULESET_VERSION, candidate.callId]
               : [candidate.callId],
