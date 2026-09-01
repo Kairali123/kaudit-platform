@@ -84,9 +84,24 @@ test('Billing Audit heartbeats independently while a batch is in flight', () => 
   assert.match(billingWorker, /await activeHeartbeat\.stop\(\)/)
 })
 
-test('provider parallelism cannot widen the Billing database pool', () => {
+test('provider parallelism cannot widen the Billing work pool', () => {
   assert.match(billingWorker, /connectionLimit: 4/)
   assert.doesNotMatch(billingWorker, /connectionLimit:.*concurrency/)
+})
+
+test('Billing control and heartbeat traffic has an isolated connection', () => {
+  assert.match(
+    billingWorker,
+    /const controlPool =[^]*connectionLimit: 1/,
+  )
+  assert.match(
+    billingWorker,
+    /createMysqlAuditWorkerControl\(controlPool\)/,
+  )
+  assert.match(
+    billingWorker,
+    /Promise\.all\(\[pool\.end\(\), controlPool\.end\(\)\]\)/,
+  )
 })
 
 test('Billing Audit retries a busy advisory lock and publishes a bounded fault', () => {

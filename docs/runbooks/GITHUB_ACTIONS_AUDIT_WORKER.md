@@ -98,11 +98,12 @@ bounded provider-work setting required for the 14,000-log daily target after
 sequential production runs averaged about 30 seconds per attempt. Untouched
 logs are selected before retry work. Targeted and requested re-audits remain at
 batch size and concurrency `1` so administrator-selected work stays strictly
-sequential. Provider parallelism does not widen database pressure: every mode
-uses a four-connection MySQL pool, and the MySQL advisory lock still allows only
-one Billing Audit worker process. The dashboard terminal-failure counter no
-longer increments for scheduled retries; its pre-change historical value still
-includes retry attempts.
+sequential. Provider parallelism does not widen the four-connection work pool.
+Billing control intent and heartbeats use one isolated connection so work-pool
+pressure cannot starve liveness or Stop/Resume handling. The MySQL advisory lock
+still allows only one Billing Audit worker process. The dashboard
+terminal-failure counter no longer increments for scheduled retries; its
+pre-change historical value still includes retry attempts.
 Concurrent persistence locks the call row before audit history and retries a
 rolled-back deadlock transaction up to three times with bounded backoff. These
 retries reuse the staged result and never invoke a model again.

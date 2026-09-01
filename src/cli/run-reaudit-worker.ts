@@ -146,28 +146,39 @@ async function main(): Promise<void> {
     .filter(Boolean)
   const config = loadRuntimeConfig(process.env)
   const ssl = resolveDatabaseTls(config, process.env)
+  const databasePoolOptions = {
+    host: config.database.host,
+    port: config.database.port,
+    database: config.database.name,
+    user: config.database.user,
+    password: config.database.password,
+    ...(ssl ? { ssl } : {}),
+    connectTimeout: 30_000,
+  }
   /** Provider concurrency is independent from the database connection budget.
    * Model calls release their claim connection before doing network work, so
    * ten provider lanes can share four bounded MySQL connections safely.
    */
   const pool = tagPoolAcquisitionFailures(
     mysql.createPool({
-      host: config.database.host,
-      port: config.database.port,
-      database: config.database.name,
-      user: config.database.user,
-      password: config.database.password,
-      ...(ssl ? { ssl } : {}),
+      ...databasePoolOptions,
       connectionLimit: 4,
-      connectTimeout: 30_000,
     }),
   )
-  const control = createMysqlAuditWorkerControl(pool)
+  // Control intent and liveness must remain reachable even if every work-pool
+  // connection is queued behind persistence or spend-lease traffic.
+  const controlPool = tagPoolAcquisitionFailures(
+    mysql.createPool({
+      ...databasePoolOptions,
+      connectionLimit: 1,
+    }),
+  )
+  const control = createMysqlAuditWorkerControl(controlPool)
   let lockConnection
   try {
     lockConnection = await pool.getConnection()
   } catch (error) {
-    await pool.end().catch(() => undefined)
+    await Promise.allSettled([pool.end(), controlPool.end()])
     throw asReauditFatalError('pool_acquisition', error)
   }
   let lockAcquired = false
@@ -419,7 +430,7 @@ async function main(): Promise<void> {
       }
     } finally {
       lockConnection.release()
-      await pool.end()
+      await Promise.all([pool.end(), controlPool.end()])
     }
   }
 }
