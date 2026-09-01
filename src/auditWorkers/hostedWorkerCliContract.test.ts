@@ -74,6 +74,16 @@ test('Billing Audit publishes exact progress deltas before continuing', () => {
   assert.match(billingWorker, /await control\.recordObservation/)
 })
 
+test('Billing Audit heartbeats independently while a batch is in flight', () => {
+  assert.match(billingWorker, /ACTIVE_HEARTBEAT_INTERVAL_MS = 60_000/)
+  assert.match(billingWorker, /startActiveHeartbeat\(\{/)
+  assert.match(
+    billingWorker,
+    /record: \(\) => control\.recordObservation\(\{[\s\S]{0,100}observedState: 'running'/,
+  )
+  assert.match(billingWorker, /await activeHeartbeat\.stop\(\)/)
+})
+
 test('provider parallelism cannot widen the Billing database pool', () => {
   assert.match(billingWorker, /connectionLimit: 4/)
   assert.doesNotMatch(billingWorker, /connectionLimit:.*concurrency/)

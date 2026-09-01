@@ -106,6 +106,9 @@ includes retry attempts.
 Concurrent persistence locks the call row before audit history and retries a
 rolled-back deadlock transaction up to three times with bounded backoff. These
 retries reuse the staged result and never invoke a model again.
+While a Billing batch is active, the worker publishes a control heartbeat every
+minute independently of per-call completion. A long bounded provider request
+therefore cannot be mistaken for a stopped worker by the five-minute monitor.
 A new worker waits for that lock for at most 30 seconds. If another database
 session still owns it, the worker performs no queue or model work, records
 `BILLING_AUDIT_LOCK_BUSY`, marks the monitor faulted, and exits. Never

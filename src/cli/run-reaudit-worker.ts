@@ -12,6 +12,7 @@ import {
   acquireBillingAuditLock,
   BILLING_AUDIT_LOCK_ERROR_CODE,
 } from '../auditWorkers/billingAdvisoryLock.ts'
+import { startActiveHeartbeat } from '../auditWorkers/activeHeartbeat.ts'
 import { auditOneCall } from '../reaudit/core.ts'
 import { runReauditBatch } from '../reaudit/worker.ts'
 import {
@@ -56,6 +57,8 @@ function enabled(name: string): boolean {
 function wait(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
+
+const ACTIVE_HEARTBEAT_INTERVAL_MS = 60_000
 
 async function main(): Promise<void> {
   if (required('KAUDIT_AUDIT_MODE') !== 'EXECUTE') {
@@ -251,6 +254,13 @@ async function main(): Promise<void> {
       let summary
       let reportedFailures = 0
       let reportedProcessed = 0
+      const activeHeartbeat = startActiveHeartbeat({
+        intervalMs: ACTIVE_HEARTBEAT_INTERVAL_MS,
+        record: () => control.recordObservation({
+          system: 'billing',
+          observedState: 'running',
+        }),
+      })
       try {
         summary = await runReauditBatch({
           candidates,
@@ -300,6 +310,7 @@ async function main(): Promise<void> {
           },
         })
       } catch (error) {
+        await activeHeartbeat.stop()
         /**
          * Privacy-safe diagnostic classification. The original failure is
          * reduced to a lifecycle phase and one allowlisted category — never
@@ -326,6 +337,7 @@ async function main(): Promise<void> {
         await wait(pollMs)
         continue
       }
+      await activeHeartbeat.stop()
       const desiredAfterBatch = await control.getDesiredState('billing')
       await control.recordObservation({
         system: 'billing',
