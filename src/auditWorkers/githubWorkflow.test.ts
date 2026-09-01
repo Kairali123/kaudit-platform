@@ -33,7 +33,7 @@ test('hosted worker is manual, bounded, and serialized per audit system', () => 
 test('hosted worker drains through existing CLIs and never runs a model test', () => {
   assert.match(workflow, /KAUDIT_AUDIT_DRAIN=true/)
   assert.match(workflow, /KAUDIT_AUDIT_CONCURRENCY=1/)
-  assert.doesNotMatch(workflow, /KAUDIT_AUDIT_CONCURRENCY=10/)
+  assert.match(workflow, /KAUDIT_AUDIT_CONCURRENCY=10/)
   assert.match(workflow, /npm run audit:worker/)
   assert.match(workflow, /KAUDIT_CALL_AUDIT_DRAIN=true/)
   assert.match(workflow, /npm run callaudit:worker/)
@@ -48,12 +48,18 @@ test('hosted worker drains through existing CLIs and never runs a model test', (
   }
 })
 
-test('hosted Billing concurrency is conservative in workflow and runbook', () => {
-  assert.equal(workflow.match(/KAUDIT_AUDIT_CONCURRENCY=1/g)?.length, 3)
-  assert.doesNotMatch(workflow, /KAUDIT_AUDIT_(?:BATCH|CONCURRENCY)=10/)
-  assert.match(workflowRunbook, /KAUDIT_AUDIT_CONCURRENCY=1/)
-  assert.match(workflowRunbook, /KAUDIT_AUDIT_BATCH=1/)
-  assert.doesNotMatch(workflowRunbook, /KAUDIT_AUDIT_CONCURRENCY=10/)
+test('hosted Billing concurrency is bounded by mode in workflow and runbook', () => {
+  assert.equal(workflow.match(/KAUDIT_AUDIT_CONCURRENCY=1(?!0)/g)?.length, 2)
+  assert.equal(workflow.match(/KAUDIT_AUDIT_CONCURRENCY=10/g)?.length, 1)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "new"[\s\S]{0,180}KAUDIT_AUDIT_BATCH=10[\s\S]{0,80}KAUDIT_AUDIT_CONCURRENCY=10/,
+  )
+  assert.match(workflowRunbook, /new-call drain uses[^.]+concurrency `10`/i)
+  assert.match(
+    workflowRunbook,
+    /Targeted and requested\s+re-audits remain[^.]+`1`/i,
+  )
   assert.match(workflowRunbook, /BILLING_AUDIT_LOCK_BUSY/)
   assert.match(workflowRunbook, /30 seconds/)
 })

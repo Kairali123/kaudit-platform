@@ -16,6 +16,8 @@ test('each audit report surface owns only its matching worker control', () => {
   assert.match(component, /'Stop audit'/)
   assert.match(component, /'Resume audit'/)
   assert.match(component, /'Run audit'/)
+  assert.match(component, />Terminal failures</)
+  assert.doesNotMatch(component, />Failures</)
 })
 
 test('browser controls change durable intent and never invoke a model or batch', () => {

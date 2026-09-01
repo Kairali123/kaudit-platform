@@ -143,13 +143,9 @@ async function main(): Promise<void> {
     .filter(Boolean)
   const config = loadRuntimeConfig(process.env)
   const ssl = resolveDatabaseTls(config, process.env)
-  /**
-   * Conservative, bounded connection budget. Billing concurrency defaults to
-   * ONE (KAUDIT_AUDIT_CONCURRENCY), so a single worker run holds the advisory
-   * lock plus at most a handful of pool connections even while its items
-   * claim, persist, and report progress. Production evidence showed heavy
-   * database latency during worker runs; do not raise this without measured
-   * spare capacity.
+  /** Provider concurrency is independent from the database connection budget.
+   * Model calls release their claim connection before doing network work, so
+   * ten provider lanes can share four bounded MySQL connections safely.
    */
   const pool = tagPoolAcquisitionFailures(
     mysql.createPool({
@@ -159,7 +155,7 @@ async function main(): Promise<void> {
       user: config.database.user,
       password: config.database.password,
       ...(ssl ? { ssl } : {}),
-      connectionLimit: Math.max(4, concurrency + 2),
+      connectionLimit: 4,
       connectTimeout: 30_000,
     }),
   )
@@ -284,8 +280,7 @@ async function main(): Promise<void> {
               }),
           },
           onProgress: async (progress) => {
-            const failures =
-              progress.retriesScheduled + progress.terminalFailures
+            const failures = progress.terminalFailures
             const processed =
               progress.completed + progress.retriesScheduled +
               progress.terminalFailures + progress.alreadyCompleted +

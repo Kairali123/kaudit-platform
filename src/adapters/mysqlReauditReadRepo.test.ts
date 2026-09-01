@@ -48,6 +48,11 @@ test('parameterizes an exact external task-ID scope in the candidate query', asy
     /c\.billing_period_date BETWEEN\s+invoice\.period_start AND invoice\.period_end/,
   )
   assert.match(capturedSql, /invoice\.status IN \('received','matched','approved'\)/)
+  assert.match(
+    capturedSql,
+    /ORDER BY ca\.audio_attempt_count, c\.billing_period_date, c\.id/,
+  )
+  assert.match(capturedSql, /GROUP BY[^]*ca\.audio_attempt_count/)
   assert.deepEqual(capturedParameters, [
     0,
     0,

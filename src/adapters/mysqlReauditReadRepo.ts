@@ -123,8 +123,9 @@ export function createMysqlReauditReadRepo(
                 )`
              : ''}
            ${scopeSql}
-         GROUP BY c.id, ca.id, ca.source_url, ca.sha256
-         ORDER BY c.billing_period_date, c.id
+         GROUP BY c.id, ca.id, ca.source_url, ca.sha256,
+                  ca.audio_attempt_count
+         ORDER BY ca.audio_attempt_count, c.billing_period_date, c.id
          LIMIT ?`,
         [
           options.includePreviouslyClassified ? 1 : 0,

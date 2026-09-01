@@ -53,9 +53,12 @@ fatal error, per-item success counts stay accurate even if progress reporting
 fails, and advisory locking (`kaudit-independent-reaudit-v2`) still prevents
 overlapping worker runs.
 
-Concurrency defaults to `KAUDIT_AUDIT_CONCURRENCY=1` with a pool of
-`max(4, concurrency + 2)`. Do not raise it without measured spare database
-capacity; production evidence showed heavy DB latency under parallel runs.
+Concurrency defaults to `KAUDIT_AUDIT_CONCURRENCY=1`. The hosted scheduled
+new-call drain deliberately sets concurrency and batch size to `10` for the
+14,000-log daily target; administrator-selected re-audits stay at `1`. Every
+mode keeps a fixed four-connection pool, so provider parallelism cannot widen
+the database connection budget. Untouched logs are selected before retry work,
+and only terminal outcomes increment the public failure counter.
 
 
 ## Call Audit

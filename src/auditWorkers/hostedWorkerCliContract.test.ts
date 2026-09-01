@@ -66,7 +66,17 @@ test('Billing Audit publishes exact progress deltas before continuing', () => {
     /const processed =[^]*progress\.spendGuardSkipped/,
   )
   assert.match(billingWorker, /processedDelta: processed - reportedProcessed/)
+  assert.match(billingWorker, /const failures = progress\.terminalFailures/)
+  assert.doesNotMatch(
+    billingWorker,
+    /const failures =[^\n]*retriesScheduled/,
+  )
   assert.match(billingWorker, /await control\.recordObservation/)
+})
+
+test('provider parallelism cannot widen the Billing database pool', () => {
+  assert.match(billingWorker, /connectionLimit: 4/)
+  assert.doesNotMatch(billingWorker, /connectionLimit:.*concurrency/)
 })
 
 test('Billing Audit retries a busy advisory lock and publishes a bounded fault', () => {

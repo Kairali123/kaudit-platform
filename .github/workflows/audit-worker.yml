@@ -143,8 +143,8 @@ jobs:
               npm run audit:worker
             elif [[ "$AUDIT_MODE" == "new" ]]; then
               KAUDIT_AUDIT_MODE=EXECUTE \
-              KAUDIT_AUDIT_BATCH=1 \
-              KAUDIT_AUDIT_CONCURRENCY=1 \
+              KAUDIT_AUDIT_BATCH=10 \
+              KAUDIT_AUDIT_CONCURRENCY=10 \
               KAUDIT_AUDIT_WATCH=false \
               KAUDIT_AUDIT_DRAIN=true \
               npm run audit:worker

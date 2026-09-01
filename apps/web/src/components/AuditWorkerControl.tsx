@@ -84,7 +84,7 @@ export function AuditWorkerControl({ system }: { system: AuditSystem }) {
           <dd>{state.processedTotal.toLocaleString('en-IN')}</dd>
         </div>
         <div>
-          <dt>Failures</dt>
+          <dt>Terminal failures</dt>
           <dd>{state.failedTotal.toLocaleString('en-IN')}</dd>
         </div>
         <div>
