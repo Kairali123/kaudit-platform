@@ -410,9 +410,41 @@ test('rows mode fetches one lookahead row without exposing it', async () => {
   assert.deepEqual(auditedPage?.params.slice(-2), [26, 0])
   assert.match(
     auditedPage?.sql ?? '',
-    /ORDER BY c\.billing_period_date DESC, c\.id DESC\s*LIMIT \? OFFSET \?/,
+    /\) audited_page[\s\S]*ORDER BY audited_page\.billing_period_date DESC/,
   )
   assert.doesNotMatch(auditedPage?.sql ?? '', /ORDER BY audited_at/)
+})
+
+test('default audited paging limits candidates before display joins', async () => {
+  const fake = fakePool([])
+  await collectAuditMonitor(fake.pool, QUERY, 'rows', 'audited')
+
+  const auditedPage = fake.calls.find(({ sql }) =>
+    sql.includes('c.id AS internal_call_id'),
+  )?.sql ?? ''
+  const pageLimit = auditedPage.indexOf('LIMIT ? OFFSET ?')
+  const displayJoin = auditedPage.indexOf('JOIN kaudit_media_analysis ma\n')
+  assert.ok(pageLimit > 0)
+  assert.ok(displayJoin > pageLimit)
+  assert.match(auditedPage, /ca_candidate\.id = \(\s*SELECT latest_artifact\.id/)
+  assert.match(auditedPage, /EXISTS \(\s*SELECT 1\s*FROM kaudit_transcript/)
+})
+
+test('language-filtered audited paging keeps language inside the page scope', async () => {
+  const fake = fakePool([])
+  await collectAuditMonitor(fake.pool, {
+    ...QUERY,
+    language: 'english',
+  }, 'rows', 'audited')
+
+  const auditedPage = fake.calls.find(({ sql }) =>
+    sql.includes('c.id AS internal_call_id'),
+  )?.sql ?? ''
+  assert.doesNotMatch(auditedPage, /\) audited_page/)
+  assert.match(
+    auditedPage,
+    /LOWER\(COALESCE\(t\.language, \?\)\) = \?[\s\S]*LIMIT \? OFFSET \?/,
+  )
 })
 
 test('rows mode can isolate each monitor table to one page query', async () => {

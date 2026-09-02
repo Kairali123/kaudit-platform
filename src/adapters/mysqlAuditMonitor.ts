@@ -880,6 +880,80 @@ export async function collectAuditMonitor(
   const includePendingRows = rowTable === 'all' || rowTable === 'pending'
   const includeNoRecordingRows =
     rowTable === 'all' || rowTable === 'no-recording'
+  const auditedPageTail = query.language
+    ? `${AUDITED_JOIN}
+       ${filters.sql}
+       ORDER BY c.billing_period_date DESC, c.id DESC
+       LIMIT ? OFFSET ?`
+    : `FROM (
+         SELECT
+           c.id AS call_id,
+           ca_candidate.id AS call_artifact_id,
+           c.billing_period_date
+         FROM kaudit_call c
+         JOIN kaudit_call_artifact ca_candidate
+           ON ca_candidate.id = (
+             SELECT latest_artifact.id
+             FROM kaudit_call_artifact latest_artifact
+             WHERE latest_artifact.call_id = c.id
+               AND latest_artifact.artifact_type = 'recording'
+               AND latest_artifact.is_final = 1
+               AND EXISTS (
+                 SELECT 1
+                 FROM kaudit_media_analysis completed_media
+                 WHERE completed_media.call_artifact_id = latest_artifact.id
+                   AND completed_media.status = 'completed'
+                   AND completed_media.classification_status = 'completed'
+               )
+               AND EXISTS (
+                 SELECT 1
+                 FROM kaudit_transcript completed_transcript
+                 WHERE completed_transcript.call_id = c.id
+                   AND completed_transcript.call_artifact_id = latest_artifact.id
+                   AND completed_transcript.status = 'completed'
+               )
+             ORDER BY latest_artifact.created_at DESC,
+                      latest_artifact.id DESC
+             LIMIT 1
+           )
+         ${filters.sql}
+         ORDER BY c.billing_period_date DESC, c.id DESC
+         LIMIT ? OFFSET ?
+       ) audited_page
+       JOIN kaudit_call c
+         ON c.id = audited_page.call_id
+       JOIN kaudit_call_artifact ca
+         ON ca.id = audited_page.call_artifact_id
+       JOIN kaudit_media_analysis ma
+         ON ma.call_artifact_id = ca.id
+        AND ma.status = 'completed'
+        AND ma.classification_status = 'completed'
+        AND ma.id = (
+          SELECT ma_latest.id
+          FROM kaudit_media_analysis ma_latest
+          WHERE ma_latest.call_artifact_id = ca.id
+            AND ma_latest.status = 'completed'
+            AND ma_latest.classification_status = 'completed'
+          ORDER BY ma_latest.created_at DESC, ma_latest.id DESC
+          LIMIT 1
+        )
+       JOIN kaudit_transcript t
+         ON t.call_id = c.id
+        AND t.call_artifact_id = ca.id
+        AND t.status = 'completed'
+        AND t.id = (
+          SELECT t_latest.id
+          FROM kaudit_transcript t_latest
+          WHERE t_latest.call_id = c.id
+            AND t_latest.call_artifact_id = ca.id
+            AND t_latest.status = 'completed'
+          ORDER BY t_latest.created_at DESC, t_latest.id DESC
+          LIMIT 1
+        )
+       LEFT JOIN kaudit_audit_run ar
+         ON ar.id = c.latest_audit_run_id
+       ORDER BY audited_page.billing_period_date DESC,
+                audited_page.call_id DESC`
   const [auditedResult, pendingResult, noRecordingResult] =
     await Promise.all([
       includeAuditedRows ? pool.query<DataRow[]>(
@@ -945,10 +1019,7 @@ export async function collectAuditMonitor(
          FROM kaudit_ai_usage_event usage_event
          WHERE usage_event.audit_run_id = ar.id
        ) AS ai_audio_seconds
-     ${AUDITED_JOIN}
-     ${filters.sql}
-     ORDER BY c.billing_period_date DESC, c.id DESC
-     LIMIT ? OFFSET ?`,
+     ${auditedPageTail}`,
     [...filters.params, rowLimit, offset],
       ) : Promise.resolve([[] as DataRow[]]),
       includePendingRows ? pool.query<QueueDataRow[]>(
