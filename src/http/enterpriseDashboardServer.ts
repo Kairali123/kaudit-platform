@@ -1686,6 +1686,17 @@ async function apiResponse(
         status: 400,
       })
     }
+    const rawTable = url.searchParams.get('table')
+    const rowTable = rawTable == null || rawTable === '' ? 'all' : rawTable
+    if (
+      !['all', 'audited', 'pending', 'no-recording'].includes(rowTable) ||
+      (rowTable !== 'all' && section !== 'rows')
+    ) {
+      throw Object.assign(new Error('Audit monitor table is invalid'), {
+        code: 'INVALID_AUDIT_QUERY',
+        status: 400,
+      })
+    }
     return collectAuditMonitor(dependencies.pool, {
       page: integer('page', 1, 1, 100_000),
       pendingPage: integer('pendingPage', 1, 1, 100_000),
@@ -1701,7 +1712,11 @@ async function apiResponse(
       taskId,
       periodStart: period?.start ?? null,
       periodEnd: period?.end ?? null,
-    }, section as 'all' | 'summary' | 'rows')
+    }, section as 'all' | 'summary' | 'rows', rowTable as
+      | 'all'
+      | 'audited'
+      | 'pending'
+      | 'no-recording')
   }
   if (pathname === '/api/v1/audit-workers') {
     const control =

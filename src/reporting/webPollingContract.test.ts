@@ -151,22 +151,25 @@ test('each declared interval is a bounded number, never unconditional', async ()
   assert.deepEqual(declared.get('components/AuditWorkerControl.tsx'), [5_000])
   assert.deepEqual(
     declared.get('pages/AuditMonitorPage.tsx'),
-    [60_000, 60_000],
+    [60_000, 60_000, 60_000, 60_000],
   )
   assert.deepEqual(declared.get('pages/ImportPage.tsx'), [30_000])
 })
 
-test('audit monitor loads rows before starting expensive summaries', async () => {
+test('audit monitor isolates row tables before expensive summaries', async () => {
   const source = await webSource('pages/AuditMonitorPage.tsx')
-  assert.match(source, /section=rows/)
+  assert.match(source, /section=rows&table=audited/)
+  assert.match(source, /section=rows&table=pending/)
+  assert.match(source, /section=rows&table=no-recording/)
   assert.match(source, /section: 'summary'/)
-  assert.match(
-    source,
-    /enabled: rowsQuery\.isSuccess && !rowsQuery\.isFetching/,
-  )
+  assert.match(source, /!auditedRowsQuery\.isLoading/)
+  assert.match(source, /!pendingRowsQuery\.isLoading/)
+  assert.match(source, /!noRecordingRowsQuery\.isLoading/)
   assert.match(source, /placeholderData: keepPreviousData/)
-  assert.match(source, /data\.totalsFinal \|\| summaryData != null/)
+  assert.match(source, /const totalsFinal = summaryData != null/)
   assert.match(source, /function withTotalRows/)
-  assert.match(source, /if \(rowsQuery\.isLoading\)/)
+  assert.match(source, /auditedRowsQuery\.isLoading && <LoadingState/)
+  assert.match(source, /pendingRowsQuery\.isLoading && <LoadingState/)
+  assert.match(source, /noRecordingRowsQuery\.isLoading && <LoadingState/)
   assert.match(source, /summaryQuery\.isLoading && <LoadingState \/>/)
 })

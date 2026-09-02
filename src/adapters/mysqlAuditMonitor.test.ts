@@ -415,6 +415,24 @@ test('rows mode fetches one lookahead row without exposing it', async () => {
   assert.doesNotMatch(auditedPage?.sql ?? '', /ORDER BY audited_at/)
 })
 
+test('rows mode can isolate each monitor table to one page query', async () => {
+  const cases = [
+    ['audited', 'c.id AS internal_call_id'],
+    ['pending', 'pending.processing_status'],
+    ['no-recording', "COALESCE(ca.audio_processing_status, 'no_recording')"],
+  ] as const
+
+  for (const [table, expectedSql] of cases) {
+    const fake = fakePool([])
+    await collectAuditMonitor(fake.pool, QUERY, 'rows', table)
+    const pageQueries = fake.statements.filter((sql) =>
+      sql.includes('LIMIT ? OFFSET ?'),
+    )
+    assert.equal(pageQueries.length, 1, table)
+    assert.ok(pageQueries[0]?.includes(expectedSql), table)
+  }
+})
+
 test('summary mode omits all paginated row queries', async () => {
   const fake = fakePool([
     { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },

@@ -157,6 +157,11 @@ export type AuditMonitorRowsData = Pick<
 > & { totalsFinal: boolean }
 
 export type AuditMonitorSection = 'all' | 'summary' | 'rows'
+export type AuditMonitorRowTable =
+  | 'all'
+  | 'audited'
+  | 'pending'
+  | 'no-recording'
 
 interface CountRow extends RowDataPacket {
   n: number | string
@@ -541,11 +546,13 @@ export function collectAuditMonitor(
   pool: Pool,
   query: AuditMonitorQuery,
   section: AuditMonitorSection,
+  rowTable?: AuditMonitorRowTable,
 ): Promise<AuditMonitorData | AuditMonitorSummaryData | AuditMonitorRowsData>
 export async function collectAuditMonitor(
   pool: Pool,
   query: AuditMonitorQuery,
   section: AuditMonitorSection = 'all',
+  rowTable: AuditMonitorRowTable = 'all',
 ): Promise<AuditMonitorData | AuditMonitorSummaryData | AuditMonitorRowsData> {
   const includeSummary = section !== 'rows'
   const includeRows = section !== 'summary'
@@ -869,9 +876,13 @@ export async function collectAuditMonitor(
   const noRecordingOffset =
     (query.noRecordingPage - 1) * query.pageSize
   const rowLimit = section === 'rows' ? query.pageSize + 1 : query.pageSize
+  const includeAuditedRows = rowTable === 'all' || rowTable === 'audited'
+  const includePendingRows = rowTable === 'all' || rowTable === 'pending'
+  const includeNoRecordingRows =
+    rowTable === 'all' || rowTable === 'no-recording'
   const [auditedResult, pendingResult, noRecordingResult] =
     await Promise.all([
-      pool.query<DataRow[]>(
+      includeAuditedRows ? pool.query<DataRow[]>(
     `SELECT
        c.id AS internal_call_id,
        ${TASK_REFERENCE_SQL} AS call_reference,
@@ -939,8 +950,8 @@ export async function collectAuditMonitor(
      ORDER BY c.billing_period_date DESC, c.id DESC
      LIMIT ? OFFSET ?`,
     [...filters.params, rowLimit, offset],
-      ),
-      pool.query<QueueDataRow[]>(
+      ) : Promise.resolve([[] as DataRow[]]),
+      includePendingRows ? pool.query<QueueDataRow[]>(
         `SELECT
            COALESCE(
              (
@@ -1016,8 +1027,8 @@ export async function collectAuditMonitor(
          ) pending
          ORDER BY pending.billing_period_date DESC, pending.call_id`,
         [...queueScopeParams, rowLimit, pendingOffset],
-      ),
-      pool.query<QueueDataRow[]>(
+      ) : Promise.resolve([[] as QueueDataRow[]]),
+      includeNoRecordingRows ? pool.query<QueueDataRow[]>(
         `SELECT
            ${TASK_REFERENCE_SQL} AS call_reference,
            c.billing_period_date,
@@ -1086,7 +1097,7 @@ export async function collectAuditMonitor(
          ORDER BY c.billing_period_date DESC, c.id
          `,
         [...queueScopeParams, rowLimit, noRecordingOffset],
-      ),
+      ) : Promise.resolve([[] as QueueDataRow[]]),
     ])
   const fetchedRows = auditedResult[0]
   const fetchedPendingRows = pendingResult[0]

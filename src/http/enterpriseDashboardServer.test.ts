@@ -660,6 +660,24 @@ test('audit monitor Task ID search is exact and invalid input never reaches SQL'
       )
       assert.equal(calls.length, 0)
 
+      const invalidTable = await fetch(
+        `${baseUrl}/api/v1/audits?section=rows&table=synthetic-invalid`,
+        { headers: { cookie: localCookie() } },
+      )
+      assert.equal(invalidTable.status, 400)
+      assert.equal(
+        ((await invalidTable.json()) as { code?: string }).code,
+        'INVALID_AUDIT_QUERY',
+      )
+      assert.equal(calls.length, 0)
+
+      const tableWithoutRows = await fetch(
+        `${baseUrl}/api/v1/audits?section=summary&table=audited`,
+        { headers: { cookie: localCookie() } },
+      )
+      assert.equal(tableWithoutRows.status, 400)
+      assert.equal(calls.length, 0)
+
       const taskId = 'synthetic-task-search'
       const valid = await fetch(
         `${baseUrl}/api/v1/audits?taskId=${taskId}`,

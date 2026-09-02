@@ -133,7 +133,10 @@ test('one retry key covers a draft and is replaced only after a success', async 
 
 test('select-all covers this page only, and only live rows cannot be selected', async () => {
   const source = await webSource('pages/AuditMonitorPage.tsx')
-  assert.match(source, /const selectable = data\.rows\s*\n?\s*\.filter\(\(row\) => !reAuditLocked\(row\)\)/)
+  assert.match(
+    source,
+    /const selectable = \(data\?\.rows \?\? \[\]\)\s*\n?\s*\.filter\(\(row\) => !reAuditLocked\(row\)\)/,
+  )
   assert.match(source, /function reAuditLocked\(row: AuditMonitorRow\): boolean/)
   assert.match(
     source,

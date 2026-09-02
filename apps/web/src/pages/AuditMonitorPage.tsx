@@ -202,14 +202,21 @@ function PaginationFooter({
 }
 
 function withTotalRows(
-  pagination: AuditPagination,
+  pagination: AuditPagination | undefined,
   totalRows: number | undefined,
+  page: number,
 ): AuditPagination {
-  if (totalRows == null) return pagination
+  const current = pagination ?? {
+    page,
+    pageSize: 25,
+    totalRows: 0,
+    totalPages: 1,
+  }
+  if (totalRows == null) return current
   return {
-    ...pagination,
+    ...current,
     totalRows,
-    totalPages: Math.max(1, Math.ceil(totalRows / pagination.pageSize)),
+    totalPages: Math.max(1, Math.ceil(totalRows / current.pageSize)),
   }
 }
 
@@ -248,14 +255,13 @@ export function AuditMonitorPage() {
     ...(language ? { language } : {}),
     ...(taskId ? { taskId } : {}),
   }).toString()
-  const rowsQuery = useQuery({
+  const auditedRowsQuery = useQuery({
     queryKey: [
       'audit-monitor',
       'rows',
+      'audited',
       period.month,
       page,
-      pendingPage,
-      noRecordingPage,
       category,
       language,
       taskId,
@@ -263,12 +269,48 @@ export function AuditMonitorPage() {
     queryFn: () =>
       getJson<AuditMonitorRowsData>(
         period.apiPath(
-          `/api/v1/audits?section=rows&${queryString}`,
+          `/api/v1/audits?section=rows&table=audited&${queryString}`,
         ),
       ),
     // Keep the last completed page visible while the live worker moves rows.
     // A minute is current enough for operations without continuously rerunning
     // the monitor's audited/pending/no-recording joins against the worker DB.
+    placeholderData: keepPreviousData,
+    refetchInterval: 60_000,
+  })
+  const pendingRowsQuery = useQuery({
+    queryKey: [
+      'audit-monitor',
+      'rows',
+      'pending',
+      period.month,
+      pendingPage,
+      taskId,
+    ],
+    queryFn: () =>
+      getJson<AuditMonitorRowsData>(
+        period.apiPath(
+          `/api/v1/audits?section=rows&table=pending&${queryString}`,
+        ),
+      ),
+    placeholderData: keepPreviousData,
+    refetchInterval: 60_000,
+  })
+  const noRecordingRowsQuery = useQuery({
+    queryKey: [
+      'audit-monitor',
+      'rows',
+      'no-recording',
+      period.month,
+      noRecordingPage,
+      taskId,
+    ],
+    queryFn: () =>
+      getJson<AuditMonitorRowsData>(
+        period.apiPath(
+          `/api/v1/audits?section=rows&table=no-recording&${queryString}`,
+        ),
+      ),
     placeholderData: keepPreviousData,
     refetchInterval: 60_000,
   })
@@ -285,10 +327,16 @@ export function AuditMonitorPage() {
       getJson<AuditMonitorSummaryData>(
         period.apiPath(`/api/v1/audits?${summaryQueryString}`),
       ),
-    // Rows are the operator's priority. Starting aggregates only after the row
-    // request finishes prevents both halves from fighting for the two
-    // serverless DB connections during the initial page load.
-    enabled: rowsQuery.isSuccess && !rowsQuery.isFetching,
+    // Rows are the operator's priority. Starting aggregates only after the
+    // initial table reads settle prevents both halves from fighting for DB
+    // connections while still allowing metrics when one table fails.
+    enabled:
+      !auditedRowsQuery.isLoading &&
+      !pendingRowsQuery.isLoading &&
+      !noRecordingRowsQuery.isLoading &&
+      !auditedRowsQuery.isFetching &&
+      !pendingRowsQuery.isFetching &&
+      !noRecordingRowsQuery.isFetching,
     refetchInterval: 60_000,
   })
   const [selected, setSelected] = useState<string[]>([])
@@ -478,31 +526,32 @@ export function AuditMonitorPage() {
       <AuditWorkerControl system="billing" />
     </>
   )
-  if (rowsQuery.isLoading) {
-    return <>{pageChrome}<LoadingState /></>
-  }
-  if (rowsQuery.error) {
-    return <>{pageChrome}<ErrorState
-      error={rowsQuery.error}
-      retry={() => void rowsQuery.refetch()}
-    /></>
-  }
-  const data = rowsQuery.data!
+  const data = auditedRowsQuery.data
+  const pendingData = pendingRowsQuery.data
+  const noRecordingData = noRecordingRowsQuery.data
   const summaryData = summaryQuery.data
-  const totalsFinal = data.totalsFinal || summaryData != null
+  const generatedAt =
+    data?.generatedAt ??
+    pendingData?.generatedAt ??
+    noRecordingData?.generatedAt ??
+    summaryData?.generatedAt
+  const totalsFinal = summaryData != null
   const auditedPagination = withTotalRows(
-    data.pagination,
+    data?.pagination,
     summaryData?.summary.auditedFinancials.scopedAuditedCalls,
+    page,
   )
   const pendingPagination = withTotalRows(
-    data.pendingPagination,
+    pendingData?.pendingPagination,
     summaryData?.summary.pendingEligibleCalls,
+    pendingPage,
   )
   const noRecordingPagination = withTotalRows(
-    data.noRecordingPagination,
+    noRecordingData?.noRecordingPagination,
     summaryData?.summary.noRecordingCalls,
+    noRecordingPage,
   )
-  const selectable = data.rows
+  const selectable = (data?.rows ?? [])
     .filter((row) => !reAuditLocked(row))
     .map((row) => row.callReference)
   const selectedSet = new Set(selected)
@@ -537,7 +586,10 @@ export function AuditMonitorPage() {
       <section className="content-section audit-control-bar">
         <div>
           <ShieldCheck size={18} aria-hidden />
-          <span>{data.contentBoundary}</span>
+          <span>
+            Admin-only audit metadata. Use Admin review for restricted evidence,
+            transcript, and per-call billing context when available.
+          </span>
         </div>
         <form className="audit-task-search" onSubmit={applyTaskSearch}>
           <label htmlFor="audit-task-id">Task ID</label>
@@ -697,6 +749,11 @@ export function AuditMonitorPage() {
             {resultCount(auditedPagination.totalRows, totalsFinal)} results
           </span>
         </div>
+        {auditedRowsQuery.isLoading && <LoadingState />}
+        {auditedRowsQuery.error && <ErrorState
+          error={auditedRowsQuery.error}
+          retry={() => void auditedRowsQuery.refetch()}
+        />}
         <div className="table-scroll">
           <table>
             <thead>
@@ -732,7 +789,7 @@ export function AuditMonitorPage() {
               </tr>
             </thead>
             <tbody>
-              {data.rows.map((row) => (
+              {(data?.rows ?? []).map((row) => (
                 <tr key={`${row.callReference}-${row.auditedAt}`}>
                   {isAdmin && (
                     <td className="select-cell">
@@ -817,7 +874,7 @@ export function AuditMonitorPage() {
                   </td>
                 </tr>
               ))}
-              {data.rows.length === 0 && (
+              {auditedRowsQuery.isSuccess && data?.rows.length === 0 && (
                 <tr>
                   <td colSpan={isAdmin ? 18 : 17} className="table-empty">
                     {taskId
@@ -845,6 +902,11 @@ export function AuditMonitorPage() {
             {resultCount(pendingPagination.totalRows, totalsFinal)} pending
           </span>
         </div>
+        {pendingRowsQuery.isLoading && <LoadingState />}
+        {pendingRowsQuery.error && <ErrorState
+          error={pendingRowsQuery.error}
+          retry={() => void pendingRowsQuery.refetch()}
+        />}
         <div className="table-scroll">
           <table>
             <thead>
@@ -860,7 +922,7 @@ export function AuditMonitorPage() {
               </tr>
             </thead>
             <tbody>
-              {data.pendingRows.map((row) => (
+              {(pendingData?.pendingRows ?? []).map((row) => (
                 <tr key={row.callReference}>
                   <td><code>{row.callReference}</code></td>
                   <td>{date(row.billingPeriodDate)}</td>
@@ -879,7 +941,8 @@ export function AuditMonitorPage() {
                   <td>{date(row.lastActivityAt)}</td>
                 </tr>
               ))}
-              {data.pendingRows.length === 0 && (
+              {pendingRowsQuery.isSuccess &&
+                pendingData?.pendingRows.length === 0 && (
                 <tr>
                   <td colSpan={8} className="table-empty">
                     {taskId
@@ -912,6 +975,11 @@ export function AuditMonitorPage() {
           listened to or transcribed. Admin review shows the available
           KServe usage and billing resolution without inventing evidence.
         </Notice>
+        {noRecordingRowsQuery.isLoading && <LoadingState />}
+        {noRecordingRowsQuery.error && <ErrorState
+          error={noRecordingRowsQuery.error}
+          retry={() => void noRecordingRowsQuery.refetch()}
+        />}
         <div className="table-scroll">
           <table>
             <thead>
@@ -927,7 +995,7 @@ export function AuditMonitorPage() {
               </tr>
             </thead>
             <tbody>
-              {data.noRecordingRows.map((row) => (
+              {(noRecordingData?.noRecordingRows ?? []).map((row) => (
                 <tr key={row.callReference}>
                   <td><code>{row.callReference}</code></td>
                   <td>{date(row.billingPeriodDate)}</td>
@@ -956,7 +1024,8 @@ export function AuditMonitorPage() {
                   </td>
                 </tr>
               ))}
-              {data.noRecordingRows.length === 0 && (
+              {noRecordingRowsQuery.isSuccess &&
+                noRecordingData?.noRecordingRows.length === 0 && (
                 <tr>
                   <td colSpan={8} className="table-empty">
                     {taskId
@@ -973,7 +1042,7 @@ export function AuditMonitorPage() {
           setPage={setNoRecordingPage}
         />
       </section>
-      <UpdatedAt value={data.generatedAt} />
+      {generatedAt && <UpdatedAt value={generatedAt} />}
     </>
   )
 }
