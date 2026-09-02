@@ -368,6 +368,85 @@ const AUDITED_ROW = {
   ai_audio_seconds: 190,
 }
 
+test('rows mode omits aggregate usage and financial scans', async () => {
+  const fake = fakePool([
+    { match: 'grace_adjusted_duration_ms', rows: [AUDITED_ROW] },
+  ])
+
+  const data = await collectAuditMonitor(fake.pool, QUERY, 'rows')
+
+  assert.equal(data.rows.length, 1)
+  assert.equal('summary' in data, false)
+  assert.equal('filters' in data, false)
+  const sql = fake.statements.join('\n')
+  assert.doesNotMatch(sql, /COUNT\(DISTINCT usage_event\.audit_run_id\)/)
+  assert.doesNotMatch(sql, /GROUP BY usage_event\.model_name/)
+  assert.doesNotMatch(sql, /auditor_final_charge/)
+  assert.doesNotMatch(sql, /SELECT DISTINCT c\.canonical_outcome_code AS value/)
+  assert.doesNotMatch(sql, /engine_version = 'kairali-independent-reaudit/)
+})
+
+test('summary mode omits all paginated row queries', async () => {
+  const fake = fakePool([
+    { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },
+  ])
+
+  const data = await collectAuditMonitor(fake.pool, QUERY, 'summary')
+
+  assert.equal(data.summary.auditedFinancials.scopedAuditedCalls, 3)
+  assert.equal('rows' in data, false)
+  const sql = fake.statements.join('\n')
+  assert.doesNotMatch(sql, /LIMIT \? OFFSET \?/)
+  assert.doesNotMatch(sql, /c\.id AS internal_call_id/)
+  assert.doesNotMatch(sql, /kaudit_billing_reaudit_item/)
+})
+
+test('summary usage totals and per-model costs share one rollup scan', async () => {
+  const fake = fakePool([
+    { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },
+    {
+      match: 'COUNT(DISTINCT usage_event.audit_run_id)',
+      rows: [
+        {
+          model_name: 'gpt-4o-mini',
+          tracked_audit_runs: 2,
+          input_tokens: 120,
+          output_tokens: 30,
+          total_tokens: 150,
+          audio_seconds: 0,
+        },
+        {
+          model_name: 'whisper-1',
+          tracked_audit_runs: 2,
+          input_tokens: 0,
+          output_tokens: 0,
+          total_tokens: 0,
+          audio_seconds: 45,
+        },
+        {
+          model_name: null,
+          tracked_audit_runs: 2,
+          input_tokens: 120,
+          output_tokens: 30,
+          total_tokens: 150,
+          audio_seconds: 45,
+        },
+      ],
+    },
+  ])
+
+  const data = await collectAuditMonitor(fake.pool, QUERY, 'summary')
+
+  assert.equal(data.summary.aiUsage.trackedAuditRuns, 2)
+  assert.equal(data.summary.aiUsage.gptTotalTokens, 150)
+  assert.equal(data.summary.aiUsage.whisperAudioSeconds, '45.000')
+  const usageQueries = fake.statements.filter((sql) =>
+    sql.includes('kaudit_ai_usage_event'),
+  )
+  assert.equal(usageQueries.length, 1)
+  assert.match(usageQueries[0], /WITH ROLLUP/)
+})
+
 test('the response separates capped auditor money from missing-duration audited calls', async () => {
   const fake = fakePool([
     { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },
@@ -557,7 +636,9 @@ test('an exact Task ID scopes every status table without entering SQL text', asy
   const scoped = fake.calls.filter(({ sql }) =>
     sql.includes('task_ref.external_id = ?'),
   )
-  assert.ok(scoped.length >= 9)
+  // Usage totals and model costs share one rollup query, so the task scope is
+  // applied to eight independent reads rather than two duplicate usage scans.
+  assert.ok(scoped.length >= 8)
   for (const call of scoped) {
     assert.equal(call.sql.includes(taskId), false)
     assert.doesNotMatch(call.sql, /\bLIKE\b/i)

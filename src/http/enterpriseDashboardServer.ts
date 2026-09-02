@@ -1676,6 +1676,16 @@ async function apiResponse(
         status: 400,
       })
     }
+    const rawSection = url.searchParams.get('section')
+    const section = rawSection == null || rawSection === ''
+      ? 'all'
+      : rawSection
+    if (!['all', 'summary', 'rows'].includes(section)) {
+      throw Object.assign(new Error('Audit monitor section is invalid'), {
+        code: 'INVALID_AUDIT_QUERY',
+        status: 400,
+      })
+    }
     return collectAuditMonitor(dependencies.pool, {
       page: integer('page', 1, 1, 100_000),
       pendingPage: integer('pendingPage', 1, 1, 100_000),
@@ -1691,7 +1701,7 @@ async function apiResponse(
       taskId,
       periodStart: period?.start ?? null,
       periodEnd: period?.end ?? null,
-    })
+    }, section as 'all' | 'summary' | 'rows')
   }
   if (pathname === '/api/v1/audit-workers') {
     const control =
@@ -1957,7 +1967,8 @@ function pruneApiCache(cache: Map<string, ApiCacheEntry>): void {
   }
 }
 
-function cacheTtlMs(pathname: string): number {
+function cacheTtlMs(url: URL): number {
+  const { pathname } = url
   if (pathname === '/api/v1/me') return 0
   if (pathname === '/api/v1/users') return 0
   if (
@@ -1982,8 +1993,16 @@ function cacheTtlMs(pathname: string): number {
   // A one-minute bound removes repeat scans during navigation without allowing
   // an old default month to survive an operator workflow for long.
   if (pathname === '/api/v1/periods') return 60_000
+  if (pathname === '/api/v1/audits') {
+    // The monitor's split reads have different freshness needs. Row movement
+    // remains near-live, while costly usage/financial aggregates are stable
+    // enough to reuse for a minute. The cache key still includes every filter.
+    const section = url.searchParams.get('section')
+    if (section === 'summary') return 60_000
+    if (section === 'rows') return 30_000
+    return 5_000
+  }
   if (
-    pathname === '/api/v1/audits' ||
     pathname === BILLING_CATEGORY_ANALYSIS_ROUTE ||
     pathname === BILLING_CATEGORY_SUMMARY_ROUTE ||
     pathname === '/api/v1/imports'
@@ -1999,7 +2018,7 @@ async function cachedApiResponse(
   context: AuthContext,
   cache: Map<string, ApiCacheEntry>,
 ): Promise<unknown> {
-  const ttl = cacheTtlMs(url.pathname)
+  const ttl = cacheTtlMs(url)
   if (ttl === 0) {
     recordApiCache('bypass')
     return apiResponse(url, dependencies, context)

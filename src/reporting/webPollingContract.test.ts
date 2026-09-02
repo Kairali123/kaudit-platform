@@ -149,6 +149,22 @@ test('each declared interval is a bounded number, never unconditional', async ()
     }
   }
   assert.deepEqual(declared.get('components/AuditWorkerControl.tsx'), [5_000])
-  assert.deepEqual(declared.get('pages/AuditMonitorPage.tsx'), [15_000])
+  assert.deepEqual(
+    declared.get('pages/AuditMonitorPage.tsx'),
+    [60_000, 60_000],
+  )
   assert.deepEqual(declared.get('pages/ImportPage.tsx'), [30_000])
+})
+
+test('audit monitor loads rows before starting expensive summaries', async () => {
+  const source = await webSource('pages/AuditMonitorPage.tsx')
+  assert.match(source, /section=rows/)
+  assert.match(source, /section: 'summary'/)
+  assert.match(
+    source,
+    /enabled: rowsQuery\.isSuccess && !rowsQuery\.isFetching/,
+  )
+  assert.match(source, /placeholderData: keepPreviousData/)
+  assert.match(source, /if \(rowsQuery\.isLoading\)/)
+  assert.match(source, /summaryQuery\.isLoading && <LoadingState \/>/)
 })

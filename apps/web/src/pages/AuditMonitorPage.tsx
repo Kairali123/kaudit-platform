@@ -1,4 +1,9 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import {
+  keepPreviousData,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from '@tanstack/react-query'
 import {
   AlertTriangle,
   CheckCircle2,
@@ -29,8 +34,9 @@ import {
   MANUAL_REAUDIT_ROUTE,
   MANUAL_REAUDIT_RESUME_ROUTE,
   MAX_MANUAL_REAUDIT_CALLS,
-  type AuditMonitorData,
+  type AuditMonitorRowsData,
   type AuditMonitorRow,
+  type AuditMonitorSummaryData,
   type AuditPagination,
   type ManualReauditReceipt,
   type ManualReauditResumeReceipt,
@@ -220,9 +226,16 @@ export function AuditMonitorPage() {
     ...(language ? { language } : {}),
     ...(taskId ? { taskId } : {}),
   }).toString()
-  const query = useQuery({
+  const summaryQueryString = new URLSearchParams({
+    section: 'summary',
+    ...(category ? { category } : {}),
+    ...(language ? { language } : {}),
+    ...(taskId ? { taskId } : {}),
+  }).toString()
+  const rowsQuery = useQuery({
     queryKey: [
       'audit-monitor',
+      'rows',
       period.month,
       page,
       pendingPage,
@@ -232,13 +245,35 @@ export function AuditMonitorPage() {
       taskId,
     ],
     queryFn: () =>
-      getJson<AuditMonitorData>(
-        period.apiPath(`/api/v1/audits?${queryString}`),
+      getJson<AuditMonitorRowsData>(
+        period.apiPath(
+          `/api/v1/audits?section=rows&${queryString}`,
+        ),
       ),
-    // Opt-in live monitor: the audit worker moves calls between the pending,
-    // audited and no-recording sets while this page is open, so it polls on a
-    // bounded interval. Polling is not a client default.
-    refetchInterval: 15_000,
+    // Keep the last completed page visible while the live worker moves rows.
+    // A minute is current enough for operations without continuously rerunning
+    // the monitor's audited/pending/no-recording joins against the worker DB.
+    placeholderData: keepPreviousData,
+    refetchInterval: 60_000,
+  })
+  const summaryQuery = useQuery({
+    queryKey: [
+      'audit-monitor',
+      'summary',
+      period.month,
+      category,
+      language,
+      taskId,
+    ],
+    queryFn: () =>
+      getJson<AuditMonitorSummaryData>(
+        period.apiPath(`/api/v1/audits?${summaryQueryString}`),
+      ),
+    // Rows are the operator's priority. Starting aggregates only after the row
+    // request finishes prevents both halves from fighting for the two
+    // serverless DB connections during the initial page load.
+    enabled: rowsQuery.isSuccess && !rowsQuery.isFetching,
+    refetchInterval: 60_000,
   })
   const [selected, setSelected] = useState<string[]>([])
   const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey)
@@ -306,7 +341,7 @@ export function AuditMonitorPage() {
     resetPages()
   }
   const tiles = useMemo<Tile[]>(() => {
-    const summary = query.data?.summary
+    const summary = summaryQuery.data?.summary
     if (!summary) return []
     const financials = summary.auditedFinancials
     return [
@@ -402,12 +437,42 @@ export function AuditMonitorPage() {
             : 'warn',
       },
     ]
-  }, [query.data])
+  }, [summaryQuery.data])
 
-  if (query.isLoading) return <LoadingState />
-  if (query.error)
-    return <ErrorState error={query.error} retry={() => void query.refetch()} />
-  const data = query.data!
+  const pageChrome = (
+    <>
+      <PageHeader
+        eyebrow="Developer control"
+        title="Audit monitor"
+        description={`Admin-only AI processing coverage and privacy-safe audit metadata for ${period.label}.`}
+        badge={
+          <span className="status-badge automated">
+            <LockKeyhole size={13} aria-hidden /> Admin only
+          </span>
+        }
+      />
+      <Notice tone="warning" title="Automated consensus—not human ground truth">
+        Use this view to inspect categories, confidence, durations, calculations,
+        and stuck processing. Open Call is restricted to administrators and
+        every content access is logged. <strong>Auditor capped amount</strong>{' '}
+        prices audited duration with the locked KServe rounding rule and caps
+        each call at KServe&apos;s charge, so it never exceeds the vendor charge
+        for the same call.
+      </Notice>
+      <AuditWorkerControl system="billing" />
+    </>
+  )
+  if (rowsQuery.isLoading) {
+    return <>{pageChrome}<LoadingState /></>
+  }
+  if (rowsQuery.error) {
+    return <>{pageChrome}<ErrorState
+      error={rowsQuery.error}
+      retry={() => void rowsQuery.refetch()}
+    /></>
+  }
+  const data = rowsQuery.data!
+  const summaryData = summaryQuery.data
   const selectable = data.rows
     .filter((row) => !reAuditLocked(row))
     .map((row) => row.callReference)
@@ -432,26 +497,13 @@ export function AuditMonitorPage() {
     )
   return (
     <>
-      <PageHeader
-        eyebrow="Developer control"
-        title="Audit monitor"
-        description={`Admin-only AI processing coverage and privacy-safe audit metadata for ${period.label}.`}
-        badge={
-          <span className="status-badge automated">
-            <LockKeyhole size={13} aria-hidden /> Admin only
-          </span>
-        }
-      />
-      <Notice tone="warning" title="Automated consensus—not human ground truth">
-        Use this view to inspect categories, confidence, durations, calculations,
-        and stuck processing. Open Call is restricted to administrators and
-        every content access is logged. <strong>Auditor capped amount</strong>{' '}
-        prices audited duration with the locked KServe rounding rule and caps
-        each call at KServe&apos;s charge, so it never exceeds the vendor charge
-        for the same call.
-      </Notice>
-      <AuditWorkerControl system="billing" />
-      <MetricGrid tiles={tiles} />
+      {pageChrome}
+      {summaryQuery.isLoading && <LoadingState />}
+      {summaryQuery.error && <ErrorState
+        error={summaryQuery.error}
+        retry={() => void summaryQuery.refetch()}
+      />}
+      {summaryData && <MetricGrid tiles={tiles} />}
 
       <section className="content-section audit-control-bar">
         <div>
@@ -503,7 +555,7 @@ export function AuditMonitorPage() {
             }}
           >
             <option value="">All categories</option>
-            {data.filters.availableCategories.map((value) => (
+            {(summaryData?.filters.availableCategories ?? []).map((value) => (
               <option value={value} key={value}>{value}</option>
             ))}
           </select>
@@ -518,7 +570,7 @@ export function AuditMonitorPage() {
             }}
           >
             <option value="">All languages</option>
-            {data.filters.availableLanguages.map((value) => (
+            {(summaryData?.filters.availableLanguages ?? []).map((value) => (
               <option value={value} key={value}>{value}</option>
             ))}
           </select>

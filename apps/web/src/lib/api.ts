@@ -375,6 +375,24 @@ export interface AuditMonitorData {
   contentBoundary: string
 }
 
+export type AuditMonitorSummaryData = Pick<
+  AuditMonitorData,
+  'generatedAt' | 'summary' | 'filters' | 'authority'
+>
+
+export type AuditMonitorRowsData = Pick<
+  AuditMonitorData,
+  | 'generatedAt'
+  | 'rows'
+  | 'pendingRows'
+  | 'noRecordingRows'
+  | 'pagination'
+  | 'pendingPagination'
+  | 'noRecordingPagination'
+  | 'contentBoundary'
+  | 'authority'
+>
+
 /**
  * Admin-only Billing Audit CATEGORY ANALYSIS.
  *
