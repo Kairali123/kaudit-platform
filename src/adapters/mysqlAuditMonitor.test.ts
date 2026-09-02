@@ -376,6 +376,7 @@ test('rows mode omits aggregate usage and financial scans', async () => {
   const data = await collectAuditMonitor(fake.pool, QUERY, 'rows')
 
   assert.equal(data.rows.length, 1)
+  assert.equal(data.totalsFinal, false)
   assert.equal('summary' in data, false)
   assert.equal('filters' in data, false)
   const sql = fake.statements.join('\n')
@@ -384,6 +385,29 @@ test('rows mode omits aggregate usage and financial scans', async () => {
   assert.doesNotMatch(sql, /auditor_final_charge/)
   assert.doesNotMatch(sql, /SELECT DISTINCT c\.canonical_outcome_code AS value/)
   assert.doesNotMatch(sql, /engine_version = 'kairali-independent-reaudit/)
+  assert.doesNotMatch(sql, /COUNT\(\*\) AS total_calls/)
+  assert.doesNotMatch(sql, /SELECT COUNT\(DISTINCT c\.id\) AS n/)
+})
+
+test('rows mode fetches one lookahead row without exposing it', async () => {
+  const fetched = Array.from({ length: 26 }, (_, index) => ({
+    ...AUDITED_ROW,
+    internal_call_id: `call-synthetic-${index}`,
+    call_reference: `synthetic-task-${index}`,
+  }))
+  const fake = fakePool([
+    { match: 'grace_adjusted_duration_ms', rows: fetched },
+  ])
+
+  const data = await collectAuditMonitor(fake.pool, QUERY, 'rows')
+
+  assert.equal(data.rows.length, 25)
+  assert.equal(data.pagination.totalRows, 26)
+  assert.equal(data.pagination.totalPages, 2)
+  const auditedPage = fake.calls.find(({ sql }) =>
+    sql.includes('c.id AS internal_call_id'),
+  )
+  assert.deepEqual(auditedPage?.params.slice(-2), [26, 0])
 })
 
 test('summary mode omits all paginated row queries', async () => {

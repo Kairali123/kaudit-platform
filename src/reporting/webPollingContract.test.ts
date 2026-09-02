@@ -165,6 +165,8 @@ test('audit monitor loads rows before starting expensive summaries', async () =>
     /enabled: rowsQuery\.isSuccess && !rowsQuery\.isFetching/,
   )
   assert.match(source, /placeholderData: keepPreviousData/)
+  assert.match(source, /data\.totalsFinal \|\| summaryData != null/)
+  assert.match(source, /function withTotalRows/)
   assert.match(source, /if \(rowsQuery\.isLoading\)/)
   assert.match(source, /summaryQuery\.isLoading && <LoadingState \/>/)
 })

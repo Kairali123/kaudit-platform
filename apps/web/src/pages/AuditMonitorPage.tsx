@@ -201,6 +201,22 @@ function PaginationFooter({
   )
 }
 
+function withTotalRows(
+  pagination: AuditPagination,
+  totalRows: number | undefined,
+): AuditPagination {
+  if (totalRows == null) return pagination
+  return {
+    ...pagination,
+    totalRows,
+    totalPages: Math.max(1, Math.ceil(totalRows / pagination.pageSize)),
+  }
+}
+
+function resultCount(totalRows: number, final: boolean): string {
+  return `${totalRows.toLocaleString('en-IN')}${final ? '' : '+'}`
+}
+
 export function AuditMonitorPage() {
   const period = useBillingPeriod()
   const client = useQueryClient()
@@ -473,6 +489,19 @@ export function AuditMonitorPage() {
   }
   const data = rowsQuery.data!
   const summaryData = summaryQuery.data
+  const totalsFinal = data.totalsFinal || summaryData != null
+  const auditedPagination = withTotalRows(
+    data.pagination,
+    summaryData?.summary.auditedFinancials.scopedAuditedCalls,
+  )
+  const pendingPagination = withTotalRows(
+    data.pendingPagination,
+    summaryData?.summary.pendingEligibleCalls,
+  )
+  const noRecordingPagination = withTotalRows(
+    data.noRecordingPagination,
+    summaryData?.summary.noRecordingCalls,
+  )
   const selectable = data.rows
     .filter((row) => !reAuditLocked(row))
     .map((row) => row.callReference)
@@ -665,7 +694,7 @@ export function AuditMonitorPage() {
             <h2>AI output inspection</h2>
           </div>
           <span className="soft-chip">
-            {data.pagination.totalRows.toLocaleString('en-IN')} results
+            {resultCount(auditedPagination.totalRows, totalsFinal)} results
           </span>
         </div>
         <div className="table-scroll">
@@ -801,7 +830,7 @@ export function AuditMonitorPage() {
           </table>
         </div>
         <PaginationFooter
-          pagination={data.pagination}
+          pagination={auditedPagination}
           setPage={setPage}
         />
       </section>
@@ -813,7 +842,7 @@ export function AuditMonitorPage() {
             <h2><Clock3 size={19} aria-hidden /> Recording-backed queue</h2>
           </div>
           <span className="soft-chip">
-            {data.pendingPagination.totalRows.toLocaleString('en-IN')} pending
+            {resultCount(pendingPagination.totalRows, totalsFinal)} pending
           </span>
         </div>
         <div className="table-scroll">
@@ -863,7 +892,7 @@ export function AuditMonitorPage() {
           </table>
         </div>
         <PaginationFooter
-          pagination={data.pendingPagination}
+          pagination={pendingPagination}
           setPage={setPendingPage}
         />
       </section>
@@ -875,7 +904,7 @@ export function AuditMonitorPage() {
             <h2><FileQuestion size={19} aria-hidden /> Cannot be independently audited</h2>
           </div>
           <span className="soft-chip">
-            {data.noRecordingPagination.totalRows.toLocaleString('en-IN')} calls
+            {resultCount(noRecordingPagination.totalRows, totalsFinal)} calls
           </span>
         </div>
         <Notice tone="warning" title="KServe supplied no recording evidence">
@@ -940,7 +969,7 @@ export function AuditMonitorPage() {
           </table>
         </div>
         <PaginationFooter
-          pagination={data.noRecordingPagination}
+          pagination={noRecordingPagination}
           setPage={setNoRecordingPage}
         />
       </section>

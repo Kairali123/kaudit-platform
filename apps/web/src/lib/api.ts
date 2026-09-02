@@ -391,7 +391,7 @@ export type AuditMonitorRowsData = Pick<
   | 'noRecordingPagination'
   | 'contentBoundary'
   | 'authority'
->
+> & { totalsFinal: boolean }
 
 /**
  * Admin-only Billing Audit CATEGORY ANALYSIS.

@@ -154,7 +154,7 @@ export type AuditMonitorRowsData = Pick<
   | 'noRecordingPagination'
   | 'contentBoundary'
   | 'authority'
->
+> & { totalsFinal: boolean }
 
 export type AuditMonitorSection = 'all' | 'summary' | 'rows'
 
@@ -450,6 +450,22 @@ function pagination(
   }
 }
 
+function windowPagination(
+  page: number,
+  pageSize: number,
+  fetchedRows: number,
+): AuditPagination {
+  const visibleRows = Math.min(pageSize, fetchedRows)
+  const hasNextPage = fetchedRows > pageSize
+  const minimumRows = (page - 1) * pageSize + visibleRows
+  return {
+    page,
+    pageSize,
+    totalRows: minimumRows + (hasNextPage ? 1 : 0),
+    totalPages: page + (hasNextPage ? 1 : 0),
+  }
+}
+
 function mapQueueRow(row: QueueDataRow): AuditQueueRow {
   return {
     callReference: row.call_reference,
@@ -549,7 +565,8 @@ export async function collectAuditMonitor(
   const queueScopeClause = `${periodClause}${taskClause}`
   const queueScopeParams = [...periodParams, ...taskParams]
   const summaryPrelude = await Promise.all([
-    pool.query<OverallSummaryRow[]>(
+    includeSummary
+      ? pool.query<OverallSummaryRow[]>(
       `SELECT
          COUNT(*) AS total_calls,
          SUM(
@@ -606,7 +623,11 @@ export async function collectAuditMonitor(
        ) artifact ON artifact.call_id = c.id
        WHERE 1=1${periodClause}`,
       periodParams,
-    ),
+    )
+      : Promise.resolve<[OverallSummaryRow[], never]>([
+        [],
+        undefined as never,
+      ]),
     includeSummary
       ? pool.query<CountRow[]>(
       `SELECT COUNT(DISTINCT run.call_id) AS n
@@ -617,7 +638,7 @@ export async function collectAuditMonitor(
       periodParams,
     )
       : Promise.resolve<[CountRow[], never]>([[], undefined as never]),
-    includeRows
+    section === 'all'
       ? pool.query<CountRow[]>(
       `SELECT COUNT(DISTINCT c.id) AS n
        ${AUDITED_JOIN}
@@ -659,7 +680,7 @@ export async function collectAuditMonitor(
   )
   let totalPendingRows = summaryPendingRows
   let totalNoRecordingRows = summaryNoRecordingRows
-  if (query.taskId) {
+  if (query.taskId && includeSummary) {
     const [pendingCountResult, noRecordingCountResult] =
       await Promise.all([
         pool.query<CountRow[]>(
@@ -847,6 +868,7 @@ export async function collectAuditMonitor(
   const pendingOffset = (query.pendingPage - 1) * query.pageSize
   const noRecordingOffset =
     (query.noRecordingPage - 1) * query.pageSize
+  const rowLimit = section === 'rows' ? query.pageSize + 1 : query.pageSize
   const [auditedResult, pendingResult, noRecordingResult] =
     await Promise.all([
       pool.query<DataRow[]>(
@@ -916,7 +938,7 @@ export async function collectAuditMonitor(
      ${filters.sql}
      ORDER BY audited_at DESC, c.id
      LIMIT ? OFFSET ?`,
-    [...filters.params, query.pageSize, offset],
+    [...filters.params, rowLimit, offset],
       ),
       pool.query<QueueDataRow[]>(
         `SELECT
@@ -995,7 +1017,7 @@ export async function collectAuditMonitor(
            LIMIT ? OFFSET ?
          ) pending
          ORDER BY pending.billing_period_date DESC, pending.call_id`,
-        [...queueScopeParams, query.pageSize, pendingOffset],
+        [...queueScopeParams, rowLimit, pendingOffset],
       ),
       pool.query<QueueDataRow[]>(
         `SELECT
@@ -1065,12 +1087,18 @@ export async function collectAuditMonitor(
           )
          ORDER BY c.billing_period_date DESC, c.id
          `,
-        [...queueScopeParams, query.pageSize, noRecordingOffset],
+        [...queueScopeParams, rowLimit, noRecordingOffset],
       ),
     ])
-  const rowResult = auditedResult[0]
-  const pendingRowResult = pendingResult[0]
-  const noRecordingRowResult = noRecordingResult[0]
+  const fetchedRows = auditedResult[0]
+  const fetchedPendingRows = pendingResult[0]
+  const fetchedNoRecordingRows = noRecordingResult[0]
+  const rowResult = fetchedRows.slice(0, query.pageSize)
+  const pendingRowResult = fetchedPendingRows.slice(0, query.pageSize)
+  const noRecordingRowResult = fetchedNoRecordingRows.slice(
+    0,
+    query.pageSize,
+  )
   // Scoped to the rows actually on screen. The keys go in, only the two safe
   // lifecycle words come back, and neither the keys nor the queue's own ids
   // reach the response.
@@ -1138,21 +1166,28 @@ export async function collectAuditMonitor(
     }),
     pendingRows: pendingRowResult.map(mapQueueRow),
     noRecordingRows: noRecordingRowResult.map(mapQueueRow),
-    pagination: pagination(
-      query.page,
-      query.pageSize,
-      totalFilteredRows,
-    ),
-    pendingPagination: pagination(
-      query.pendingPage,
-      query.pageSize,
-      totalPendingRows,
-    ),
-    noRecordingPagination: pagination(
-      query.noRecordingPage,
-      query.pageSize,
-      totalNoRecordingRows,
-    ),
+    pagination: section === 'rows'
+      ? windowPagination(query.page, query.pageSize, fetchedRows.length)
+      : pagination(query.page, query.pageSize, totalFilteredRows),
+    pendingPagination: section === 'rows'
+      ? windowPagination(
+        query.pendingPage,
+        query.pageSize,
+        fetchedPendingRows.length,
+      )
+      : pagination(query.pendingPage, query.pageSize, totalPendingRows),
+    noRecordingPagination: section === 'rows'
+      ? windowPagination(
+        query.noRecordingPage,
+        query.pageSize,
+        fetchedNoRecordingRows.length,
+      )
+      : pagination(
+        query.noRecordingPage,
+        query.pageSize,
+        totalNoRecordingRows,
+      ),
+    totalsFinal: section !== 'rows',
     authority: 'automated',
     contentBoundary:
       'Admin-only audit metadata. Use Admin review for restricted evidence, transcript, and per-call billing context when available.',
