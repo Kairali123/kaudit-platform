@@ -236,6 +236,20 @@ async function main(): Promise<void> {
     )
     const ai = createOpenAiReaudit(required('OPENAI_API_KEY'))
     let completed = 0
+    let selected = 0
+    let failedOutcomes = 0
+    const publishNoCompletionFailure = (): void => {
+      if (selected === 0 || completed > 0 || failedOutcomes === 0) return
+      process.stdout.write(
+        `${JSON.stringify({
+          event: 'billing_audit_no_completions',
+          category: 'ITEM_FAILURES',
+          selected,
+          failed: failedOutcomes,
+        })}\n`,
+      )
+      process.exitCode = 2
+    }
     process.stdout.write(
       `[audit-worker] started; mode=${requestedMode ? 'requested-reaudit' : appendReaudit ? 'append-reaudit' : 'new-only'}; scope=${requestedMode ? 'durable admin request queue' : taskIds ? `${taskIds.length} exact task IDs` : 'all eligible calls'}\n`,
     )
@@ -362,6 +376,9 @@ async function main(): Promise<void> {
               : 'running',
       })
       completed += summary.completed
+      selected += summary.selected
+      failedOutcomes +=
+        summary.retriesScheduled + summary.terminalFailures
       if (summary.stoppedEarly) {
         if (shutdownRequested) {
           await control.recordObservation({
@@ -390,6 +407,7 @@ async function main(): Promise<void> {
         process.stdout.write(
           `[audit-worker] requested re-audit finished; newly completed=${completed}\n`,
         )
+        publishNoCompletionFailure()
         break
       }
       if (drain) {
@@ -401,12 +419,14 @@ async function main(): Promise<void> {
         process.stdout.write(
           `[audit-worker] drain finished; newly completed=${completed}\n`,
         )
+        publishNoCompletionFailure()
         break
       }
       if (!watch) {
         process.stdout.write(
           `[audit-worker] single batch finished; selected=${summary.selected}; newly completed=${completed}\n`,
         )
+        publishNoCompletionFailure()
         break
       }
       if (summary.selected === 0) {

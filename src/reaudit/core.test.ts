@@ -5,6 +5,7 @@ import {
   auditOneCall,
   mergeTranscriptSegments,
   projectVerifiedCharge,
+  repairClassification,
   validateClassification,
 } from './core.ts'
 import type {
@@ -50,7 +51,7 @@ const candidate: ReauditCandidate = {
 }
 
 test('engine version identifies the classification repair', () => {
-  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.6.0')
+  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.6.1')
 })
 
 test('merges fragments using the approved pause, duration, and character limits', () => {
@@ -712,7 +713,7 @@ test('classification failure stores a bounded code instead of thrown prose', asy
   assert.equal(result.errorCode, 'CLASSIFICATION_MODEL_FAILED')
 })
 
-test('classification validation failure has a distinct bounded code', async () => {
+test('classification validation contradictions preserve identified customer speech', async () => {
   const ai: ReauditAi = {
     async transcribe() {
       return {
@@ -756,8 +757,81 @@ test('classification validation failure has a distinct bounded code', async () =
     ai,
   })
 
+  assert.equal(result.outcome, 'projected')
+  assert.equal(result.analysis?.category, 'AGENT_FAILURE')
+})
+
+test('classification repair gives customer speech precedence over unclear role guesses', () => {
+  const raw = reviewedClassification({
+    proposed: 'USER_SILENCE',
+    customerSpoke: true,
+    signals: {
+      counterpartyType: 'no_response',
+      agentHandling: 'normal',
+      conversationOutcome: 'no_outcome',
+      durationOutcome: 'appropriate',
+    },
+  })
+  raw.unclearBlockNumbers = [2]
+  const blocks = [
+    { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent prompt' },
+    { number: 2, startMs: 1_100, endMs: 2_000, text: 'Synthetic customer reply' },
+  ]
+
+  const repaired = repairClassification(raw, blocks)
+  const result = validateClassification(repaired, blocks, 3_000)
+
+  assert.deepEqual(result.customerBlockNumbers, [2])
+  assert.deepEqual(result.unclearBlockNumbers, [])
+  assert.equal(result.decisionSignals?.counterpartyType, 'human')
+  assert.equal(result.category, 'CONNECT_NOT_FRUITFUL')
+})
+
+test('unrepairable classifier output retains a bounded terminal code', async () => {
+  const ai: ReauditAi = {
+    async transcribe() {
+      return {
+        model: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
+        language: 'english',
+        durationMs: 10_000,
+        speechMs: 2_000,
+        text: 'Synthetic speech',
+        segments: [{ startMs: 0, endMs: 2_000, text: 'Synthetic speech' }],
+      }
+    },
+    async classify() {
+      return {
+        ...reviewedClassification({
+          proposed: 'USER_SILENCE',
+          signals: {
+            counterpartyType: 'no_response',
+            agentHandling: 'normal',
+            conversationOutcome: 'no_outcome',
+            durationOutcome: 'appropriate',
+          },
+        }),
+        confidence: '2.00000000',
+      }
+    },
+  }
+  const result = await auditOneCall({
+    candidate,
+    allowedHosts: ['cdr-storage-recs.s3.ap-south-1.amazonaws.com'],
+    fetcher: {
+      async fetch() {
+        return {
+          ok: true,
+          status: 200,
+          bytes: Buffer.from('synthetic-audio'),
+          contentType: 'audio/ogg',
+        }
+      },
+    },
+    ai,
+  })
+
   assert.equal(result.outcome, 'classification_failed')
-  assert.equal(result.errorCode, 'CLASSIFICATION_VALIDATION_FAILED')
+  assert.equal(result.errorCode, 'CLASSIFICATION_OUTPUT_UNRECOVERABLE')
 })
 
 test('projection adds 60-second wrap-up grace and remains uncalibrated', () => {

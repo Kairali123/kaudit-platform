@@ -873,7 +873,7 @@ test('a paid failure result is staged and settled after persistence', async () =
     },
   })
   assert.deepEqual(staged, ['classification_failed'])
-  assert.deepEqual(settled, ['unknown'])
+  assert.deepEqual(settled, ['model_spent'])
   assert.equal(summary.retriesScheduled, 1)
 })
 

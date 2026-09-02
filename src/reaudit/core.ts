@@ -19,8 +19,8 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.6.0'
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.8.0'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.6.1'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.8.1'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
@@ -520,6 +520,160 @@ export function validateClassification(
   }
 }
 
+/**
+ * Repairs semantic contradictions in otherwise schema-valid model output.
+ * Evidence-backed system blocks outrank model role guesses; customer speech
+ * outranks an unclear label. The strict validator still owns the final check.
+ */
+export function repairClassification(
+  raw: ModelClassification,
+  blocks: NaturalSpeechBlock[],
+  options: { durationMismatch?: boolean } = {},
+): ModelClassification {
+  const valid = new Set(blocks.map((block) => block.number))
+  const numbers = (values: readonly number[] | undefined): number[] =>
+    [...new Set(values ?? [])]
+      .filter((value) => Number.isInteger(value) && valid.has(value))
+      .sort((left, right) => left - right)
+  const blockText = (number: number): string =>
+    blocks.find((block) => block.number === number)?.text ?? ''
+
+  const voicemailEvidenceBlockNumbers = numbers(
+    raw.voicemailEvidenceBlockNumbers,
+  ).filter((number) => AFFIRMATIVE_VOICEMAIL_CUE.test(blockText(number)))
+  const automationEvidenceBlockNumbers = numbers(
+    raw.automationEvidenceBlockNumbers,
+  ).filter((number) => AFFIRMATIVE_AUTOMATION_CUE.test(blockText(number)))
+  const systemEvidence = new Set([
+    ...voicemailEvidenceBlockNumbers,
+    ...automationEvidenceBlockNumbers,
+  ])
+  const customerBlockNumbers = numbers(raw.customerBlockNumbers).filter(
+    (number) => !systemEvidence.has(number),
+  )
+  const customer = new Set(customerBlockNumbers)
+  const unclearBlockNumbers = numbers(raw.unclearBlockNumbers).filter(
+    (number) => !customer.has(number) && !systemEvidence.has(number),
+  )
+  const unclear = new Set(unclearBlockNumbers)
+  const junkEvidenceBlockNumbers = numbers(
+    raw.junkEvidenceBlockNumbers,
+  ).filter((number) => AFFIRMATIVE_JUNK_CUE.test(blockText(number)))
+  const evidenceText = (values: readonly number[]): string =>
+    values.map(blockText).join(' ')
+  const voicemailEvidenceText = evidenceText(voicemailEvidenceBlockNumbers)
+  const automationEvidenceText = evidenceText(automationEvidenceBlockNumbers)
+  const junkEvidenceText = evidenceText(junkEvidenceBlockNumbers)
+  const agentBlockCount = blocks.filter(
+    (block) =>
+      !customer.has(block.number) &&
+      !unclear.has(block.number) &&
+      !systemEvidence.has(block.number),
+  ).length
+
+  const counterpartyType = voicemailEvidenceBlockNumbers.length > 0
+    ? 'voicemail' as const
+    : automationEvidenceBlockNumbers.length > 0 && agentBlockCount > 0
+      ? 'interactive_automation' as const
+      : customerBlockNumbers.length > 0
+        ? 'human' as const
+        : agentBlockCount > 0
+          ? 'no_response' as const
+          : 'unclear' as const
+  const signals = raw.decisionSignals
+    ? {
+        ...raw.decisionSignals,
+        counterpartyType,
+        voicemailEvidence:
+          voicemailEvidenceBlockNumbers.length > 0
+            ? raw.decisionSignals.voicemailEvidence === 'none' ||
+                raw.decisionSignals.voicemailEvidence === undefined
+              ? /\b(?:beep|tone)\b|बीप|ബീപ്പ്/iu.test(voicemailEvidenceText)
+                ? 'beep' as const
+                : /leave (?:a |your )?message|record (?:a |your |the )?message|संदेश छोड़|मैसेज छोड़/iu.test(
+                      voicemailEvidenceText,
+                    )
+                  ? 'leave_message_request' as const
+                  : /(?:message|recording) (?:has been |is )?(?:recorded|complete(?:d)?|finished|ended)|hang up/iu.test(
+                        voicemailEvidenceText,
+                      )
+                    ? 'recording_notice' as const
+                    : /mailbox|is not available|cannot (?:take|answer)/iu.test(
+                          voicemailEvidenceText,
+                        )
+                      ? 'mailbox_notice' as const
+                      : 'fixed_greeting' as const
+              : raw.decisionSignals.voicemailEvidence
+            : 'none' as const,
+        automationEvidence:
+          automationEvidenceBlockNumbers.length > 0
+            ? raw.decisionSignals.automationEvidence === 'none' ||
+                raw.decisionSignals.automationEvidence === undefined
+              ? /\b(?:virtual|automated|digital)\s+(?:assistant|agent|system|service)\b/iu.test(
+                  automationEvidenceText,
+                )
+                ? 'virtual_assistant_disclosure' as const
+                : /\b(?:state|say)\s+(?:your\s+)?(?:name|purpose|reason for (?:the )?call)\b|screen/iu.test(
+                      automationEvidenceText,
+                    )
+                  ? 'screening_prompt' as const
+                  : 'menu_prompt' as const
+              : raw.decisionSignals.automationEvidence
+            : 'none' as const,
+        junkEvidence:
+          junkEvidenceBlockNumbers.length > 0
+            ? raw.decisionSignals.junkEvidence === 'none' ||
+                raw.decisionSignals.junkEvidence === undefined
+              ? /\btest(?:ing)?\b|टेस्ट\s*कॉल/iu.test(junkEvidenceText)
+                ? 'test_call' as const
+                : /\b(?:spam|scam|robocall|fake|fraudulent)\b|स्पैम|स्कैम/iu.test(
+                      junkEvidenceText,
+                    )
+                  ? 'spam_or_scam' as const
+                  : 'prank_or_illegitimate_purpose' as const
+              : raw.decisionSignals.junkEvidence
+            : 'none' as const,
+      }
+    : undefined
+
+  let category = raw.category
+  if (counterpartyType === 'voicemail') category = 'VOICEMAIL'
+  else if (counterpartyType === 'interactive_automation') category = 'AI_TO_AI'
+  else if (counterpartyType === 'no_response') category = 'USER_SILENCE'
+  else if (counterpartyType === 'unclear') category = 'INACTIVE_CALL'
+  else if (
+    category === 'USER_SILENCE' ||
+    category === 'VOICEMAIL' ||
+    category === 'AI_TO_AI' ||
+    category === 'INACTIVE_CALL' ||
+    (category === 'JUNK_CALL' && junkEvidenceBlockNumbers.length === 0) ||
+    (category === 'INCORRECT_CALL_DURATION' && !options.durationMismatch)
+  ) {
+    category = signals?.agentHandling === 'failed' || agentBlockCount === 0
+      ? 'AGENT_FAILURE'
+      : signals?.conversationOutcome === 'successful'
+        ? 'OK'
+        : signals?.durationOutcome === 'ended_too_early' ||
+            signals?.durationOutcome === 'continued_without_value'
+          ? 'TIME_DURATION'
+          : 'CONNECT_NOT_FRUITFUL'
+  }
+
+  return {
+    ...raw,
+    category,
+    customerBlockNumbers,
+    unclearBlockNumbers,
+    voicemailEvidenceBlockNumbers,
+    automationEvidenceBlockNumbers,
+    junkEvidenceBlockNumbers,
+    businessRelevantCustomerBlockNumbers: numbers(
+      raw.businessRelevantCustomerBlockNumbers,
+    ).filter((number) => customer.has(number)),
+    decisionSignals: signals,
+  }
+}
+
 function speechByRole(
   blocks: NaturalSpeechBlock[],
   classification: ModelClassification,
@@ -688,11 +842,22 @@ export async function auditOneCall(options: {
         { durationMismatch },
       )
     } catch {
-      return {
-        callId: candidate.callId,
-        artifactId: candidate.artifactId,
-        outcome: 'classification_failed',
-        errorCode: 'CLASSIFICATION_VALIDATION_FAILED',
+      try {
+        classification = validateClassification(
+          repairClassification(rawClassification, blocks, {
+            durationMismatch,
+          }),
+          blocks,
+          transcript.durationMs,
+          { durationMismatch },
+        )
+      } catch {
+        return {
+          callId: candidate.callId,
+          artifactId: candidate.artifactId,
+          outcome: 'classification_failed',
+          errorCode: 'CLASSIFICATION_OUTPUT_UNRECOVERABLE',
+        }
       }
     }
     modelClassification = classification

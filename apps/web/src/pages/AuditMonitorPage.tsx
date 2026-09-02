@@ -100,6 +100,7 @@ function reAuditFailure(row: AuditMonitorRow): string {
     CLASSIFICATION_FAILED: 'Classification failed',
     CLASSIFICATION_MODEL_FAILED: 'Classification model failed',
     CLASSIFICATION_VALIDATION_FAILED: 'Classification output inconsistent',
+    CLASSIFICATION_OUTPUT_UNRECOVERABLE: 'Classification output could not be safely repaired',
     AUDIT_SPEND_STATE_UNKNOWN: 'Model request state unknown',
     AUDIT_PROCESSOR_FAILED: 'Audit processor failed',
   }

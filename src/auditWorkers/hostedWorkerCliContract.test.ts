@@ -74,6 +74,16 @@ test('Billing Audit publishes exact progress deltas before continuing', () => {
   assert.match(billingWorker, /await control\.recordObservation/)
 })
 
+test('Billing Audit cannot report success when every attempted item failed', () => {
+  assert.match(billingWorker, /billing_audit_no_completions/)
+  assert.match(
+    billingWorker,
+    /selected === 0 \|\| completed > 0 \|\| failedOutcomes === 0/,
+  )
+  assert.match(billingWorker, /process\.exitCode = 2/)
+  assert.match(billingWorker, /publishNoCompletionFailure\(\)/)
+})
+
 test('Billing Audit heartbeats independently while a batch is in flight', () => {
   assert.match(billingWorker, /ACTIVE_HEARTBEAT_INTERVAL_MS = 60_000/)
   assert.match(billingWorker, /startActiveHeartbeat\(\{/)

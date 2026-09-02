@@ -248,7 +248,17 @@ export function createMysqlReauditWriteRepo(
                audio_last_error = NULL
            WHERE id = ? AND call_id = ? AND artifact_type = 'recording'
              AND is_final = 1 AND source_url IS NOT NULL
-             AND audio_processing_status NOT IN ('completed','exhausted')`,
+             AND (
+               audio_processing_status NOT IN ('completed','exhausted')
+               OR (
+                 audio_processing_status = 'exhausted'
+                 AND audio_last_error IN (
+                   'CLASSIFICATION_VALIDATION_FAILED',
+                   'AUDIT_SPEND_STATE_UNKNOWN'
+                 )
+                 AND audio_attempt_count < 8
+               )
+             )`,
           [at, candidate.artifactId, candidate.callId],
         )
         await connection.commit()
@@ -378,6 +388,8 @@ export function createMysqlReauditWriteRepo(
           const terminal =
             result.outcome === 'evidence_altered' ||
             result.outcome === 'unsafe_url' ||
+            result.outcome === 'transcription_failed' ||
+            result.outcome === 'classification_failed' ||
             result.outcome === 'spend_state_unknown' ||
             attempt >= MAX_ATTEMPTS
           const nextAttempt = terminal

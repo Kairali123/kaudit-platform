@@ -282,16 +282,11 @@ export async function runReauditBatch(options: {
       throw workerState.fatalError!.value
     }
     if (options.spendGuard && spendClaimed) {
-      const settledOutcome =
-        persistOutcome === 'completed' || persistOutcome === 'already_completed'
-          ? result.outcome === 'source_missing'
-              ? 'no_model_call'
-              : 'model_spent'
-          : result.outcome === 'source_missing'
-            ? 'no_model_call'
-            : recoveredFromStage
-              ? 'model_spent'
-              : 'unknown'
+      // Persistence succeeded, so the paid boundary is no longer ambiguous.
+      // Failed paid output is terminal and must not remain staged for replay.
+      const settledOutcome = result.outcome === 'source_missing'
+        ? 'no_model_call'
+        : 'model_spent'
       try {
         await options.spendGuard.settle(candidate, settledOutcome)
       } catch (error) {

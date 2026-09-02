@@ -88,10 +88,21 @@ export function createMysqlReauditReadRepo(
            AND (? = 1 OR (
              ca.audio_attempt_count < 8
              AND (
-               ca.audio_next_attempt_at IS NULL
-               OR ca.audio_next_attempt_at <= current_timestamp(6)
+               (
+                 ca.audio_processing_status NOT IN ('completed','exhausted')
+                 AND (
+                   ca.audio_next_attempt_at IS NULL
+                   OR ca.audio_next_attempt_at <= current_timestamp(6)
+                 )
+               )
+               OR (
+                 ca.audio_processing_status = 'exhausted'
+                 AND ca.audio_last_error IN (
+                   'CLASSIFICATION_VALIDATION_FAILED',
+                   'AUDIT_SPEND_STATE_UNKNOWN'
+                 )
+               )
              )
-             AND ca.audio_processing_status NOT IN ('completed','exhausted')
            ))
            AND (? = 1 OR (
              NOT EXISTS (

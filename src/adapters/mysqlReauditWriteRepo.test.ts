@@ -13,7 +13,10 @@ const candidate = {
   vendorBilledMinutes: '1.00000000',
 }
 
-function appendPool(options: { currentRuleset?: boolean } = {}) {
+function appendPool(options: {
+  currentRuleset?: boolean
+  audioAttemptCount?: number
+} = {}) {
   const statements: string[] = []
   let committed = 0
   let rolledBack = 0
@@ -25,7 +28,7 @@ function appendPool(options: { currentRuleset?: boolean } = {}) {
         return [[{ n: options.currentRuleset ? 1 : 0 }]]
       }
       if (/SELECT audio_attempt_count/.test(sql)) {
-        return [[{ audio_attempt_count: 8 }]]
+        return [[{ audio_attempt_count: options.audioAttemptCount ?? 8 }]]
       }
       return [{ affectedRows: 1 }]
     },
@@ -65,6 +68,22 @@ test('append re-audit claims an older completed call without resetting its artif
     fixture.statements.some((sql) => /UPDATE kaudit_call_artifact/.test(sql)),
     false,
   )
+})
+
+test('ordinary claiming reopens only bounded legacy exhausted failures', async () => {
+  const fixture = appendPool()
+  const repo = createMysqlReauditWriteRepo(fixture.pool)
+
+  const outcome = await repo.markStarted(candidate, new Date(0))
+  const update = fixture.statements.find((sql) =>
+    /UPDATE kaudit_call_artifact/.test(sql),
+  )
+
+  assert.equal(outcome, 'acquired')
+  assert.match(String(update), /audio_attempt_count < 8/)
+  assert.match(String(update), /CLASSIFICATION_VALIDATION_FAILED/)
+  assert.match(String(update), /AUDIT_SPEND_STATE_UNKNOWN/)
+  assert.doesNotMatch(String(update), /CLASSIFICATION_OUTPUT_UNRECOVERABLE/)
 })
 
 test('append re-audit skips a call already current under this ruleset', async () => {
@@ -110,6 +129,30 @@ test('failed append re-audit records history and preserves current call state', 
   assert.equal(
     fixture.statements.some((sql) => /UPDATE kaudit_call(?:_artifact)?/.test(sql)),
     false,
+  )
+})
+
+test('a paid classification failure is terminal on its first persisted attempt', async () => {
+  const fixture = appendPool({ audioAttemptCount: 1 })
+  const repo = createMysqlReauditWriteRepo(fixture.pool)
+
+  const outcome = await repo.persist(
+    candidate,
+    {
+      callId: candidate.callId,
+      artifactId: candidate.artifactId,
+      outcome: 'classification_failed',
+      errorCode: 'CLASSIFICATION_OUTPUT_UNRECOVERABLE',
+    },
+    new Date(0),
+  )
+
+  assert.equal(outcome, 'terminal_failure')
+  assert.equal(
+    fixture.statements.some((sql) =>
+      /SET audio_processing_status = \?, audio_next_attempt_at = \?/.test(sql),
+    ),
+    true,
   )
 })
 

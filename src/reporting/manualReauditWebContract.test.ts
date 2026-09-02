@@ -202,6 +202,10 @@ test('pending, success, and error are all visible states', async () => {
     source,
     /CLASSIFICATION_VALIDATION_FAILED: 'Classification output inconsistent'/,
   )
+  assert.match(
+    source,
+    /CLASSIFICATION_OUTPUT_UNRECOVERABLE: 'Classification output could not be safely repaired'/,
+  )
 })
 
 test('a success refreshes the monitor and the worker state', async () => {
