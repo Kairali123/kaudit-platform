@@ -995,23 +995,21 @@ export async function collectAuditMonitor(
             AND ca.artifact_type = 'recording'
             AND ca.is_final = 1
             AND ca.source_url IS NOT NULL
-           LEFT JOIN (
-             SELECT DISTINCT call_artifact_id
-             FROM kaudit_media_analysis
-             WHERE status = 'completed'
-               AND classification_status = 'completed'
-           ) completed_media
-             ON completed_media.call_artifact_id = ca.id
-           LEFT JOIN (
-             SELECT DISTINCT call_artifact_id
-             FROM kaudit_transcript
-             WHERE status = 'completed'
-           ) completed_transcript
-             ON completed_transcript.call_artifact_id = ca.id
            WHERE NOT (
              c.canonical_outcome_code IS NOT NULL
-             AND completed_media.call_artifact_id IS NOT NULL
-             AND completed_transcript.call_artifact_id IS NOT NULL
+             AND EXISTS (
+               SELECT 1
+               FROM kaudit_media_analysis completed_media
+               WHERE completed_media.call_artifact_id = ca.id
+                 AND completed_media.status = 'completed'
+                 AND completed_media.classification_status = 'completed'
+             )
+             AND EXISTS (
+               SELECT 1
+               FROM kaudit_transcript completed_transcript
+               WHERE completed_transcript.call_artifact_id = ca.id
+                 AND completed_transcript.status = 'completed'
+             )
            )${queueScopeClause}
            ORDER BY c.billing_period_date DESC, c.id
            LIMIT ? OFFSET ?

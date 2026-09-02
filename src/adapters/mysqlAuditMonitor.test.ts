@@ -615,6 +615,19 @@ test('no-recording pagination happens before optional metadata joins', async () 
   )
 })
 
+test('pending pagination probes indexed completion without materializing tables', async () => {
+  const fake = fakePool([
+    { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },
+    { match: 'grace_adjusted_duration_ms', rows: [AUDITED_ROW] },
+  ])
+  await collectAuditMonitor(fake.pool, QUERY, 'rows')
+
+  const pendingQuery = fake.find('pending.processing_status') ?? ''
+  assert.match(pendingQuery, /AND EXISTS \(\s*SELECT 1\s*FROM kaudit_media_analysis/)
+  assert.match(pendingQuery, /AND EXISTS \(\s*SELECT 1\s*FROM kaudit_transcript/)
+  assert.doesNotMatch(pendingQuery, /SELECT DISTINCT call_artifact_id/)
+})
+
 test('an unapplied re-audit migration still renders the audited rows', async () => {
   const fake = fakePool(
     [
