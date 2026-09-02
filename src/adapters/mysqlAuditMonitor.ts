@@ -936,7 +936,7 @@ export async function collectAuditMonitor(
        ) AS ai_audio_seconds
      ${AUDITED_JOIN}
      ${filters.sql}
-     ORDER BY audited_at DESC, c.id
+     ORDER BY c.billing_period_date DESC, c.id DESC
      LIMIT ? OFFSET ?`,
     [...filters.params, rowLimit, offset],
       ),

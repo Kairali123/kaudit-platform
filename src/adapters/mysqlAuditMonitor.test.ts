@@ -408,6 +408,11 @@ test('rows mode fetches one lookahead row without exposing it', async () => {
     sql.includes('c.id AS internal_call_id'),
   )
   assert.deepEqual(auditedPage?.params.slice(-2), [26, 0])
+  assert.match(
+    auditedPage?.sql ?? '',
+    /ORDER BY c\.billing_period_date DESC, c\.id DESC\s*LIMIT \? OFFSET \?/,
+  )
+  assert.doesNotMatch(auditedPage?.sql ?? '', /ORDER BY audited_at/)
 })
 
 test('summary mode omits all paginated row queries', async () => {
