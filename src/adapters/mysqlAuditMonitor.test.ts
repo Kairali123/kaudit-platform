@@ -430,7 +430,7 @@ test('default audited paging limits candidates before display joins', async () =
   assert.match(auditedPage, /EXISTS \(\s*SELECT 1\s*FROM kaudit_transcript/)
 })
 
-test('language-filtered audited paging keeps language inside the page scope', async () => {
+test('language-filtered audited paging filters candidates before the limit', async () => {
   const fake = fakePool([])
   await collectAuditMonitor(fake.pool, {
     ...QUERY,
@@ -440,10 +440,10 @@ test('language-filtered audited paging keeps language inside the page scope', as
   const auditedPage = fake.calls.find(({ sql }) =>
     sql.includes('c.id AS internal_call_id'),
   )?.sql ?? ''
-  assert.doesNotMatch(auditedPage, /\) audited_page/)
+  assert.match(auditedPage, /\) audited_page/)
   assert.match(
     auditedPage,
-    /LOWER\(COALESCE\(t\.language, \?\)\) = \?[\s\S]*LIMIT \? OFFSET \?/,
+    /JOIN kaudit_transcript t[\s\S]*LOWER\(COALESCE\(t\.language, \?\)\) = \?[\s\S]*LIMIT \? OFFSET \?/,
   )
 })
 

@@ -880,12 +880,7 @@ export async function collectAuditMonitor(
   const includePendingRows = rowTable === 'all' || rowTable === 'pending'
   const includeNoRecordingRows =
     rowTable === 'all' || rowTable === 'no-recording'
-  const auditedPageTail = query.language
-    ? `${AUDITED_JOIN}
-       ${filters.sql}
-       ORDER BY c.billing_period_date DESC, c.id DESC
-       LIMIT ? OFFSET ?`
-    : `FROM (
+  const auditedPageTail = `FROM (
          SELECT
            c.id AS call_id,
            ca_candidate.id AS call_artifact_id,
@@ -916,6 +911,20 @@ export async function collectAuditMonitor(
                       latest_artifact.id DESC
              LIMIT 1
            )
+         JOIN kaudit_transcript t
+           ON t.call_id = c.id
+          AND t.call_artifact_id = ca_candidate.id
+          AND t.status = 'completed'
+          AND t.id = (
+            SELECT t_candidate_latest.id
+            FROM kaudit_transcript t_candidate_latest
+            WHERE t_candidate_latest.call_id = c.id
+              AND t_candidate_latest.call_artifact_id = ca_candidate.id
+              AND t_candidate_latest.status = 'completed'
+            ORDER BY t_candidate_latest.created_at DESC,
+                     t_candidate_latest.id DESC
+            LIMIT 1
+          )
          ${filters.sql}
          ORDER BY c.billing_period_date DESC, c.id DESC
          LIMIT ? OFFSET ?
