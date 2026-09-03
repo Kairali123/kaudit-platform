@@ -53,7 +53,17 @@ const pool = mysql.createPool({
   database: config.database.name,
   user: config.database.user,
   password: config.database.password,
-  ssl,
+  // Present only when there is a handshake to configure. mysql2 decides
+  // whether to negotiate TLS from whether this key carries options, so a
+  // plaintext runtime must hand the driver no `ssl` key at all rather than one
+  // holding `undefined` — otherwise the client opens a TLS handshake the
+  // server is not expecting and the connection hangs until it times out.
+  ...(ssl ? { ssl } : {}),
+  // The same budget the hosted audit workers use. The mysql2 default is ten
+  // seconds, which is not enough for this host's handshake from a fresh CI
+  // runner, and a cycle close that cannot connect is indistinguishable from
+  // one that found nothing to settle.
+  connectTimeout: 30_000,
   connectionLimit: 4,
 })
 

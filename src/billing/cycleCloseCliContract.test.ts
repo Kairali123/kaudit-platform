@@ -78,3 +78,20 @@ test('the receipt keeps calling the fallback what it is', () => {
     /Cycle-close outcomes are deterministic fallbacks, not independent AI audits/,
   )
 })
+
+test('the pool omits the ssl key entirely on a plaintext runtime', () => {
+  // mysql2 decides whether to negotiate TLS from whether the key is PRESENT.
+  // Passing `ssl: undefined` makes the client open a handshake the server is
+  // not expecting, and the connection hangs until it times out rather than
+  // failing fast — which is what a cycle close is least able to distinguish
+  // from an empty queue.
+  assert.match(cli, /\.\.\.\(ssl \? \{ ssl \} : \{\}\)/)
+  assert.doesNotMatch(cli, /^\s*ssl,\s*$/m)
+})
+
+test('the pool allows the same connect budget as the hosted workers', () => {
+  // The mysql2 default is 10s. The hosted audit workers connect to the same
+  // host with 30s, so a cycle close that uses the default fails where they
+  // succeed — and reports it as a connection error, not as "nothing to do".
+  assert.match(cli, /connectTimeout: 30_000/)
+})
