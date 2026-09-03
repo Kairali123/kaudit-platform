@@ -13,9 +13,10 @@ import mysql from 'mysql2/promise'
  * no row, no amount, no identifier, and no customer data, and it writes nothing.
  */
 
+/** Exactly the tables `persistVerifiedBillingRecords` inserts into. */
 const TABLES = [
   'kaudit_billing_calculation',
-  'kaudit_billing_component',
+  'kaudit_billing_component_result',
   'kaudit_automated_decision',
 ]
 
