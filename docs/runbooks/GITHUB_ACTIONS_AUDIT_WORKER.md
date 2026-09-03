@@ -175,9 +175,35 @@ sections alongside the billing stages before choosing a value.
 
 For the supervised June 2026 close, `finalize-june-bill-audit` requires the
 exact confirmation `FINALIZE_JUNE_BILL_AUDIT`. It performs no model call. It
-records no-recording calls as `no_recording_zero` and recording-backed calls
-that exhausted automatic retries as `accepted_as_billed_unverified`, using the
-published `rcv-2026-02-28-v1` rate card and the stored KServe billed quantity.
+settles the **exhausted recording-backed cohort only**
+(`KAUDIT_CYCLE_CLOSE_COHORT=exhausted-recording`): calls that have a recording,
+whose independent audit is finished trying, and which the audit worker will
+never claim again. Each is recorded as `accepted_as_billed_unverified` with
+reason `INDEPENDENT_AUDIT_EXHAUSTED_ACCEPTED_AS_BILLED`, priced from the stored
+KServe amount — or, when KServe supplied no amount, its billed minutes at the
+locked rate — and carrying KServe's own claimed and connected durations. No
+independently measured duration is invented for a call nothing listened to.
+
+The cohort deliberately excludes two populations. No-recording calls are
+already resolved at ₹0.00 under their own `no_recording_zero` basis and must
+not be re-priced. Exhausted calls whose last error is
+`CLASSIFICATION_VALIDATION_FAILED` or `AUDIT_SPEND_STATE_UNKNOWN` with attempts
+still remaining are excluded because the audit worker will re-claim them —
+settling those would take money away from an audit that is still going to run.
+
+Run `diagnose-june-bill-audit` first. It is read-only (`DRY-RUN`), needs no
+confirmation, and reports the same cohort the money run would settle plus the
+rate-card state.
+
+**If either mode exits 3 with `RATE_CARD_RULESET_BINDING_INVALID`,** the stored
+`kaudit_rate_card_version.ruleset_sha256` for the named card does not equal the
+locked `KSERVE_RULESET_SHA256` in `src/billing/kserveRules.ts`. The output
+prints both hashes. Nothing was read past that point and no money was written.
+This is the same D-03 gate independent billing enforces, and it is not
+bypassable from the command: re-publish the rate card version bound to the
+locked ruleset through the approval path, then re-run. Do not edit the locked
+ruleset to match a stored hash — that would silently re-date the finance-
+approved interpretation.
 
 A successful diagnostic does not authorize a migration. Review its index and
 plan output, capture the pre-change API response through the authenticated

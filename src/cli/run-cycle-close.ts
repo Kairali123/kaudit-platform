@@ -3,10 +3,13 @@ import { loadRuntimeConfig } from '../config/runtime.ts'
 import {
   listAcceptedAsBilledCandidates,
   loadPublishedRateCard,
+  type CycleCloseCohort,
 } from '../adapters/mysqlCycleClose.ts'
 import {
   buildAcceptedAsBilledRecords,
+  validateRateCard,
 } from '../billing/acceptedAsBilled.ts'
+import { KSERVE_RULESET_SHA256 } from '../billing/kserveRules.ts'
 import {
   persistVerifiedBillingRecords,
 } from '../adapters/mysqlVerifiedBilling.ts'
@@ -31,6 +34,18 @@ const batch = Number(process.env.KAUDIT_CYCLE_CLOSE_BATCH || 1000)
 if (!Number.isInteger(batch) || batch < 1 || batch > 50_000) {
   throw new Error('KAUDIT_CYCLE_CLOSE_BATCH must be 1..50000')
 }
+/**
+ * Which unsettled calls this run may settle. Defaults to the original whole
+ * population; an operator narrows it deliberately by naming a cohort.
+ */
+const cohortValue =
+  process.env.KAUDIT_CYCLE_CLOSE_COHORT?.trim() || 'all'
+if (cohortValue !== 'all' && cohortValue !== 'exhausted-recording') {
+  throw new Error(
+    'KAUDIT_CYCLE_CLOSE_COHORT must be all or exhausted-recording',
+  )
+}
+const cohort: CycleCloseCohort = cohortValue
 const ssl = resolveDatabaseTls(config, process.env)
 const pool = mysql.createPool({
   host: config.database.host,
@@ -44,10 +59,44 @@ const pool = mysql.createPool({
 
 try {
   const rateCard = await loadPublishedRateCard(pool, rateCardId)
+  /**
+   * Check the rate card ONCE, before reading a single candidate.
+   *
+   * The same D-03 gate runs inside every record build, so a stale binding used
+   * to surface only on the first candidate — after a full scan, with nothing
+   * written and no statement of which side was wrong. Failing here instead
+   * costs one query and names the mismatch exactly. It is deliberately not
+   * repairable from this command: a rate card whose stored hash does not match
+   * the locked ruleset must be re-published through the approval path.
+   */
+  try {
+    validateRateCard(rateCard)
+  } catch {
+    process.stderr.write(`${JSON.stringify({
+      event: 'cycle_close_rate_card_unusable',
+      code: 'RATE_CARD_RULESET_BINDING_INVALID',
+      rateCardId: rateCard.id,
+      rateCardVersion: rateCard.version,
+      status: rateCard.status,
+      currency: rateCard.currency,
+      approverRecorded: Boolean(rateCard.approvedBy),
+      approvedAtRecorded: Boolean(rateCard.approvedAt),
+      // Ruleset hashes are published repo constants, not secrets, and the
+      // operator cannot repair the binding without seeing both sides.
+      storedRulesetSha256: rateCard.rulesetSha256,
+      lockedRulesetSha256: KSERVE_RULESET_SHA256,
+      rulesetMatches: rateCard.rulesetSha256 === KSERVE_RULESET_SHA256,
+      remedy:
+        'Re-publish the rate card version bound to the locked KServe ruleset, then re-run. No money was written.',
+    }, null, 2)}\n`)
+    process.exitCode = 3
+    throw new Error('CYCLE_CLOSE_RATE_CARD_RULESET_BINDING_INVALID')
+  }
   const candidates = await listAcceptedAsBilledCandidates(
     pool,
     period,
     batch,
+    cohort,
   )
   const decidedAt = `${period.end}T18:29:59.999Z`
   let inserted = 0
@@ -55,11 +104,18 @@ try {
   let acceptedAmountPaise = 0
   let noRecordingZeroCandidates = 0
   let recordingFallbackCandidates = 0
+  let auditExhaustedCandidates = 0
+  let unresolvedValidationCandidates = 0
   for (const candidate of candidates) {
     if (candidate.fallbackReason === 'no_recording') {
       noRecordingZeroCandidates += 1
     } else {
       recordingFallbackCandidates += 1
+      if (candidate.fallbackReason === 'audit_exhausted') {
+        auditExhaustedCandidates += 1
+      } else {
+        unresolvedValidationCandidates += 1
+      }
     }
     const records = buildAcceptedAsBilledRecords({
       callId: candidate.callId,
@@ -90,10 +146,13 @@ try {
   }
   process.stdout.write(`${JSON.stringify({
     mode,
+    cohort,
     month: period.month,
     candidates: candidates.length,
     noRecordingZeroCandidates,
     recordingFallbackCandidates,
+    auditExhaustedCandidates,
+    unresolvedValidationCandidates,
     inserted,
     duplicates,
     acceptedAsBilledAmount: (

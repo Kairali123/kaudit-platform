@@ -1,11 +1,63 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
 import type { BillingMonthScope } from '../reporting/billingMonth.ts'
 import type { PublishedRateCard } from '../billing/types.ts'
+import type { AcceptedAsBilledFallbackReason } from '../billing/acceptedAsBilled.ts'
+
+/**
+ * Which unsettled calls a cycle-close run is allowed to settle.
+ *
+ * `all` is the original cycle-close population and stays the default, so no
+ * existing caller changes shape.
+ *
+ * `exhausted-recording` is the narrow, operator-directed cohort: calls that DO
+ * have a recording, whose independent audit is finished trying, and which the
+ * audit worker will never claim again. It deliberately excludes the
+ * no-recording population — those are a separate, already-zero-rated outcome —
+ * so a run aimed at a handful of exhausted calls cannot re-price thousands of
+ * unrelated ones.
+ */
+export type CycleCloseCohort = 'all' | 'exhausted-recording'
+
+/**
+ * Exhausted statuses the audit worker still re-claims.
+ *
+ * `mysqlReauditReadRepo` re-selects an exhausted artifact whose last error is
+ * one of these while attempts remain, so settling such a call here would take
+ * money away from an audit that is still going to run. They are excluded from
+ * the fallback cohort for exactly that reason; keep the two lists together.
+ */
+const RECLAIMABLE_EXHAUSTED_ERRORS = [
+  'CLASSIFICATION_VALIDATION_FAILED',
+  'AUDIT_SPEND_STATE_UNKNOWN',
+] as const
+
+const MAX_AUDIO_ATTEMPTS = 8
+
+const EXHAUSTED_RECORDING_SQL = `
+  EXISTS (
+    SELECT 1
+    FROM kaudit_call_artifact exhausted_recording
+    WHERE exhausted_recording.call_id = c.id
+      AND exhausted_recording.artifact_type = 'recording'
+      AND exhausted_recording.is_final = 1
+      AND exhausted_recording.source_url IS NOT NULL
+      AND exhausted_recording.audio_processing_status = 'exhausted'
+      AND NOT (
+        exhausted_recording.audio_last_error IN (${
+          RECLAIMABLE_EXHAUSTED_ERRORS.map(
+            (value) => `'${value}'`,
+          ).join(',')
+        })
+        AND COALESCE(exhausted_recording.audio_attempt_count, 0)
+              < ${MAX_AUDIO_ATTEMPTS}
+      )
+  )
+`
 
 interface CandidateRow extends RowDataPacket {
   call_id: string
   audit_run_id: string | null
-  fallback_reason: 'no_recording' | 'automated_validation_unresolved'
+  fallback_reason: AcceptedAsBilledFallbackReason
   vendor_billed_minutes: string
   vendor_billed_amount: string | null
   claimed_duration_ms: number | string | null
@@ -27,9 +79,7 @@ interface RateCardRow extends RowDataPacket {
 export interface AcceptedAsBilledCandidate {
   callId: string
   auditRunId: string | null
-  fallbackReason:
-    | 'no_recording'
-    | 'automated_validation_unresolved'
+  fallbackReason: AcceptedAsBilledFallbackReason
   vendorBilledMinutes: string
   vendorBilledAmount: string | null
   claimedDurationMs: number | null
@@ -76,21 +126,60 @@ export async function listAcceptedAsBilledCandidates(
   pool: Pool,
   period: BillingMonthScope,
   limit: number,
+  cohort: CycleCloseCohort = 'all',
 ): Promise<AcceptedAsBilledCandidate[]> {
+  /**
+   * The cohort narrows WHICH calls are settled; it never changes how any one
+   * of them is priced. `exhausted-recording` keeps only the recording-backed
+   * calls whose independent audit is finished, so a targeted run cannot reach
+   * the no-recording or unresolved-validation populations.
+   */
+  const eligibilitySql = cohort === 'exhausted-recording'
+    ? EXHAUSTED_RECORDING_SQL
+    : `(
+         NOT EXISTS (
+           SELECT 1
+           FROM kaudit_call_artifact recording
+           WHERE recording.call_id = c.id
+             AND recording.artifact_type = 'recording'
+             AND recording.is_final = 1
+             AND recording.source_url IS NOT NULL
+         )
+         OR EXISTS (
+           SELECT 1
+           FROM kaudit_automated_decision validation
+           WHERE validation.call_id = c.id
+             AND validation.decision_type =
+                   'automated_consensus_validation'
+             AND validation.decision_status = 'unresolved'
+             AND NOT EXISTS (
+               SELECT 1
+               FROM kaudit_automated_decision newer_validation
+               WHERE newer_validation.supersedes_decision_id =
+                     validation.id
+             )
+         )
+         OR ${EXHAUSTED_RECORDING_SQL}
+       )`
   const [rows] = await pool.execute<CandidateRow[]>(
     `SELECT
        c.id AS call_id,
        c.latest_audit_run_id AS audit_run_id,
        CASE
-         WHEN EXISTS (
+         WHEN NOT EXISTS (
            SELECT 1 FROM kaudit_call_artifact recording_reason
            WHERE recording_reason.call_id = c.id
              AND recording_reason.artifact_type = 'recording'
              AND recording_reason.is_final = 1
              AND recording_reason.source_url IS NOT NULL
          )
-         THEN 'automated_validation_unresolved'
-         ELSE 'no_recording'
+         THEN 'no_recording'
+         -- A recording-backed call whose audit is exhausted is recorded as
+         -- exhausted, not as an unresolved validation. They are different
+         -- facts and the decision record has to say which one happened.
+         WHEN ${EXHAUSTED_RECORDING_SQL}
+         THEN 'audit_exhausted'
+         ELSE 'automated_validation_unresolved'
        END AS fallback_reason,
        CAST(minutes.minutes_decimal AS CHAR) AS vendor_billed_minutes,
        CAST(amount.quantity_decimal AS CHAR) AS vendor_billed_amount,
@@ -118,39 +207,7 @@ export async function listAcceptedAsBilledCandidates(
       AND connected.provider_sku = 'duration_without_ringing_sec'
       AND connected.is_final = 1
      WHERE c.billing_period_date BETWEEN ? AND ?
-       AND (
-         NOT EXISTS (
-           SELECT 1
-           FROM kaudit_call_artifact recording
-           WHERE recording.call_id = c.id
-             AND recording.artifact_type = 'recording'
-             AND recording.is_final = 1
-             AND recording.source_url IS NOT NULL
-         )
-         OR EXISTS (
-           SELECT 1
-           FROM kaudit_automated_decision validation
-           WHERE validation.call_id = c.id
-             AND validation.decision_type =
-                   'automated_consensus_validation'
-             AND validation.decision_status = 'unresolved'
-             AND NOT EXISTS (
-               SELECT 1
-               FROM kaudit_automated_decision newer_validation
-               WHERE newer_validation.supersedes_decision_id =
-                     validation.id
-             )
-         )
-         OR EXISTS (
-           SELECT 1
-           FROM kaudit_call_artifact exhausted_recording
-           WHERE exhausted_recording.call_id = c.id
-             AND exhausted_recording.artifact_type = 'recording'
-             AND exhausted_recording.is_final = 1
-             AND exhausted_recording.source_url IS NOT NULL
-             AND exhausted_recording.audio_processing_status = 'exhausted'
-         )
-       )
+       AND ${eligibilitySql}
        AND NOT EXISTS (
          SELECT 1
          FROM kaudit_billing_calculation calculation

@@ -52,6 +52,7 @@ on:
           - repair-june-signed-url-retries
           - requeue-june-nested-url-retries
           - reset-june-pending-reviews
+          - diagnose-june-bill-audit
           - finalize-june-bill-audit
           - recover-june-canary
           - recover-june-pending
@@ -169,6 +170,21 @@ jobs:
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
               KAUDIT_JUNE_PENDING_RESET_CONFIRM=RESET_JUNE_278_PENDING_REVIEWS \
               node scripts/reset-june-pending-review-cohort.mjs
+            elif [[ "$AUDIT_MODE" == "diagnose-june-bill-audit" ]]; then
+              # Read-only preview of the exact same cohort the finalizer would
+              # settle. It writes no calculation, decision, or component: it
+              # reports the rate-card binding and the candidate counts so the
+              # money run is never the first time either is checked.
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_CYCLE_CLOSE_MODE=DRY-RUN \
+              KAUDIT_CYCLE_CLOSE_MONTH=2026-06 \
+              KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
+              KAUDIT_CYCLE_CLOSE_COHORT=exhausted-recording \
+              KAUDIT_CYCLE_CLOSE_BATCH=50000 \
+              npm run billing:cycle-close
             elif [[ "$AUDIT_MODE" == "finalize-june-bill-audit" ]]; then
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "FINALIZE_JUNE_BILL_AUDIT" ]]; then
                 exit 2
@@ -177,9 +193,13 @@ jobs:
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              # Exhausted recording-backed calls ONLY. The no-recording
+              # population is already resolved at zero by its own basis and
+              # must not be re-priced by a run aimed at the exhausted cohort.
               KAUDIT_CYCLE_CLOSE_MODE=EXECUTE \
               KAUDIT_CYCLE_CLOSE_MONTH=2026-06 \
               KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
+              KAUDIT_CYCLE_CLOSE_COHORT=exhausted-recording \
               KAUDIT_CYCLE_CLOSE_BATCH=50000 \
               npm run billing:cycle-close
             elif [[ "$AUDIT_MODE" == "migration-0015" ]]; then

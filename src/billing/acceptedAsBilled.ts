@@ -30,6 +30,7 @@ export const ACCEPTED_AS_BILLED_RULESET = {
   triggers: [
     'no_recording_after_automatic_retry_window',
     'automated_validation_unresolved_at_cycle_close',
+    'independent_audit_exhausted_at_cycle_close',
   ],
   amount:
     'zero when no recording exists; otherwise vendor-supplied billed amount when present or vendor billed minutes multiplied by the locked rate',
@@ -38,16 +39,29 @@ export const ACCEPTED_AS_BILLED_RULESET = {
 } satisfies JsonValue
 
 export const ACCEPTED_AS_BILLED_RULESET_VERSION =
-  'cycle-close-fallback/1.3.0'
+  'cycle-close-fallback/1.4.0'
+
+/**
+ * Why a call was settled from the vendor's own claim instead of an audit.
+ *
+ * `audit_exhausted` is deliberately its own reason rather than being folded
+ * into `automated_validation_unresolved`. Those are different facts: one says
+ * a validation ran and could not resolve; the other says the independent audit
+ * pipeline spent its whole retry budget and never produced a result at all.
+ * Recording the second as the first would misstate, in the permanent decision
+ * record, what the platform actually knew when it accepted the charge.
+ */
+export type AcceptedAsBilledFallbackReason =
+  | 'no_recording'
+  | 'automated_validation_unresolved'
+  | 'audit_exhausted'
 export const ACCEPTED_AS_BILLED_RULESET_SHA256 =
   canonicalJsonSha256(ACCEPTED_AS_BILLED_RULESET)
 
 export interface AcceptedAsBilledInput {
   callId: string
   auditRunId?: string | null
-  fallbackReason?:
-    | 'no_recording'
-    | 'automated_validation_unresolved'
+  fallbackReason?: AcceptedAsBilledFallbackReason
   claimedDurationMs: number | null
   connectedDurationMs: number | null
   vendorBilledMinutes: string
@@ -73,7 +87,16 @@ function fixed8(value: bigint): string {
     .padStart(8, '0')}`
 }
 
-function validateRateCard(rateCard: PublishedRateCard): void {
+/**
+ * The same D-03 gate independent billing uses.
+ *
+ * Exported so a cycle-close run can check the published rate card ONCE before
+ * it reads a single candidate, instead of discovering the mismatch on the first
+ * record it tries to build. It is a check, never a repair: a rate card whose
+ * stored hash does not match the locked ruleset must be re-published through
+ * the approval path before any money is written against it.
+ */
+export function validateRateCard(rateCard: PublishedRateCard): void {
   if (
     rateCard.status !== 'published' ||
     !rateCard.approvedBy ||
@@ -152,7 +175,9 @@ export function buildAcceptedAsBilledRecords(
   const reasonCode =
     fallbackReason === 'automated_validation_unresolved'
       ? 'AUTOMATED_VALIDATION_UNRESOLVED_ACCEPTED_AS_BILLED'
-      : 'NO_RECORDING_FOUND_ZERO'
+      : fallbackReason === 'audit_exhausted'
+        ? 'INDEPENDENT_AUDIT_EXHAUSTED_ACCEPTED_AS_BILLED'
+        : 'NO_RECORDING_FOUND_ZERO'
   const trace = {
     schemaVersion: '1',
     decisionType: 'verified_call_billing',
@@ -162,7 +187,9 @@ export function buildAcceptedAsBilledRecords(
     warning:
       fallbackReason === 'automated_validation_unresolved'
         ? 'Automated validation remained unresolved at cycle close; the KServe claim was accepted without an independently verified duration.'
-        : 'No Recording Found',
+        : fallbackReason === 'audit_exhausted'
+          ? 'The independent audit exhausted its retry budget and produced no result; the KServe claim was accepted without an independently verified duration.'
+          : 'No Recording Found',
     callId: input.callId,
     rateCardId: rateCard.id,
     rateCardVersion: rateCard.version,
@@ -224,6 +251,9 @@ export function buildAcceptedAsBilledRecords(
   }
   const component: BillingComponentRecord = {
     componentType: 'platform',
+    // The rule code names the money rule, which is the same accepted-as-billed
+    // arithmetic for both non-zero reasons. WHY it was reached is carried by
+    // the reason code and finding type, not by re-encoding it here.
     ruleCode: fallbackReason === 'no_recording'
       ? 'NO_RECORDING_ZERO'
       : 'ACCEPTED_AS_BILLED_UNVERIFIED',
@@ -267,7 +297,9 @@ export function buildAcceptedAsBilledRecords(
     findingType:
       fallbackReason === 'automated_validation_unresolved'
         ? 'AUTOMATED_VALIDATION_UNRESOLVED'
-        : 'NO_RECORDING',
+        : fallbackReason === 'audit_exhausted'
+          ? 'INDEPENDENT_AUDIT_EXHAUSTED'
+          : 'NO_RECORDING',
     decisionEngineName: 'kserve-verified-billing',
     decisionEngineVersion: KSERVE_BILLING_ENGINE_VERSION,
     modelProvider: 'none',
@@ -285,6 +317,8 @@ export function buildAcceptedAsBilledRecords(
     inputManifestSha256,
     decisionOutputJson,
     decisionOutputSha256,
+    // An exhausted call has already burned the pipeline's own attempt budget,
+    // so this record settles it rather than counting another recheck.
     recheckAttempt:
       fallbackReason === 'automated_validation_unresolved' ? 3 : 0,
     decidedAt: input.decidedAt,

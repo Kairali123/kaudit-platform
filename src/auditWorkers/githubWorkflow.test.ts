@@ -137,6 +137,32 @@ test('June bill-audit fallback finalization is exact, guarded, and model-free', 
     /KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1/,
   )
   assert.match(workflow, /npm run billing:cycle-close/)
+  // Exhausted recording-backed calls ONLY. Without this the same command
+  // settles the whole unsettled population, including thousands of
+  // no-recording calls that are already resolved at zero.
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "finalize-june-bill-audit"[\s\S]{0,900}KAUDIT_CYCLE_CLOSE_COHORT=exhausted-recording/,
+  )
+})
+
+test('the June bill-audit money run has a read-only preview of the same cohort', () => {
+  assert.match(workflow, /- diagnose-june-bill-audit/)
+  // Same month, same rate card, same cohort — but DRY-RUN, so the rate-card
+  // binding and the candidate counts are both known before anything is written.
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "diagnose-june-bill-audit"[\s\S]{0,900}KAUDIT_CYCLE_CLOSE_MODE=DRY-RUN[\s\S]{0,400}KAUDIT_CYCLE_CLOSE_COHORT=exhausted-recording/,
+  )
+  // A preview must not be gated on the write confirmation, and must not write.
+  assert.doesNotMatch(
+    workflow,
+    /AUDIT_MODE" == "diagnose-june-bill-audit"[\s\S]{0,400}MIGRATION_CONFIRMATION_INPUT/,
+  )
+  assert.doesNotMatch(
+    workflow,
+    /AUDIT_MODE" == "diagnose-june-bill-audit"[\s\S]{0,900}KAUDIT_CYCLE_CLOSE_MODE=EXECUTE/,
+  )
 })
 
 test('June pending recovery uses a low-concurrency drain', () => {
