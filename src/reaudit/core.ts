@@ -19,8 +19,8 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.6.4'
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.8.4'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.6.5'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.8.5'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
@@ -28,14 +28,27 @@ export const MERGE_MAX_BLOCK_CHARS = 250
 
 const decimal = /^(0|1)(?:\.\d{1,8})?$/
 
-function retryableProviderFailure(error: unknown): boolean {
-  if (!error || typeof error !== 'object') return false
+function providerFailureCode(
+  phase: 'TRANSCRIPTION' | 'CLASSIFICATION',
+  error: unknown,
+): string | null {
+  if (!error || typeof error !== 'object') return null
   const shaped = error as { status?: unknown; code?: unknown }
   const status = Number(shaped.status)
-  if (status === 408 || status === 409 || status === 429 || status >= 500) {
-    return true
+  const code = String(shaped.code || '')
+  if (status === 429) {
+    if (code === 'insufficient_quota') {
+      return `${phase}_PROVIDER_QUOTA_EXHAUSTED`
+    }
+    if (code === 'rate_limit_exceeded') {
+      return `${phase}_PROVIDER_RATE_LIMITED`
+    }
+    return `${phase}_PROVIDER_HTTP_429`
   }
-  return new Set([
+  if (status === 408) return `${phase}_PROVIDER_TIMEOUT`
+  if (status === 409) return `${phase}_PROVIDER_CONFLICT`
+  if (status >= 500) return `${phase}_PROVIDER_SERVER_ERROR`
+  if (new Set([
     'ETIMEDOUT',
     'ECONNRESET',
     'ECONNREFUSED',
@@ -43,7 +56,10 @@ function retryableProviderFailure(error: unknown): boolean {
     'ENETUNREACH',
     'APIConnectionError',
     'APIConnectionTimeoutError',
-  ]).has(String(shaped.code || ''))
+  ]).has(code)) {
+    return `${phase}_PROVIDER_CONNECTION_ERROR`
+  }
+  return null
 }
 
 /**
@@ -790,9 +806,8 @@ export async function auditOneCall(options: {
       callId: candidate.callId,
       artifactId: candidate.artifactId,
       outcome: 'transcription_failed',
-      errorCode: retryableProviderFailure(error)
-        ? 'TRANSCRIPTION_PROVIDER_RETRYABLE'
-        : 'TRANSCRIPTION_FAILED',
+      errorCode: providerFailureCode('TRANSCRIPTION', error) ??
+        'TRANSCRIPTION_FAILED',
     }
   }
   const durationMismatch =
@@ -848,9 +863,8 @@ export async function auditOneCall(options: {
         callId: candidate.callId,
         artifactId: candidate.artifactId,
         outcome: 'classification_failed',
-        errorCode: retryableProviderFailure(error)
-          ? 'CLASSIFICATION_PROVIDER_RETRYABLE'
-          : 'CLASSIFICATION_MODEL_FAILED',
+        errorCode: providerFailureCode('CLASSIFICATION', error) ??
+          'CLASSIFICATION_MODEL_FAILED',
       }
     }
     let classification: ModelClassification

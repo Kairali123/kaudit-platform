@@ -72,8 +72,8 @@ export interface ReauditWorkerSummary {
 const MAX_PERSIST_DEADLOCK_RETRIES = 3
 
 function isRetryableProviderResult(result: ReauditItemResult): boolean {
-  return result.errorCode === 'TRANSCRIPTION_PROVIDER_RETRYABLE' ||
-    result.errorCode === 'CLASSIFICATION_PROVIDER_RETRYABLE'
+  return result.errorCode?.startsWith('TRANSCRIPTION_PROVIDER_') === true ||
+    result.errorCode?.startsWith('CLASSIFICATION_PROVIDER_') === true
 }
 
 async function persistWithDeadlockRetry(options: {

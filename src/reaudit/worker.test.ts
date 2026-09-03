@@ -947,7 +947,7 @@ test('a retryable provider rejection releases spend without staging', async () =
           callId: item.callId,
           artifactId: item.artifactId,
           outcome: 'transcription_failed',
-          errorCode: 'TRANSCRIPTION_PROVIDER_RETRYABLE',
+          errorCode: 'TRANSCRIPTION_PROVIDER_RATE_LIMITED',
         }
       },
     },

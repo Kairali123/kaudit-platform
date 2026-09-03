@@ -51,7 +51,7 @@ const candidate: ReauditCandidate = {
 }
 
 test('engine version identifies the classification repair', () => {
-  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.6.4')
+  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.6.5')
 })
 
 test('merges fragments using the approved pause, duration, and character limits', () => {
@@ -737,9 +737,10 @@ test('classification failure stores a bounded code instead of thrown prose', asy
   assert.equal(result.errorCode, 'CLASSIFICATION_MODEL_FAILED')
 })
 
-test('transcription throttling returns a bounded retryable code', async () => {
+test('transcription quota exhaustion returns a bounded diagnostic code', async () => {
   const throttled = Object.assign(new Error('synthetic provider prose'), {
     status: 429,
+    code: 'insufficient_quota',
   })
   const result = await auditOneCall({
     candidate,
@@ -765,7 +766,7 @@ test('transcription throttling returns a bounded retryable code', async () => {
   })
 
   assert.equal(result.outcome, 'transcription_failed')
-  assert.equal(result.errorCode, 'TRANSCRIPTION_PROVIDER_RETRYABLE')
+  assert.equal(result.errorCode, 'TRANSCRIPTION_PROVIDER_QUOTA_EXHAUSTED')
 })
 
 test('classification validation contradictions preserve identified customer speech', async () => {

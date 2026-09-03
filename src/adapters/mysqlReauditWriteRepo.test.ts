@@ -166,7 +166,7 @@ test('a transient transcription provider failure schedules a bounded retry', asy
       callId: candidate.callId,
       artifactId: candidate.artifactId,
       outcome: 'transcription_failed',
-      errorCode: 'TRANSCRIPTION_PROVIDER_RETRYABLE',
+      errorCode: 'TRANSCRIPTION_PROVIDER_RATE_LIMITED',
     },
     new Date(0),
   )

@@ -82,8 +82,8 @@ function failureStatus(outcome: ReauditItemResult['outcome']): string {
 }
 
 function retryableProviderError(errorCode: string | undefined): boolean {
-  return errorCode === 'TRANSCRIPTION_PROVIDER_RETRYABLE' ||
-    errorCode === 'CLASSIFICATION_PROVIDER_RETRYABLE'
+  return errorCode?.startsWith('TRANSCRIPTION_PROVIDER_') === true ||
+    errorCode?.startsWith('CLASSIFICATION_PROVIDER_') === true
 }
 
 function failureFinding(outcome: ReauditItemResult['outcome']): string {
