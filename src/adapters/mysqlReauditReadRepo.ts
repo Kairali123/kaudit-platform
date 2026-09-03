@@ -13,6 +13,10 @@ interface CandidateRow extends RowDataPacket {
   vendor_billed_minutes: string | null
 }
 
+interface DeferredWorkRow extends RowDataPacket {
+  due_in_us: string | number | null
+}
+
 function nullableMs(value: string | number | null): number | null {
   if (value == null) return null
   const number = Number(value)
@@ -159,6 +163,77 @@ export function createMysqlReauditReadRepo(
         connectedDurationMs: nullableMs(row.connected_duration_ms),
         vendorBilledMinutes: row.vendor_billed_minutes,
       }))
+    },
+
+    /**
+     * How long until the earliest call that this reader would already have
+     * selected, were it not still serving a retry backoff.
+     *
+     * The predicate is deliberately the eligibility predicate above with the
+     * one clause inverted: same invoice window, same attempt ceiling, same
+     * non-terminal statuses, same already-audited exclusion, same task scope.
+     * Anything else would let a drain wait for work it can never claim.
+     *
+     * The remaining time is computed by the database against its own clock, so
+     * no worker-versus-server clock or timezone difference can turn a due
+     * retry into an indefinite wait. A reader that ignores the backoff gate
+     * entirely (append re-audit) has no deferred state to report.
+     */
+    async deferredWorkDueInMs(): Promise<number | null> {
+      if (config.allowPreviouslyClassified) return null
+      const [rows] = await pool.execute<DeferredWorkRow[]>(
+        `SELECT TIMESTAMPDIFF(
+                  MICROSECOND,
+                  current_timestamp(6),
+                  MIN(ca.audio_next_attempt_at)
+                ) AS due_in_us
+         FROM kaudit_call c
+         JOIN kaudit_call_artifact ca
+           ON ca.call_id = c.id
+          AND ca.artifact_type = 'recording'
+          AND ca.is_final = 1
+         WHERE ca.source_url IS NOT NULL
+           AND EXISTS (
+             SELECT 1
+             FROM kaudit_invoice invoice
+             WHERE c.billing_period_date BETWEEN
+                   invoice.period_start AND invoice.period_end
+               AND invoice.status IN ('received','matched','approved')
+           )
+           AND COALESCE(ca.audio_attempt_count, 0) < 8
+           AND COALESCE(ca.audio_processing_status, 'pending')
+                 NOT IN ('completed','exhausted')
+           AND ca.audio_next_attempt_at IS NOT NULL
+           AND ca.audio_next_attempt_at > current_timestamp(6)
+           AND NOT EXISTS (
+             SELECT 1
+             FROM kaudit_audit_run ar
+             WHERE ar.call_id = c.id
+               AND ar.status = 'completed'
+           )
+           AND NOT (
+             c.canonical_outcome_code IS NOT NULL
+             AND EXISTS (
+               SELECT 1 FROM kaudit_media_analysis ma
+               WHERE ma.call_artifact_id = ca.id
+                 AND ma.status = 'completed'
+                 AND ma.classification_status = 'completed'
+             )
+             AND EXISTS (
+               SELECT 1 FROM kaudit_transcript transcript
+               WHERE transcript.call_id = c.id
+                 AND transcript.call_artifact_id = ca.id
+                 AND transcript.status = 'completed'
+             )
+           )
+           ${scopeSql}`,
+        [...taskIds, ...taskIds],
+      )
+      const microseconds = rows[0]?.due_in_us
+      if (microseconds == null) return null
+      const value = Number(microseconds)
+      if (!Number.isFinite(value)) return null
+      return Math.max(0, Math.round(value / 1_000))
     },
   }
 }

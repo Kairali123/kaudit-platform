@@ -529,12 +529,6 @@ dl small { color: var(--muted); font-size: .6rem; }
 .audit-table tfoot td, .audit-table tfoot th { color: var(--muted); font-weight: 700; border-top: 2px solid var(--line); }
 .queue-table table { min-width: 1450px; }
 .queue-table h2 { display: flex; align-items: center; gap: 8px; }
-.recording-url-cell { min-width: 420px; max-width: 560px; }
-.recording-url-cell a,
-.recording-url-cell code {
-  display: block; overflow-wrap: anywhere; word-break: break-word;
-}
-.recording-url-cell a { color: var(--teal); }
 .table-empty { padding: 28px !important; color: var(--muted); text-align: center !important; }
 .table-action, .back-link {
   display: inline-flex; align-items: center; gap: 6px; color: var(--teal);

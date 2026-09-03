@@ -97,15 +97,19 @@ test('the monitor has no language filter or language-summary query', async () =>
   assert.doesNotMatch(api, /availableLanguages/)
 })
 
-test('pending queue displays the exact recording URL with a safe link', async () => {
+test('the pending queue never carries a recording URL to the browser', async () => {
   const api = await webSource('lib/api.ts')
   const page = await webSource('pages/AuditMonitorPage.tsx')
-  assert.match(api, /recordingUrl\?: string/)
-  assert.match(page, /<th>Recording URL<\/th>/)
-  assert.match(page, /\{row\.recordingUrl\}/)
-  assert.match(page, /parsed\.protocol === 'https:'/)
-  assert.match(page, /target="_blank"/)
-  assert.match(page, /rel="noreferrer"/)
+  // The column and the value were exposed for one diagnosis only. Source
+  // evidence must not reach a browser, so neither the client type, the table,
+  // nor a link helper may reintroduce it.
+  assert.doesNotMatch(api, /recordingUrl\?: string/)
+  assert.doesNotMatch(page, /Recording URL/)
+  assert.doesNotMatch(page, /recordingUrl/)
+  assert.doesNotMatch(page, /recordingHref/)
+  assert.doesNotMatch(page, /recording-url-cell/)
+  const styles = await webSource('styles.css')
+  assert.doesNotMatch(styles, /recording-url-cell/)
 })
 
 test('no-recording rows show a zero audit resolution and exact remark', async () => {

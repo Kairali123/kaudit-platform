@@ -1711,7 +1711,17 @@ async function apiResponse(
         status: 400,
       })
     }
-    return collectAuditMonitor(dependencies.pool, {
+    /**
+     * The monitor's aggregates are the heaviest reads this application makes,
+     * and they ran on the unbounded pool while every other dashboard read used
+     * the bounded one. An unbounded aggregate holds its pooled connection until
+     * the database finishes, so it can outlive the request that asked for it,
+     * starve the session and audit reads that share the pool, and surface as a
+     * host timeout rather than this server's own bounded QUERY_TIMEOUT. It now
+     * honours the same configured per-statement limit; with the limit unset the
+     * pool is the same object and nothing changes.
+     */
+    return collectAuditMonitor(billingReadPool(dependencies), {
       page: integer('page', 1, 1, 100_000),
       pendingPage: integer('pendingPage', 1, 1, 100_000),
       noRecordingPage: integer(

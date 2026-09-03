@@ -125,3 +125,85 @@ test('explicit completed-call reader bypasses only processing and history filter
     1,
   ])
 })
+
+test('deferred work is read as the inverse of the backoff gate, in server time', async () => {
+  let capturedSql = ''
+  let capturedParameters: unknown[] = []
+  const pool = {
+    async execute(sql: string, parameters: unknown[]) {
+      capturedSql = sql
+      capturedParameters = parameters
+      return [[{ due_in_us: '480000000' }]]
+    },
+  } as unknown as Pool
+
+  const repo = createMysqlReauditReadRepo(pool, {
+    externalTaskIds: ['task-a|1'],
+  })
+  const dueInMs = await repo.deferredWorkDueInMs()
+
+  assert.equal(dueInMs, 480_000)
+  // The remaining time is measured by the database against its own clock.
+  assert.match(
+    capturedSql,
+    /TIMESTAMPDIFF\(\s*MICROSECOND,\s*current_timestamp\(6\),\s*MIN\(ca\.audio_next_attempt_at\)\s*\)/,
+  )
+  // Same eligibility predicate as the candidate read, with the one backoff
+  // clause inverted. Anything else would wait for unclaimable work.
+  assert.match(
+    capturedSql,
+    /ca\.audio_next_attempt_at > current_timestamp\(6\)/,
+  )
+  assert.match(capturedSql, /COALESCE\(ca\.audio_attempt_count, 0\) < 8/)
+  assert.match(
+    capturedSql,
+    /COALESCE\(ca\.audio_processing_status, 'pending'\)\s+NOT IN \('completed','exhausted'\)/,
+  )
+  assert.match(capturedSql, /FROM kaudit_invoice invoice/)
+  assert.match(capturedSql, /FROM kaudit_audit_run ar/)
+  assert.match(capturedSql, /scope_ref\.provider_name = 'kserve'/)
+  assert.deepEqual(capturedParameters, ['task-a|1', 'task-a|1'])
+})
+
+test('no deferred retry reports null rather than a zero wait', async () => {
+  const pool = {
+    async execute() {
+      return [[{ due_in_us: null }]]
+    },
+  } as unknown as Pool
+
+  assert.equal(
+    await createMysqlReauditReadRepo(pool).deferredWorkDueInMs(),
+    null,
+  )
+})
+
+test('a deferral that has already elapsed never reports a negative wait', async () => {
+  const pool = {
+    async execute() {
+      return [[{ due_in_us: '-2500000' }]]
+    },
+  } as unknown as Pool
+
+  assert.equal(
+    await createMysqlReauditReadRepo(pool).deferredWorkDueInMs(),
+    0,
+  )
+})
+
+test('a reader that ignores the backoff gate reports no deferred work', async () => {
+  let queried = false
+  const pool = {
+    async execute() {
+      queried = true
+      return [[]]
+    },
+  } as unknown as Pool
+
+  const repo = createMysqlReauditReadRepo(pool, {
+    allowPreviouslyClassified: true,
+  })
+
+  assert.equal(await repo.deferredWorkDueInMs(), null)
+  assert.equal(queried, false)
+})

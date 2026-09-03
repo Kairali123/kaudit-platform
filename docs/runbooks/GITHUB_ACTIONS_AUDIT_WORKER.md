@@ -167,6 +167,12 @@ number from 1 through 25 that is safely above that p99. With the variable
 absent, production billing reads remain unbounded; this prevents an unmeasured
 timeout from turning the current slow page into a hard outage.
 
+The same variable also bounds the Audit Monitor's aggregates (`/api/v1/audits`).
+Those reads previously ran on the unbounded pool, so an aggregate could hold a
+pooled connection past the request that asked for it and surface as a host
+timeout rather than this server's own `QUERY_TIMEOUT`. Measure the monitor's
+sections alongside the billing stages before choosing a value.
+
 A successful diagnostic does not authorize a migration. Review its index and
 plan output, capture the pre-change API response through the authenticated
 operator flow, and obtain separate supervised approval before applying 0014,

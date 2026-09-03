@@ -12,6 +12,17 @@ export interface ReauditCandidateRepository {
     limit: number
     includePreviouslyClassified: boolean
   }): Promise<ReauditCandidate[]>
+  /**
+   * Milliseconds until the earliest candidate that is eligible in every way
+   * EXCEPT that it is still serving a retry backoff, or null when no such
+   * candidate exists.
+   *
+   * A bounded drain needs this to tell "the queue is empty" apart from "every
+   * remaining call is parked behind `audio_next_attempt_at` for a few minutes".
+   * Optional so a reader with no backoff concept (the durable administrator
+   * request queue) stays unchanged.
+   */
+  deferredWorkDueInMs?(): Promise<number | null>
 }
 
 export interface ReauditResultRepository {

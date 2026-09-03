@@ -70,15 +70,6 @@ function date(value: string | null): string {
       })
 }
 
-function recordingHref(value: string): string | null {
-  try {
-    const parsed = new URL(value)
-    return parsed.protocol === 'https:' ? value : null
-  } catch {
-    return null
-  }
-}
-
 function rowStatus(row: AuditMonitorRow): string {
   return row.confirmationStatus === 'model_output'
     ? 'Model output'
@@ -283,6 +274,7 @@ export function AuditMonitorPage() {
     // A minute is current enough for operations without continuously rerunning
     // the monitor's audited/pending/no-recording joins against the worker DB.
     placeholderData: keepPreviousData,
+    retry: false,
     refetchInterval: 60_000,
   })
   const pendingRowsQuery = useQuery({
@@ -300,7 +292,13 @@ export function AuditMonitorPage() {
           `/api/v1/audits?section=rows&table=pending&${queryString}`,
         ),
       ),
+    // Each table's page read is a separate multi-join scan over the same call
+    // and artifact tables. Issuing all three at once was the monitor's largest
+    // single burst, so they now follow the summaries' rule and start in the
+    // order they appear on screen.
+    enabled: auditedRowsQuery.isFetched,
     placeholderData: keepPreviousData,
+    retry: false,
     refetchInterval: 60_000,
   })
   const noRecordingRowsQuery = useQuery({
@@ -318,7 +316,9 @@ export function AuditMonitorPage() {
           `/api/v1/audits?section=rows&table=no-recording&${queryString}`,
         ),
       ),
+    enabled: pendingRowsQuery.isFetched,
     placeholderData: keepPreviousData,
+    retry: false,
     refetchInterval: 60_000,
   })
   const summaryEnabled =
@@ -343,6 +343,7 @@ export function AuditMonitorPage() {
     // then start in priority order so the database is not asked to run its
     // heaviest monitor aggregates at the same time.
     enabled: summaryEnabled,
+    retry: false,
     refetchInterval: 60_000,
   })
   const usageSummaryQuery = useQuery({
@@ -360,6 +361,7 @@ export function AuditMonitorPage() {
         ),
       ),
     enabled: coreSummaryQuery.isFetched,
+    retry: false,
     refetchInterval: 60_000,
   })
   const financialSummaryQuery = useQuery({
@@ -377,6 +379,7 @@ export function AuditMonitorPage() {
         ),
       ),
     enabled: usageSummaryQuery.isFetched,
+    retry: false,
     refetchInterval: 60_000,
   })
   const [selected, setSelected] = useState<string[]>([])
@@ -960,7 +963,6 @@ export function AuditMonitorPage() {
             <thead>
               <tr>
                 <th>Task / call reference</th>
-                <th>Recording URL</th>
                 <th>Bill month</th>
                 <th>Processing state</th>
                 <th>Attempts</th>
@@ -974,19 +976,6 @@ export function AuditMonitorPage() {
               {(pendingData?.pendingRows ?? []).map((row) => (
                 <tr key={row.callReference}>
                   <td><code>{row.callReference}</code></td>
-                  <td className="recording-url-cell">
-                    {row.recordingUrl && recordingHref(row.recordingUrl) ? (
-                      <a
-                        href={row.recordingUrl}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        {row.recordingUrl}
-                      </a>
-                    ) : (
-                      <code>{row.recordingUrl || '—'}</code>
-                    )}
-                  </td>
                   <td>{date(row.billingPeriodDate)}</td>
                   <td>
                     <span className="status-badge audit_pending">
@@ -1006,7 +995,7 @@ export function AuditMonitorPage() {
               {pendingRowsQuery.isSuccess &&
                 pendingData?.pendingRows.length === 0 && (
                 <tr>
-                  <td colSpan={9} className="table-empty">
+                  <td colSpan={8} className="table-empty">
                     {taskId
                       ? 'No pending call matches this Task ID in the selected bill month.'
                       : 'No recording-backed calls are waiting for audit.'}

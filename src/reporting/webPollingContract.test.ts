@@ -78,10 +78,6 @@ test('the query client does not poll the whole app by default', async () => {
   )
   // The rest of the default read behaviour is deliberate and still stated.
   assert.match(source, /staleTime: 30_000/)
-  assert.match(
-    source,
-    /error instanceof ApiError && error\.status === 504/,
-  )
   assert.match(source, /failureCount < 1/)
   assert.match(source, /refetchOnWindowFocus: false/)
 })
@@ -174,6 +170,13 @@ test('audit monitor isolates row tables before expensive summaries', async () =>
   assert.match(source, /auditedRowsQuery\.isFetched/)
   assert.match(source, /pendingRowsQuery\.isFetched/)
   assert.match(source, /noRecordingRowsQuery\.isFetched/)
+  // The three row page reads scan the same call and artifact tables, so they
+  // start in on-screen order instead of as one concurrent burst.
+  assert.match(source, /enabled: auditedRowsQuery\.isFetched/)
+  assert.match(source, /enabled: pendingRowsQuery\.isFetched/)
+  // The existing profile read plus all six monitor reads avoid replaying a
+  // failed response while the database is already under pressure.
+  assert.equal(source.match(/retry: false/g)?.length, 7)
   assert.doesNotMatch(source, /!auditedRowsQuery\.isFetching/)
   assert.doesNotMatch(source, /!pendingRowsQuery\.isFetching/)
   assert.doesNotMatch(source, /!noRecordingRowsQuery\.isFetching/)

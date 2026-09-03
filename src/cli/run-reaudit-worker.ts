@@ -13,11 +13,19 @@ import {
   BILLING_AUDIT_LOCK_ERROR_CODE,
 } from '../auditWorkers/billingAdvisoryLock.ts'
 import { startActiveHeartbeat } from '../auditWorkers/activeHeartbeat.ts'
+import {
+  decideBatchFaultResponse,
+  decideDrainContinuation,
+} from '../auditWorkers/drainContinuation.ts'
 import { auditOneCall } from '../reaudit/core.ts'
-import { runReauditBatch } from '../reaudit/worker.ts'
+import {
+  runReauditBatch,
+  type ReauditCandidateRepository,
+} from '../reaudit/worker.ts'
 import {
   asReauditFatalError,
   ReauditFatalError,
+  type ReauditErrorCategory,
 } from '../reaudit/failures.ts'
 import { parseRecordingBackedTaskIds } from '../reaudit/scope.ts'
 import { loadRuntimeConfig } from '../config/runtime.ts'
@@ -59,6 +67,18 @@ function wait(ms: number): Promise<void> {
 }
 
 const ACTIVE_HEARTBEAT_INTERVAL_MS = 60_000
+/**
+ * How a bounded drain treats a queue that is momentarily empty only because
+ * every remaining call is serving a retry backoff.
+ *
+ * The horizon is the explicit hand-over point: work due further out than this
+ * is left to the next scheduled run rather than holding a runner, the global
+ * advisory lock, and a database connection idle for hours.
+ */
+const DRAIN_DEFERRED_HORIZON_MS = 2 * 60 * 60_000
+/** Consecutive infrastructure faults a bounded run waits out before stopping. */
+const MAX_CONSECUTIVE_BATCH_FAULTS = 5
+const BATCH_FAULT_MAX_BACKOFF_MS = 120_000
 
 async function main(): Promise<void> {
   if (required('KAUDIT_AUDIT_MODE') !== 'EXECUTE') {
@@ -219,7 +239,7 @@ async function main(): Promise<void> {
       )
       throw new ReauditFatalError('claim', 'WORKER_LOCK_BUSY')
     }
-    const candidates = requestedMode
+    const candidates: ReauditCandidateRepository = requestedMode
       ? createMysqlManualReauditCandidateRepository(pool, {
           recoverInterruptedClaims: true,
         })
@@ -238,6 +258,14 @@ async function main(): Promise<void> {
     let completed = 0
     let selected = 0
     let failedOutcomes = 0
+    /**
+     * Bounded runs wait out transient infrastructure faults instead of ending
+     * the whole drain on the first one. A one-shot targeted/single-batch run
+     * keeps failing fast: it was asked for exactly one attempt.
+     */
+    const retryBatchFaults = drain || requestedMode
+    let consecutiveBatchFaults = 0
+    let consecutiveInspectionFaults = 0
     const publishNoCompletionFailure = (): void => {
       if (selected === 0 || completed > 0 || failedOutcomes === 0) return
       process.stdout.write(
@@ -341,40 +369,87 @@ async function main(): Promise<void> {
          * reduced to a lifecycle phase and one allowlisted category — never
          * the raw driver/provider error, which can quote SQL or values.
          */
-        const fatal = error instanceof ReauditFatalError
-          ? { phase: error.phase, category: error.category }
-          : { phase: 'unknown', category: 'DB_UNKNOWN' }
+        const fatal: { phase: string; category: ReauditErrorCategory } =
+          error instanceof ReauditFatalError
+            ? { phase: error.phase, category: error.category }
+            : { phase: 'unknown', category: 'DB_UNKNOWN' }
         const boundedCode = `BILLING_AUDIT_BATCH_FAILED_${fatal.category}`
+        consecutiveBatchFaults += 1
+        const faultResponse = retryBatchFaults
+          ? decideBatchFaultResponse({
+              category: fatal.category,
+              consecutiveFaults: consecutiveBatchFaults,
+              maxConsecutiveFaults: MAX_CONSECUTIVE_BATCH_FAULTS,
+              remainingMs: deadline - Date.now(),
+              baseBackoffMs: pollMs,
+              maxBackoffMs: BATCH_FAULT_MAX_BACKOFF_MS,
+            })
+          : ({ action: 'stop' } as const)
         process.stdout.write(
           `${JSON.stringify({
             event: 'billing_audit_batch_failed',
             phase: fatal.phase,
             category: fatal.category,
+            willRetry: faultResponse.action === 'retry',
           })}\n`,
         )
-        await control.recordObservation({
-          system: 'billing',
-          observedState: 'faulted',
-          errorCode: boundedCode,
-          failedDelta: 1,
-        })
+        /**
+         * The control write is best-effort on purpose. A second failure here is
+         * the same outage, and letting it escape would replace the classified
+         * diagnosis with an unclassified one and skip the retry decision above.
+         */
+        try {
+          await control.recordObservation({
+            system: 'billing',
+            // A run that is going to retry is still running. Only a run that
+            // is giving up publishes a fault and counts a failure.
+            observedState:
+              faultResponse.action === 'retry' ? 'running' : 'faulted',
+            errorCode: boundedCode,
+            ...(faultResponse.action === 'retry' ? {} : { failedDelta: 1 }),
+          })
+        } catch {
+          // Liveness is still published by the stale-heartbeat rule.
+        }
+        if (faultResponse.action === 'retry') {
+          const faultHeartbeat = startActiveHeartbeat({
+            intervalMs: ACTIVE_HEARTBEAT_INTERVAL_MS,
+            record: () => control.recordObservation({
+              system: 'billing',
+              observedState: 'running',
+            }),
+          })
+          try {
+            await wait(faultResponse.waitMs)
+          } finally {
+            await faultHeartbeat.stop()
+          }
+          continue
+        }
         if (!watch) throw new Error(boundedCode)
         await wait(pollMs)
         continue
       }
+      consecutiveBatchFaults = 0
       await activeHeartbeat.stop()
-      const desiredAfterBatch = await control.getDesiredState('billing')
-      await control.recordObservation({
-        system: 'billing',
-        observedState:
-          targetedOneShot && desiredAfterBatch === 'paused'
-            ? 'paused'
-            : summary.stoppedEarly
-              ? desiredAfterBatch === 'paused'
-                ? 'paused'
-                : 'idle'
-              : 'running',
-      })
+      const desiredAfterBatch = await control
+        .getDesiredState('billing')
+        .catch(() => 'running' as const)
+      try {
+        await control.recordObservation({
+          system: 'billing',
+          observedState:
+            targetedOneShot && desiredAfterBatch === 'paused'
+              ? 'paused'
+              : summary.stoppedEarly
+                ? desiredAfterBatch === 'paused'
+                  ? 'paused'
+                  : 'idle'
+                : 'running',
+        })
+      } catch {
+        // The next loop retries control publication; completed work stays durable.
+      }
       completed += summary.completed
       selected += summary.selected
       failedOutcomes +=
@@ -411,13 +486,120 @@ async function main(): Promise<void> {
         break
       }
       if (drain) {
-        if (summary.selected > 0 && Date.now() < deadline) continue
+        /**
+         * An empty batch is NOT the same as a drained queue.
+         *
+         * A call whose last attempt hit a transient provider or infrastructure
+         * failure is parked behind `audio_next_attempt_at` for minutes, so it
+         * is invisible to the eligibility read and then claimable again. Ending
+         * the run on the first empty batch reported those calls as drained and
+         * left them for the next scheduled run hours later. The drain now stops
+         * only on an explicit condition: nothing deferred, the host deadline, or
+         * deferred work due beyond this run's hand-over horizon.
+         */
+        let deferredDueInMs: number | null = null
+        if (summary.selected === 0) {
+          try {
+            deferredDueInMs =
+              (await candidates.deferredWorkDueInMs?.()) ?? null
+          } catch (error) {
+            const fatal = asReauditFatalError('claim', error)
+            consecutiveInspectionFaults += 1
+            const response = decideBatchFaultResponse({
+              category: fatal.category,
+              consecutiveFaults: consecutiveInspectionFaults,
+              maxConsecutiveFaults: MAX_CONSECUTIVE_BATCH_FAULTS,
+              remainingMs: deadline - Date.now(),
+              baseBackoffMs: pollMs,
+              maxBackoffMs: BATCH_FAULT_MAX_BACKOFF_MS,
+            })
+            process.stdout.write(
+              `${JSON.stringify({
+                event: 'billing_audit_queue_inspection_failed',
+                category: fatal.category,
+                willRetry: response.action === 'retry',
+              })}\n`,
+            )
+            if (response.action === 'stop') {
+              throw new Error(
+                `BILLING_AUDIT_QUEUE_INSPECTION_FAILED_${fatal.category}`,
+              )
+            }
+            const inspectionHeartbeat = startActiveHeartbeat({
+              intervalMs: ACTIVE_HEARTBEAT_INTERVAL_MS,
+              record: () => control.recordObservation({
+                system: 'billing',
+                observedState: 'running',
+              }),
+            })
+            try {
+              await wait(response.waitMs)
+            } finally {
+              await inspectionHeartbeat.stop()
+            }
+            continue
+          }
+          consecutiveInspectionFaults = 0
+        }
+        const continuation = decideDrainContinuation({
+          selected: summary.selected,
+          deferredDueInMs,
+          remainingMs: deadline - Date.now(),
+          maxWaitMs: pollMs,
+          horizonMs: DRAIN_DEFERRED_HORIZON_MS,
+        })
+        if (continuation.action === 'continue') continue
+        if (continuation.action === 'wait') {
+          /**
+           * Idle out the backoff on the control plane only. Re-running the
+           * candidate scan on every tick would turn a deliberate wait into a
+           * polling load on the very tables the drain is waiting to leave
+           * alone, so only liveness and operator intent are read here.
+           */
+          const dueAtMs = Date.now() + (deferredDueInMs ?? 0)
+          process.stdout.write(
+            `[audit-worker] eligible queue empty; waiting ${deferredDueInMs}ms for the next deferred retry\n`,
+          )
+          let sliceMs = continuation.waitMs
+          const deferredHeartbeat = startActiveHeartbeat({
+            intervalMs: ACTIVE_HEARTBEAT_INTERVAL_MS,
+            record: () => control.recordObservation({
+              system: 'billing',
+              observedState: 'running',
+            }),
+          })
+          try {
+            while (
+              !shutdownRequested &&
+              Date.now() < dueAtMs &&
+              Date.now() < deadline
+            ) {
+              let stillRunning = true
+              try {
+                stillRunning =
+                  (await control.getDesiredState('billing')) === 'running'
+              } catch {
+                // Retry operator intent on the next slice after a control-pool outage.
+              }
+              if (!stillRunning) break
+              await wait(sliceMs)
+              sliceMs = Math.max(
+                1,
+                Math.min(dueAtMs - Date.now(), pollMs, deadline - Date.now()),
+              )
+            }
+          } finally {
+            await deferredHeartbeat.stop()
+          }
+          // Shutdown, pause and the deadline are all decided by the loop head.
+          continue
+        }
         await control.recordObservation({
           system: 'billing',
           observedState: 'idle',
         })
         process.stdout.write(
-          `[audit-worker] drain finished; newly completed=${completed}\n`,
+          `[audit-worker] drain stopped (${continuation.reason}); newly completed=${completed}\n`,
         )
         publishNoCompletionFailure()
         break

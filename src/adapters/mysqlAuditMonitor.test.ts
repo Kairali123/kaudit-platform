@@ -447,12 +447,13 @@ test('rows mode can isolate each monitor table to one page query', async () => {
   }
 })
 
-test('pending rows expose the exact stored recording URL only', async () => {
-  const recordingUrl =
-    'https://recordings.example.test/exact%20object.ogg?stored=yes&part=1'
+test('no queue row carries a recording URL, and none is selected', async () => {
   const queueRow = {
     call_reference: 'synthetic-task-pending',
-    recording_url: recordingUrl,
+    // Present on the row shape a driver could hand back; it must still be
+    // dropped rather than mapped into the DTO.
+    recording_url:
+      'https://recordings.example.test/exact%20object.ogg?stored=yes&part=1',
     billing_period_date: '2026-08-01',
     processing_status: 'fetch_failed',
     attempt_count: 2,
@@ -472,9 +473,16 @@ test('pending rows expose the exact stored recording URL only', async () => {
 
   const data = await collectAuditMonitor(fake.pool, QUERY, 'rows', 'pending')
 
-  assert.equal(data.pendingRows[0]?.recordingUrl, recordingUrl)
+  assert.equal(data.pendingRows.length, 1)
+  assert.equal('recordingUrl' in (data.pendingRows[0] ?? {}), false)
   assert.equal('recordingUrl' in (data.noRecordingRows[0] ?? {}), false)
-  assert.match(fake.find('pending.processing_status') ?? '', /ca\.source_url AS recording_url/)
+  // The column is not even read: source evidence stays server-side, and the
+  // pending page read stays one column narrower.
+  const pendingSql = fake.find('pending.processing_status') ?? ''
+  assert.doesNotMatch(pendingSql, /source_url AS recording_url/)
+  assert.doesNotMatch(pendingSql, /pending\.recording_url/)
+  // The recording-backed scope itself is unchanged.
+  assert.match(pendingSql, /ca\.source_url IS NOT NULL/)
 })
 
 test('pending and no-recording pages use the existing period/id index order', async () => {

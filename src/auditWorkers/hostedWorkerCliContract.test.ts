@@ -47,8 +47,56 @@ test('both persistent workers finish the current item on termination', () => {
 
 test('bounded Billing Audit drains batches but cannot also watch forever', () => {
   assert.match(billingWorker, /watch && drain/)
-  assert.match(billingWorker, /summary\.selected > 0 && Date\.now\(\) < deadline/)
   assert.match(billingWorker, /observedState: 'idle'/)
+})
+
+test('a drain stops only on an explicit drained/deadline/hand-over condition', () => {
+  // An empty batch is not a drained queue: work parked behind a retry backoff
+  // is invisible to the eligibility read and claimable again minutes later.
+  assert.match(billingWorker, /decideDrainContinuation\(\{/)
+  assert.match(
+    billingWorker,
+    /let deferredDueInMs[\s\S]{0,200}candidates\.deferredWorkDueInMs/,
+  )
+  assert.match(billingWorker, /DRAIN_DEFERRED_HORIZON_MS/)
+  assert.match(billingWorker, /2 \* 60 \* 60_000/)
+  assert.match(billingWorker, /continuation\.action === 'wait'/)
+  // The wait idles on the control plane only: re-scanning candidates every
+  // tick would turn a deliberate backoff into a polling load, and skipping the
+  // heartbeat would make the monitor report a live worker as stale.
+  assert.match(billingWorker, /const deferredHeartbeat = startActiveHeartbeat/)
+  assert.match(billingWorker, /await deferredHeartbeat\.stop\(\)/)
+  assert.match(billingWorker, /billing_audit_queue_inspection_failed/)
+  assert.match(billingWorker, /const inspectionHeartbeat = startActiveHeartbeat/)
+  assert.match(
+    billingWorker,
+    /drain stopped \(\$\{continuation\.reason\}\)/,
+  )
+})
+
+test('a transient database fault does not end a bounded Billing drain', () => {
+  assert.match(billingWorker, /const retryBatchFaults = drain \|\| requestedMode/)
+  assert.match(billingWorker, /decideBatchFaultResponse\(\{/)
+  assert.match(billingWorker, /MAX_CONSECUTIVE_BATCH_FAULTS/)
+  assert.match(billingWorker, /consecutiveBatchFaults = 0/)
+  // A run that is going to retry stays honest about being alive and does not
+  // inflate the monitor's terminal-failure count.
+  assert.match(
+    billingWorker,
+    /faultResponse\.action === 'retry' \? 'running' : 'faulted'/,
+  )
+  assert.match(
+    billingWorker,
+    /faultResponse\.action === 'retry' \? \{\} : \{ failedDelta: 1 \}/,
+  )
+  // The fault publication must never replace the classified diagnosis with a
+  // second, unclassified failure from the same outage.
+  assert.match(
+    billingWorker,
+    /try \{\s*await control\.recordObservation\(\{[\s\S]{0,400}\}\)\s*\} catch \{/,
+  )
+  assert.match(billingWorker, /const faultHeartbeat = startActiveHeartbeat/)
+  assert.match(billingWorker, /await faultHeartbeat\.stop\(\)/)
 })
 
 test('bounded Call Audit polls idle until deadline and exits on pause or fault', () => {

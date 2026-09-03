@@ -299,10 +299,9 @@ export interface ManualReauditResumeReceipt {
   outcome: 'dispatched'
 }
 
+/** Queue rows carry no recording URL: source evidence never reaches a browser. */
 export interface AuditQueueRow {
   callReference: string
-  /** Exact database value; present only on recording-backed pending rows. */
-  recordingUrl?: string
   billingPeriodDate: string | null
   processingStatus: string
   attemptCount: number

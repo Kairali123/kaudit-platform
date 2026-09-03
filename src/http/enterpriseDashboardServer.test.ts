@@ -697,6 +697,79 @@ test('audit monitor is admin-only and excludes raw content fields', async () => 
   )
 })
 
+test('the audit monitor reads through the bounded billing pool', async () => {
+  /**
+   * The monitor's aggregates are the heaviest reads in the application. Running
+   * them on the unbounded pool let one slow aggregate hold a pooled connection
+   * past the request that asked for it, starving the session and audit reads
+   * that share the pool. They must honour the same per-statement bound as every
+   * other dashboard read.
+   */
+  const adminAccess: AccessRepository = {
+    ...access,
+    async findByEmail(email) {
+      return {
+        id: 'admin-1',
+        email,
+        status: 'active',
+        maxSensitivityTier: 'K3',
+        roles: ['admin'],
+      }
+    },
+  }
+  const unboundedStatements: string[] = []
+  const boundedStatements: string[] = []
+  const unboundedPool = {
+    async query(sql: string) {
+      unboundedStatements.push(sql)
+      return [[], []]
+    },
+  } as unknown as Pool
+  const boundedPool = {
+    async query(sql: string) {
+      boundedStatements.push(sql)
+      return [[], []]
+    },
+  } as unknown as Pool
+  const server = createEnterpriseDashboardServer({
+    config,
+    pool: unboundedPool,
+    billingReadPool: boundedPool,
+    access: adminAccess,
+    audit: {
+      async record() {},
+      async readiness() {
+        return true
+      },
+    },
+    verifier: null,
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address() as AddressInfo
+  try {
+    for (const query of [
+      'section=rows&table=pending',
+      'section=rows&table=audited',
+      'section=rows&table=no-recording',
+      'section=summary-core',
+      'section=summary-usage',
+      'section=summary-financial',
+    ]) {
+      const response = await fetch(
+        `http://127.0.0.1:${address.port}/api/v1/audits?${query}`,
+        { headers: { cookie: localCookie() } },
+      )
+      assert.equal(response.status, 200, query)
+    }
+    assert.ok(boundedStatements.length > 0)
+    assert.deepEqual(unboundedStatements, [])
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    )
+  }
+})
+
 test('audit monitor Task ID search is exact and invalid input never reaches SQL', async () => {
   const adminAccess: AccessRepository = {
     ...access,

@@ -58,10 +58,16 @@ export interface AuditMonitorRow {
   }
 }
 
+/**
+ * The queue DTO deliberately carries NO recording URL.
+ *
+ * A stored `source_url` is signed/provider evidence: it is what the server
+ * fetches to audit a call and it must not be handed to a browser. The column
+ * was exposed temporarily for one diagnosis; server-side recording processing
+ * reads `kaudit_call_artifact.source_url` directly and is unchanged.
+ */
 export interface AuditQueueRow {
   callReference: string
-  /** Exact stored source URL, exposed only for recording-backed pending rows. */
-  recordingUrl?: string
   billingPeriodDate: string | null
   processingStatus: string
   attemptCount: number
@@ -278,7 +284,6 @@ interface DataRow extends RowDataPacket {
 
 interface QueueDataRow extends RowDataPacket {
   call_reference: string
-  recording_url?: string | null
   billing_period_date: Date | string | null
   processing_status: string | null
   attempt_count: number | string | null
@@ -516,15 +521,9 @@ function windowPagination(
   }
 }
 
-function mapQueueRow(
-  row: QueueDataRow,
-  includeRecordingUrl = false,
-): AuditQueueRow {
+function mapQueueRow(row: QueueDataRow): AuditQueueRow {
   return {
     callReference: row.call_reference,
-    ...(includeRecordingUrl && typeof row.recording_url === 'string'
-      ? { recordingUrl: row.recording_url }
-      : {}),
     billingPeriodDate: isoDate(row.billing_period_date),
     processingStatus: row.processing_status || 'not_started',
     attemptCount: Number(row.attempt_count || 0),
@@ -1186,7 +1185,6 @@ export async function collectAuditMonitor(
              pending.logical_call_key
            ) AS call_reference,
            pending.billing_period_date,
-           pending.recording_url,
            pending.processing_status,
            pending.attempt_count,
            pending.evidence_sha256,
@@ -1217,7 +1215,6 @@ export async function collectAuditMonitor(
              c.id AS call_id,
              c.logical_call_key,
              c.billing_period_date,
-             ca.source_url AS recording_url,
              ca.audio_processing_status AS processing_status,
              ca.audio_attempt_count AS attempt_count,
              ca.sha256 AS evidence_sha256,
@@ -1402,7 +1399,7 @@ export async function collectAuditMonitor(
         },
       }
     }),
-    pendingRows: pendingRowResult.map((row) => mapQueueRow(row, true)),
+    pendingRows: pendingRowResult.map((row) => mapQueueRow(row)),
     noRecordingRows: noRecordingRowResult.map((row) => mapQueueRow(row)),
     pagination: section === 'rows'
       ? windowPagination(query.page, query.pageSize, fetchedRows.length)
