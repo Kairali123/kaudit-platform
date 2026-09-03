@@ -1265,14 +1265,13 @@ export async function collectAuditMonitor(
              AS vendor_billed_minutes,
            ROUND(connected.quantity_decimal * 1000)
              AS vendor_connected_duration_ms,
-           CAST(calculation.total_amount AS CHAR) AS auditor_amount,
+           CASE
+             WHEN calculation.id IS NULL THEN '0.00000000'
+             ELSE CAST(calculation.total_amount AS CHAR)
+           END AS auditor_amount,
            calculation.status AS billing_status,
            calculation.calculation_basis AS billing_basis,
-           CASE
-             WHEN calculation.calculation_basis = 'no_recording_zero'
-             THEN 'No Recording Found'
-             ELSE NULL
-           END AS audit_remark,
+           'No Recording Found' AS audit_remark,
            COALESCE(ca.audio_last_attempt_at, ca.created_at, c.created_at)
              AS last_activity_at
          FROM (

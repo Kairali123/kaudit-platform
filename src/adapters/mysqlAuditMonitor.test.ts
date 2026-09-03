@@ -739,6 +739,14 @@ test('no-recording pagination happens before optional metadata joins', async () 
     noRecordingQuery,
     /LEFT JOIN kaudit_billing_calculation[\s\S]*?LIMIT \? OFFSET \?/,
   )
+  assert.match(
+    noRecordingQuery,
+    /WHEN calculation\.id IS NULL THEN '0\.00000000'/,
+  )
+  assert.match(
+    noRecordingQuery,
+    /'No Recording Found' AS audit_remark/,
+  )
 })
 
 test('pending pagination probes indexed completion without materializing tables', async () => {
