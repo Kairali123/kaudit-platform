@@ -51,6 +51,94 @@ test('404 from the proxy is a fetch failure', async () => {
   if (!res.ok) assert.equal(res.status, 404)
 })
 
+test('follows a same-object signed URL returned by the proxy as JSON', async () => {
+  const audio = Buffer.from('OggS-signed-audio-bytes')
+  const signedUrl = `${S3URL}?X-Amz-Signature=synthetic`
+  const calledUrls: string[] = []
+  const fetchImpl = (async (input: unknown) => {
+    const url = String(input)
+    calledUrls.push(url)
+    if (calledUrls.length === 1) {
+      return new Response(JSON.stringify({ data: { signed_url: signedUrl } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(audio, {
+      status: 200,
+      headers: { 'content-type': 'audio/ogg' },
+    })
+  }) as typeof fetch
+  const fetcher = createProxyResolvingFetcher(PROXY, { fetchImpl })
+
+  const result = await fetcher.fetch(S3URL)
+
+  assert.equal(result.ok, true)
+  if (result.ok) assert.deepEqual(result.bytes, audio)
+  assert.deepEqual(calledUrls, [`${PROXY}?url=${S3URL}`, signedUrl])
+})
+
+test('accepts common top-level signed URL field names', async () => {
+  for (const field of ['url', 'signedUrl', 'download_url']) {
+    let calls = 0
+    const fetchImpl = (async () => {
+      calls += 1
+      if (calls === 1) {
+        return new Response(JSON.stringify({ [field]: `${S3URL}?token=x` }), {
+          status: 200,
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+        })
+      }
+      return new Response(Buffer.from('audio'), {
+        status: 200,
+        headers: { 'content-type': 'audio/mpeg' },
+      })
+    }) as typeof fetch
+
+    const result = await createProxyResolvingFetcher(PROXY, {
+      fetchImpl,
+    }).fetch(S3URL)
+    assert.equal(result.ok, true, field)
+  }
+})
+
+test('rejects a signed URL for a different host or object', async () => {
+  for (const signedUrl of [
+    'https://example.com/call_x.ogg?token=x',
+    `${new URL(S3URL).origin}/different.ogg?token=x`,
+  ]) {
+    const fetcher = createProxyResolvingFetcher(PROXY, {
+      fetchImpl: fakeFetch(
+        new Response(JSON.stringify({ url: signedUrl }), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    })
+
+    const result = await fetcher.fetch(S3URL)
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.equal(result.error, 'proxy_signed_url_rejected')
+  }
+})
+
+test('rejects malformed or unsupported proxy JSON', async () => {
+  for (const body of ['not-json', JSON.stringify({ data: { expires: 60 } })]) {
+    const fetcher = createProxyResolvingFetcher(PROXY, {
+      fetchImpl: fakeFetch(
+        new Response(body, {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        }),
+      ),
+    })
+
+    const result = await fetcher.fetch(S3URL)
+    assert.equal(result.ok, false)
+    if (!result.ok) assert.match(result.error, /^proxy_(json_invalid|signed_url_missing)$/)
+  }
+})
+
 test('a 200 that is not audio/* is rejected (error page, not evidence)', async () => {
   const fetchImpl = fakeFetch(
     new Response('<html>error</html>', { status: 200, headers: { 'content-type': 'text/html' } }),

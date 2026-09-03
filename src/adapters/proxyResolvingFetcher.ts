@@ -1,13 +1,58 @@
 import type { FetchResult, UrlFetcher } from '../storage/ports.ts'
 
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024
+const MAX_PROXY_JSON_BYTES = 64 * 1024
+
+const SIGNED_URL_FIELDS = [
+  'url',
+  'signedUrl',
+  'signed_url',
+  'downloadUrl',
+  'download_url',
+] as const
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
+  return value as Record<string, unknown>
+}
+
+function extractSignedUrl(payload: unknown): string | null {
+  const root = asRecord(payload)
+  if (!root) return null
+  const records = [root, asRecord(root.data)].filter(
+    (value): value is Record<string, unknown> => value !== null,
+  )
+  for (const record of records) {
+    for (const field of SIGNED_URL_FIELDS) {
+      const value = record[field]
+      if (typeof value === 'string' && value.trim()) return value.trim()
+    }
+  }
+  return null
+}
+
+function isSameSourceObject(sourceUrl: string, resolvedUrl: string): boolean {
+  try {
+    const source = new URL(sourceUrl)
+    const resolved = new URL(resolvedUrl)
+    return (
+      resolved.protocol === 'https:' &&
+      resolved.username === '' &&
+      resolved.password === '' &&
+      resolved.hostname.toLowerCase() === source.hostname.toLowerCase() &&
+      resolved.port === source.port &&
+      resolved.pathname === source.pathname
+    )
+  } catch {
+    return false
+  }
+}
 
 // Fetches recording bytes through the unpod.ai proxy.
 //
-// OBSERVED BEHAVIOR (verified 2026-07-24 against a live sample):
-//   GET {proxyBase}?url={s3ObjectUrl}  →  200, content-type audio/ogg, ~33 KB,
-//   streams the audio bytes DIRECTLY (redirects=0; no JSON, no signed-URL to follow,
-//   no second request). So one GET yields the bytes to hash.
+// The proxy has used two response contracts: direct audio bytes, and JSON containing
+// a short-lived signed URL. Both are supported without allowing the JSON response
+// to redirect fetching to a different object or host.
 //
 // The proxy is re-called FRESH on every verification — we store only the stable S3
 // object URL (in `source_url`), never a resolved/expiring signed URL.
@@ -45,18 +90,66 @@ export function createProxyResolvingFetcher(
         if (!res.ok) return { ok: false, status: res.status, error: `HTTP ${res.status}` }
 
         const contentType = (res.headers.get('content-type') || '').toLowerCase()
-        if (!contentType.startsWith('audio/')) {
-          return { ok: false, status: res.status, error: `non_audio_response type=${contentType || 'none'}` }
+        let audioResponse = res
+        if (contentType.startsWith('application/json')) {
+          const contentLength = Number(res.headers.get('content-length') || 0)
+          if (contentLength > MAX_PROXY_JSON_BYTES) {
+            return { ok: false, status: res.status, error: 'proxy_json_too_large' }
+          }
+          const jsonBytes = Buffer.from(await res.arrayBuffer())
+          if (jsonBytes.byteLength > MAX_PROXY_JSON_BYTES) {
+            return { ok: false, status: res.status, error: 'proxy_json_too_large' }
+          }
+          let payload: unknown
+          try {
+            payload = JSON.parse(jsonBytes.toString('utf8'))
+          } catch {
+            return { ok: false, status: res.status, error: 'proxy_json_invalid' }
+          }
+          const signedUrl = extractSignedUrl(payload)
+          if (!signedUrl) {
+            return { ok: false, status: res.status, error: 'proxy_signed_url_missing' }
+          }
+          if (!isSameSourceObject(s3ObjectUrl, signedUrl)) {
+            return { ok: false, status: res.status, error: 'proxy_signed_url_rejected' }
+          }
+          audioResponse = await doFetch(signedUrl, {
+            redirect: 'error',
+            signal: AbortSignal.timeout(120_000),
+          })
+          if (!audioResponse.ok) {
+            return {
+              ok: false,
+              status: audioResponse.status,
+              error: `HTTP ${audioResponse.status}`,
+            }
+          }
         }
 
-        const bytes = Buffer.from(await res.arrayBuffer())
+        const audioContentType = (
+          audioResponse.headers.get('content-type') || ''
+        ).toLowerCase()
+        if (!audioContentType.startsWith('audio/')) {
+          return {
+            ok: false,
+            status: audioResponse.status,
+            error: `non_audio_response type=${audioContentType || 'none'}`,
+          }
+        }
+
+        const bytes = Buffer.from(await audioResponse.arrayBuffer())
         if (bytes.byteLength > maxBytes) {
-          return { ok: false, status: res.status, error: `too_large ${bytes.byteLength}B` }
+          return { ok: false, status: audioResponse.status, error: `too_large ${bytes.byteLength}B` }
         }
         if (bytes.byteLength === 0) {
-          return { ok: false, status: res.status, error: 'empty_body' }
+          return { ok: false, status: audioResponse.status, error: 'empty_body' }
         }
-        return { ok: true, status: res.status, bytes, contentType }
+        return {
+          ok: true,
+          status: audioResponse.status,
+          bytes,
+          contentType: audioContentType,
+        }
       } catch (err) {
         return { ok: false, status: null, error: String((err as Error)?.message || err) }
       }

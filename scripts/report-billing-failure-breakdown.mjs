@@ -28,6 +28,28 @@ const WORKER_ERROR_CODES = [
   'BILLING_AUDIT_LOCK_BUSY',
 ]
 
+const FETCH_ERROR_CATEGORIES = [
+  'HTTP_400',
+  'HTTP_401',
+  'HTTP_403',
+  'HTTP_404',
+  'HTTP_408',
+  'HTTP_429',
+  'HTTP_OTHER_4XX',
+  'HTTP_5XX',
+  'NON_AUDIO_APPLICATION_JSON',
+  'NON_AUDIO_TEXT_HTML',
+  'NON_AUDIO_TEXT_PLAIN',
+  'NON_AUDIO_NO_TYPE',
+  'NON_AUDIO_OTHER',
+  'EMPTY_BODY',
+  'TOO_LARGE',
+  'TIMEOUT',
+  'NETWORK_FAILURE',
+  'NOT_APPLICABLE',
+  'OTHER_FETCH_FAILURE',
+]
+
 function required(name) {
   const value = process.env[name]?.trim()
   if (!value) throw new Error(`missing:${name}`)
@@ -138,6 +160,41 @@ try {
               WHEN audio_attempt_count <= 7 THEN '4-7'
               ELSE '8+'
             END AS attempt_bucket,
+            CASE
+              WHEN audio_processing_status <> 'fetch_failed'
+                THEN 'NOT_APPLICABLE'
+              WHEN audio_last_error = 'HTTP 400' THEN 'HTTP_400'
+              WHEN audio_last_error = 'HTTP 401' THEN 'HTTP_401'
+              WHEN audio_last_error = 'HTTP 403' THEN 'HTTP_403'
+              WHEN audio_last_error = 'HTTP 404' THEN 'HTTP_404'
+              WHEN audio_last_error = 'HTTP 408' THEN 'HTTP_408'
+              WHEN audio_last_error = 'HTTP 429' THEN 'HTTP_429'
+              WHEN audio_last_error REGEXP '^HTTP 4[0-9][0-9]$'
+                THEN 'HTTP_OTHER_4XX'
+              WHEN audio_last_error REGEXP '^HTTP 5[0-9][0-9]$'
+                THEN 'HTTP_5XX'
+              WHEN audio_last_error LIKE 'non_audio_response type=application/json%'
+                THEN 'NON_AUDIO_APPLICATION_JSON'
+              WHEN audio_last_error LIKE 'non_audio_response type=text/html%'
+                THEN 'NON_AUDIO_TEXT_HTML'
+              WHEN audio_last_error LIKE 'non_audio_response type=text/plain%'
+                THEN 'NON_AUDIO_TEXT_PLAIN'
+              WHEN audio_last_error = 'non_audio_response type=none'
+                THEN 'NON_AUDIO_NO_TYPE'
+              WHEN audio_last_error LIKE 'non_audio_response%'
+                THEN 'NON_AUDIO_OTHER'
+              WHEN audio_last_error = 'empty_body' THEN 'EMPTY_BODY'
+              WHEN audio_last_error LIKE 'too_large %' THEN 'TOO_LARGE'
+              WHEN LOWER(COALESCE(audio_last_error, '')) LIKE '%timeout%'
+                OR LOWER(COALESCE(audio_last_error, '')) LIKE '%timed out%'
+                OR LOWER(COALESCE(audio_last_error, '')) LIKE '%aborted%'
+                THEN 'TIMEOUT'
+              WHEN LOWER(COALESCE(audio_last_error, '')) LIKE '%fetch failed%'
+                OR LOWER(COALESCE(audio_last_error, '')) LIKE '%network%'
+                OR LOWER(COALESCE(audio_last_error, '')) LIKE '%connection%'
+                THEN 'NETWORK_FAILURE'
+              ELSE 'OTHER_FETCH_FAILURE'
+            END AS fetch_error_category,
             COUNT(DISTINCT call_id) AS calls
        FROM kaudit_call_artifact
       WHERE artifact_type = 'recording'
@@ -145,8 +202,8 @@ try {
         AND audio_processing_status IN (
           'fetch_failed', 'transcribe_failed', 'classify_failed', 'exhausted'
         )
-      GROUP BY audio_processing_status, attempt_bucket
-      ORDER BY audio_processing_status, attempt_bucket`,
+      GROUP BY audio_processing_status, attempt_bucket, fetch_error_category
+      ORDER BY audio_processing_status, attempt_bucket, fetch_error_category`,
   )
   const [manualRows] = await connection.query(
     `SELECT status,
@@ -232,6 +289,11 @@ try {
         row.attempt_bucket,
         ['1', '2-3', '4-7', '8+'],
         'other',
+      ),
+      fetchErrorCategory: allowlisted(
+        row.fetch_error_category,
+        FETCH_ERROR_CATEGORIES,
+        'OTHER_FETCH_FAILURE',
       ),
       calls: number(row.calls),
     })),
