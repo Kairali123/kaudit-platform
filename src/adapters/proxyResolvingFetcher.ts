@@ -3,34 +3,6 @@ import type { FetchResult, UrlFetcher } from '../storage/ports.ts'
 const DEFAULT_MAX_BYTES = 32 * 1024 * 1024
 const MAX_PROXY_JSON_BYTES = 64 * 1024
 
-const SIGNED_URL_FIELDS = [
-  'url',
-  'signedUrl',
-  'signed_url',
-  'downloadUrl',
-  'download_url',
-] as const
-
-function asRecord(value: unknown): Record<string, unknown> | null {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return null
-  return value as Record<string, unknown>
-}
-
-function extractSignedUrl(payload: unknown): string | null {
-  const root = asRecord(payload)
-  if (!root) return null
-  const records = [root, asRecord(root.data)].filter(
-    (value): value is Record<string, unknown> => value !== null,
-  )
-  for (const record of records) {
-    for (const field of SIGNED_URL_FIELDS) {
-      const value = record[field]
-      if (typeof value === 'string' && value.trim()) return value.trim()
-    }
-  }
-  return null
-}
-
 function isSameSourceObject(sourceUrl: string, resolvedUrl: string): boolean {
   try {
     const source = new URL(sourceUrl)
@@ -45,6 +17,38 @@ function isSameSourceObject(sourceUrl: string, resolvedUrl: string): boolean {
     )
   } catch {
     return false
+  }
+}
+
+function extractSignedUrl(
+  payload: unknown,
+  sourceUrl: string,
+): { url: string | null; sawHttpsUrl: boolean } {
+  const matches: string[] = []
+  let sawHttpsUrl = false
+  let visited = 0
+
+  const visit = (value: unknown, depth: number): void => {
+    if (depth > 4 || visited >= 100) return
+    visited += 1
+    if (typeof value === 'string') {
+      const candidate = value.trim()
+      if (!candidate.startsWith('https://')) return
+      sawHttpsUrl = true
+      if (isSameSourceObject(sourceUrl, candidate)) matches.push(candidate)
+      return
+    }
+    if (!value || typeof value !== 'object') return
+    for (const nested of Object.values(value)) visit(nested, depth + 1)
+  }
+
+  visit(payload, 0)
+  return {
+    // Prefer a query-bearing match over an echoed stable object URL.
+    url: matches.find((value) => new URL(value).search.length > 0)
+      ?? matches[0]
+      ?? null,
+    sawHttpsUrl,
   }
 }
 
@@ -106,12 +110,16 @@ export function createProxyResolvingFetcher(
           } catch {
             return { ok: false, status: res.status, error: 'proxy_json_invalid' }
           }
-          const signedUrl = extractSignedUrl(payload)
+          const extracted = extractSignedUrl(payload, s3ObjectUrl)
+          const signedUrl = extracted.url
           if (!signedUrl) {
-            return { ok: false, status: res.status, error: 'proxy_signed_url_missing' }
-          }
-          if (!isSameSourceObject(s3ObjectUrl, signedUrl)) {
-            return { ok: false, status: res.status, error: 'proxy_signed_url_rejected' }
+            return {
+              ok: false,
+              status: res.status,
+              error: extracted.sawHttpsUrl
+                ? 'proxy_signed_url_rejected'
+                : 'proxy_signed_url_missing',
+            }
           }
           audioResponse = await doFetch(signedUrl, {
             redirect: 'error',

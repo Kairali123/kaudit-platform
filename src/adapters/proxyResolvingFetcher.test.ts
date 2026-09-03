@@ -102,6 +102,61 @@ test('accepts common top-level signed URL field names', async () => {
   }
 })
 
+test('finds a signed URL in a string, array, or unfamiliar nested field', async () => {
+  const signedUrl = `${S3URL}?X-Amz-Signature=synthetic`
+  const payloads = [
+    signedUrl,
+    [null, { value: signedUrl }],
+    { result: { media: { temporaryDownload: signedUrl } } },
+  ]
+  for (const payload of payloads) {
+    let calls = 0
+    const fetchImpl = (async () => {
+      calls += 1
+      if (calls === 1) {
+        return new Response(JSON.stringify(payload), {
+          status: 200,
+          headers: { 'content-type': 'application/json' },
+        })
+      }
+      return new Response(Buffer.from('audio'), {
+        status: 200,
+        headers: { 'content-type': 'audio/ogg' },
+      })
+    }) as typeof fetch
+
+    const result = await createProxyResolvingFetcher(PROXY, {
+      fetchImpl,
+    }).fetch(S3URL)
+    assert.equal(result.ok, true)
+  }
+})
+
+test('prefers a signed match when the JSON also echoes the stable URL', async () => {
+  const signedUrl = `${S3URL}?X-Amz-Signature=synthetic`
+  const calledUrls: string[] = []
+  const fetchImpl = (async (input: unknown) => {
+    calledUrls.push(String(input))
+    if (calledUrls.length === 1) {
+      return new Response(JSON.stringify({ source: S3URL, value: signedUrl }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      })
+    }
+    return new Response(Buffer.from('audio'), {
+      status: 200,
+      headers: { 'content-type': 'audio/ogg' },
+    })
+  }) as typeof fetch
+
+  const result = await createProxyResolvingFetcher(PROXY, {
+    fetchImpl,
+  }).fetch(S3URL)
+
+  assert.equal(result.ok, true)
+  assert.equal(calledUrls[1], signedUrl)
+})
+
 test('rejects a signed URL for a different host or object', async () => {
   for (const signedUrl of [
     'https://example.com/call_x.ogg?token=x',
