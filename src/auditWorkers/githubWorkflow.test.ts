@@ -97,6 +97,15 @@ test('billing read indexes have a separately confirmed supervised mode', () => {
   )
 })
 
+test('June signed-URL retry repair is exact, guarded, and model-free', () => {
+  assert.match(workflow, /- repair-june-signed-url-retries/)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "repair-june-signed-url-retries"[\s\S]{0,260}MIGRATION_CONFIRMATION_INPUT" != "RESET_JUNE_SIGNED_URL_RETRIES"[\s\S]{0,360}unset OPENAI_API_KEY[\s\S]{0,360}KAUDIT_RETRY_REPAIR_CONFIRM=RESET_JUNE_SIGNED_URL_RETRIES/,
+  )
+  assert.match(workflow, /node scripts\/repair-june-signed-url-retries\.mjs/)
+})
+
 test('reusable workflow callers cannot route unknown modes into a worker', () => {
   assert.match(
     workflow,
