@@ -54,6 +54,7 @@ on:
           - reset-june-pending-reviews
           - diagnose-june-bill-audit
           - diagnose-rate-cards
+          - diagnose-billing-write-schema
           - publish-rate-card
           - finalize-june-bill-audit
           - recover-june-canary
@@ -207,6 +208,15 @@ jobs:
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
               node scripts/publish-kserve-rate-card.mjs
+            elif [[ "$AUDIT_MODE" == "diagnose-billing-write-schema" ]]; then
+              # Read-only column shapes for the tables a fallback writes. The
+              # base billing schema predates this repo's migrations, so widths
+              # are otherwise only learned one failed write at a time.
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              node scripts/report-billing-write-schema.mjs
             elif [[ "$AUDIT_MODE" == "publish-rate-card" ]]; then
               # Records a rate-card approval an accountable owner has made.
               # The approver is supplied deliberately and never defaulted: an
