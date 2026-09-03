@@ -1687,7 +1687,14 @@ async function apiResponse(
     const section = rawSection == null || rawSection === ''
       ? 'all'
       : rawSection
-    if (!['all', 'summary', 'rows'].includes(section)) {
+    if (![
+      'all',
+      'summary',
+      'summary-core',
+      'summary-usage',
+      'summary-financial',
+      'rows',
+    ].includes(section)) {
       throw Object.assign(new Error('Audit monitor section is invalid'), {
         code: 'INVALID_AUDIT_QUERY',
         status: 400,
@@ -1719,7 +1726,13 @@ async function apiResponse(
       taskId,
       periodStart: period?.start ?? null,
       periodEnd: period?.end ?? null,
-    }, section as 'all' | 'summary' | 'rows', rowTable as
+    }, section as
+      | 'all'
+      | 'summary'
+      | 'summary-core'
+      | 'summary-usage'
+      | 'summary-financial'
+      | 'rows', rowTable as
       | 'all'
       | 'audited'
       | 'pending'
@@ -2020,7 +2033,7 @@ function cacheTtlMs(url: URL): number {
     // remains near-live, while costly usage/financial aggregates are stable
     // enough to reuse for a minute. The cache key still includes every filter.
     const section = url.searchParams.get('section')
-    if (section === 'summary') return 60_000
+    if (section?.startsWith('summary')) return 60_000
     if (section === 'rows') return 30_000
     return 5_000
   }

@@ -28,7 +28,8 @@ test('audit monitor diagnostic fails closed with bounded output', () => {
 })
 
 test('audit monitor diagnostic exposes only aggregate allowlisted fields', () => {
-  assert.match(command, /data: result\.summary\.totalCalls > 0 \? 'present' : 'absent'/)
+  assert.match(command, /data: core\.summary\.totalCalls > 0 \? 'present' : 'absent'/)
+  assert.match(command, /queryStage\(String\(args\[0\]\)\)/)
   assert.match(command, /error instanceof MonitorQueryFailure \? error\.stage : 'runtime'/)
   assert.match(command, /operation: 'audit-monitor-query'/)
   assert.doesNotMatch(command, /console\.(?:error|log)\([^\n]*error/i)

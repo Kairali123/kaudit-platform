@@ -1,20 +1,30 @@
 import mysql from 'mysql2/promise'
 import { collectAuditMonitor } from '../src/adapters/mysqlAuditMonitor.ts'
 
-const QUERY_STAGES = [
-  'summary',
-  'reaudit-count',
-  'audited-count',
-  'categories',
-  'languages',
-  'usage-summary',
-  'usage-cost',
-  'financial-summary',
-  'audited-page',
-  'pending-page',
-  'no-recording-page',
-  'reaudit-status',
-]
+function queryStage(sql) {
+  if (sql.includes('COUNT(*) AS total_calls')) return 'summary-core'
+  if (sql.includes("engine_version = 'kairali-independent-reaudit")) {
+    return 'reaudit-count'
+  }
+  if (sql.includes('SELECT DISTINCT c.canonical_outcome_code AS value')) {
+    return 'categories'
+  }
+  if (sql.includes("LOWER(COALESCE(t.language, 'unknown')) AS value")) {
+    return 'languages'
+  }
+  if (sql.includes('COUNT(DISTINCT usage_event.audit_run_id)')) {
+    return 'usage-summary'
+  }
+  if (sql.includes('AS auditor_final_charge')) return 'financial-summary'
+  if (sql.includes('c.id AS internal_call_id')) return 'audited-page'
+  if (sql.includes('pending.processing_status')) return 'pending-page'
+  if (sql.includes("'no_recording'")) return 'no-recording-page'
+  if (sql.includes('kaudit_billing_reaudit_item')) return 'reaudit-status'
+  if (sql.includes('SELECT COUNT(DISTINCT c.id) AS n')) {
+    return 'audited-count'
+  }
+  return 'unexpected-query'
+}
 
 class MonitorQueryFailure extends Error {
   constructor(stage) {
@@ -86,13 +96,11 @@ const startedAt = Date.now()
 try {
   const selectedPeriod = period(required('KAUDIT_DIAGNOSTIC_MONTH'))
   pool = mysql.createPool(connectionOptions())
-  let queryIndex = 0
   const diagnosticPool = new Proxy(pool, {
     get(target, property) {
       if (property === 'query') {
         return async (...args) => {
-          const stage = QUERY_STAGES[queryIndex] ?? 'unexpected-query'
-          queryIndex += 1
+          const stage = queryStage(String(args[0]))
           const queryStartedAt = Date.now()
           try {
             const result = await target.query(...args)
@@ -118,7 +126,7 @@ try {
       return typeof value === 'function' ? value.bind(target) : value
     },
   })
-  const result = await collectAuditMonitor(diagnosticPool, {
+  const query = {
     page: 1,
     pendingPage: 1,
     noRecordingPage: 1,
@@ -127,11 +135,14 @@ try {
     language: null,
     periodStart: selectedPeriod.start,
     periodEnd: selectedPeriod.end,
-  })
+  }
+  const core = await collectAuditMonitor(diagnosticPool, query, 'summary-core')
+  await collectAuditMonitor(diagnosticPool, query, 'summary-usage')
+  await collectAuditMonitor(diagnosticPool, query, 'summary-financial')
   console.log(JSON.stringify({
     operation: 'audit-monitor-health',
     result: 'ok',
-    data: result.summary.totalCalls > 0 ? 'present' : 'absent',
+    data: core.summary.totalCalls > 0 ? 'present' : 'absent',
     elapsed: elapsedBucket(startedAt),
   }))
 } catch (error) {

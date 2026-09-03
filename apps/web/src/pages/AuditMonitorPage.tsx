@@ -34,9 +34,11 @@ import {
   MANUAL_REAUDIT_ROUTE,
   MANUAL_REAUDIT_RESUME_ROUTE,
   MAX_MANUAL_REAUDIT_CALLS,
+  type AuditMonitorCoreSummaryData,
+  type AuditMonitorFinancialSummaryData,
   type AuditMonitorRowsData,
   type AuditMonitorRow,
-  type AuditMonitorSummaryData,
+  type AuditMonitorUsageSummaryData,
   type AuditPagination,
   type ManualReauditReceipt,
   type ManualReauditResumeReceipt,
@@ -66,6 +68,15 @@ function date(value: string | null): string {
         month: 'short',
         year: 'numeric',
       })
+}
+
+function recordingHref(value: string): string | null {
+  try {
+    const parsed = new URL(value)
+    return parsed.protocol === 'https:' ? value : null
+  } catch {
+    return null
+  }
 }
 
 function rowStatus(row: AuditMonitorRow): string {
@@ -250,8 +261,7 @@ export function AuditMonitorPage() {
     ...(language ? { language } : {}),
     ...(taskId ? { taskId } : {}),
   }).toString()
-  const summaryQueryString = new URLSearchParams({
-    section: 'summary',
+  const summaryFilterQueryString = new URLSearchParams({
     ...(category ? { category } : {}),
     ...(language ? { language } : {}),
     ...(taskId ? { taskId } : {}),
@@ -315,26 +325,65 @@ export function AuditMonitorPage() {
     placeholderData: keepPreviousData,
     refetchInterval: 60_000,
   })
-  const summaryQuery = useQuery({
+  const summaryEnabled =
+    auditedRowsQuery.isFetched &&
+    pendingRowsQuery.isFetched &&
+    noRecordingRowsQuery.isFetched
+  const coreSummaryQuery = useQuery({
     queryKey: [
       'audit-monitor',
-      'summary',
+      'summary-core',
       period.month,
       category,
       language,
       taskId,
     ],
     queryFn: () =>
-      getJson<AuditMonitorSummaryData>(
-        period.apiPath(`/api/v1/audits?${summaryQueryString}`),
+      getJson<AuditMonitorCoreSummaryData>(
+        period.apiPath(
+          `/api/v1/audits?section=summary-core&${summaryFilterQueryString}`,
+        ),
       ),
-    // Start after each table has made its first attempt. `isFetched` remains
-    // true during later polling, so one slow/retrying table cannot starve the
-    // KPI request forever as the three one-minute refresh windows overlap.
-    enabled:
-      auditedRowsQuery.isFetched &&
-      pendingRowsQuery.isFetched &&
-      noRecordingRowsQuery.isFetched,
+    // Start after each table has made its first attempt. The three summaries
+    // then start in priority order so the database is not asked to run its
+    // heaviest monitor aggregates at the same time.
+    enabled: summaryEnabled,
+    refetchInterval: 60_000,
+  })
+  const usageSummaryQuery = useQuery({
+    queryKey: [
+      'audit-monitor',
+      'summary-usage',
+      period.month,
+      category,
+      language,
+      taskId,
+    ],
+    queryFn: () =>
+      getJson<AuditMonitorUsageSummaryData>(
+        period.apiPath(
+          `/api/v1/audits?section=summary-usage&${summaryFilterQueryString}`,
+        ),
+      ),
+    enabled: coreSummaryQuery.isFetched,
+    refetchInterval: 60_000,
+  })
+  const financialSummaryQuery = useQuery({
+    queryKey: [
+      'audit-monitor',
+      'summary-financial',
+      period.month,
+      category,
+      language,
+      taskId,
+    ],
+    queryFn: () =>
+      getJson<AuditMonitorFinancialSummaryData>(
+        period.apiPath(
+          `/api/v1/audits?section=summary-financial&${summaryFilterQueryString}`,
+        ),
+      ),
+    enabled: usageSummaryQuery.isFetched,
     refetchInterval: 60_000,
   })
   const [selected, setSelected] = useState<string[]>([])
@@ -403,46 +452,46 @@ export function AuditMonitorPage() {
     resetPages()
   }
   const tiles = useMemo<Tile[]>(() => {
-    const summary = summaryQuery.data?.summary
-    if (!summary) return []
-    const financials = summary.auditedFinancials
-    return [
-      {
+    const summary = coreSummaryQuery.data?.summary
+    const usage = usageSummaryQuery.data
+    const financials = financialSummaryQuery.data?.auditedFinancials
+    const result: Tile[] = []
+    if (summary) {
+      result.push({
         label: 'AI-audited calls',
         value: summary.aiAuditedCalls.toLocaleString('en-IN'),
         sub: `${summary.auditCoveragePercent}% of ${summary.totalCalls.toLocaleString('en-IN')} ingested`,
         status: summary.aiAuditedCalls > 0 ? 'good' : 'pending',
-      },
-      {
+      }, {
         label: 'Eligible, still pending',
         value: summary.pendingEligibleCalls.toLocaleString('en-IN'),
         sub: `${summary.recordingAvailableCalls.toLocaleString('en-IN')} recording URLs · ${summary.processingFailureCalls.toLocaleString('en-IN')} processing failures`,
         status: summary.pendingEligibleCalls > 0 ? 'warn' : 'good',
-      },
-      {
+      }, {
         label: 'No recording',
         value: summary.noRecordingCalls.toLocaleString('en-IN'),
         sub: 'Cannot be independently AI-audited',
         status: summary.noRecordingCalls > 0 ? 'warn' : 'good',
-      },
-      {
+      })
+    }
+    if (usage) {
+      result.push({
         label: 'GPT tokens recorded',
-        value: summary.aiUsage.historicalUsageRecorded
-          ? summary.aiUsage.gptTotalTokens.toLocaleString('en-IN')
+        value: usage.aiUsage.historicalUsageRecorded
+          ? usage.aiUsage.gptTotalTokens.toLocaleString('en-IN')
           : 'Not recorded',
-        sub: summary.aiUsage.historicalUsageRecorded
-          ? `${summary.aiUsage.gptInputTokens.toLocaleString('en-IN')} input · ${summary.aiUsage.gptOutputTokens.toLocaleString('en-IN')} output · ${summary.aiUsage.trackedAuditRuns.toLocaleString('en-IN')} audits`
+        sub: usage.aiUsage.historicalUsageRecorded
+          ? `${usage.aiUsage.gptInputTokens.toLocaleString('en-IN')} input · ${usage.aiUsage.gptOutputTokens.toLocaleString('en-IN')} output · ${usage.aiUsage.trackedAuditRuns.toLocaleString('en-IN')} audits`
           : 'Tracking begins after migration 0007; legacy usage cannot be reconstructed exactly',
         status:
-          summary.aiUsage.historicalUsageRecorded
+          usage.aiUsage.historicalUsageRecorded
             ? 'good'
             : 'pending',
-      },
-      {
+      }, {
         label: 'Whisper audio processed',
-        value: summary.aiUsage.historicalUsageRecorded
+        value: usage.aiUsage.historicalUsageRecorded
           ? `${(
-              Number(summary.aiUsage.whisperAudioSeconds) / 60
+              Number(usage.aiUsage.whisperAudioSeconds) / 60
             ).toLocaleString('en-IN', {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
@@ -451,30 +500,38 @@ export function AuditMonitorPage() {
         sub:
           'Whisper-1 reports billed audio duration, not text tokens',
         status:
-          summary.aiUsage.historicalUsageRecorded
+          usage.aiUsage.historicalUsageRecorded
             ? 'good'
             : 'pending',
-      },
-      {
+      })
+    }
+    if (usage && financials) {
+      const untrackedCalls = Math.max(
+        0,
+        financials.scopedAuditedCalls - usage.aiSpend.aiSpendTrackedCalls,
+      )
+      result.push({
         label: 'Estimated AI spend',
-        value: usd(financials.estimatedAiSpendUsd),
+        value: usd(usage.aiSpend.estimatedAiSpendUsd),
         sub:
-          `${financials.aiSpendTrackedCalls.toLocaleString('en-IN')} of ` +
+          `${usage.aiSpend.aiSpendTrackedCalls.toLocaleString('en-IN')} of ` +
           `${financials.scopedAuditedCalls.toLocaleString('en-IN')} audited calls tracked` +
-          (financials.aiSpendUntrackedCalls > 0
-            ? ` · ${financials.aiSpendUntrackedCalls.toLocaleString('en-IN')} legacy costs unavailable`
+          (untrackedCalls > 0
+            ? ` · ${untrackedCalls.toLocaleString('en-IN')} legacy costs unavailable`
             : '') +
-          (financials.unpricedAiUsageRows > 0
-            ? ` · ${financials.unpricedAiUsageRows.toLocaleString('en-IN')} unpriced model rows`
+          (usage.aiSpend.unpricedAiUsageRows > 0
+            ? ` · ${usage.aiSpend.unpricedAiUsageRows.toLocaleString('en-IN')} unpriced model rows`
             : '') +
-          ` · ${financials.aiSpendPricingBasis}`,
+          ` · ${usage.aiSpend.aiSpendPricingBasis}`,
         status:
-          financials.aiSpendUntrackedCalls === 0 &&
-          financials.unpricedAiUsageRows === 0
+          untrackedCalls === 0 &&
+          usage.aiSpend.unpricedAiUsageRows === 0
             ? 'good'
             : 'warn',
-      },
-      {
+      })
+    }
+    if (financials) {
+      result.push({
         label: 'KServe charge · audited calls',
         value: money(financials.kserveChargeInr),
         sub:
@@ -485,8 +542,7 @@ export function AuditMonitorPage() {
           financials.scopedAuditedCalls
             ? 'neutral'
             : 'warn',
-      },
-      {
+      }, {
         label: 'Auditor capped amount · audited calls',
         value: money(financials.auditorFinalChargeInr),
         sub:
@@ -497,9 +553,14 @@ export function AuditMonitorPage() {
           financials.auditorUnfinalizedCalls === 0
             ? 'good'
             : 'warn',
-      },
-    ]
-  }, [summaryQuery.data])
+      })
+    }
+    return result
+  }, [
+    coreSummaryQuery.data,
+    financialSummaryQuery.data,
+    usageSummaryQuery.data,
+  ])
 
   const pageChrome = (
     <>
@@ -527,16 +588,20 @@ export function AuditMonitorPage() {
   const data = auditedRowsQuery.data
   const pendingData = pendingRowsQuery.data
   const noRecordingData = noRecordingRowsQuery.data
-  const summaryData = summaryQuery.data
+  const summaryData = coreSummaryQuery.data
+  const financialSummaryData = financialSummaryQuery.data
   const generatedAt =
     data?.generatedAt ??
     pendingData?.generatedAt ??
     noRecordingData?.generatedAt ??
-    summaryData?.generatedAt
-  const totalsFinal = summaryData != null
+    summaryData?.generatedAt ??
+    usageSummaryQuery.data?.generatedAt ??
+    financialSummaryData?.generatedAt
+  const queueTotalsFinal = summaryData != null
+  const auditedTotalFinal = financialSummaryData != null
   const auditedPagination = withTotalRows(
     data?.pagination,
-    summaryData?.summary.auditedFinancials.scopedAuditedCalls,
+    financialSummaryData?.auditedFinancials.scopedAuditedCalls,
     page,
   )
   const pendingPagination = withTotalRows(
@@ -574,12 +639,20 @@ export function AuditMonitorPage() {
   return (
     <>
       {pageChrome}
-      {summaryQuery.isLoading && <LoadingState />}
-      {summaryQuery.error && <ErrorState
-        error={summaryQuery.error}
-        retry={() => void summaryQuery.refetch()}
+      {coreSummaryQuery.isLoading && <LoadingState />}
+      {coreSummaryQuery.error && <ErrorState
+        error={coreSummaryQuery.error}
+        retry={() => void coreSummaryQuery.refetch()}
       />}
-      {summaryData && <MetricGrid tiles={tiles} />}
+      {usageSummaryQuery.error && <ErrorState
+        error={usageSummaryQuery.error}
+        retry={() => void usageSummaryQuery.refetch()}
+      />}
+      {financialSummaryQuery.error && <ErrorState
+        error={financialSummaryQuery.error}
+        retry={() => void financialSummaryQuery.refetch()}
+      />}
+      {tiles.length > 0 && <MetricGrid tiles={tiles} />}
 
       <section className="content-section audit-control-bar">
         <div>
@@ -744,7 +817,7 @@ export function AuditMonitorPage() {
             <h2>AI output inspection</h2>
           </div>
           <span className="soft-chip">
-            {resultCount(auditedPagination.totalRows, totalsFinal)} results
+            {resultCount(auditedPagination.totalRows, auditedTotalFinal)} results
           </span>
         </div>
         {auditedRowsQuery.isLoading && <LoadingState />}
@@ -897,7 +970,7 @@ export function AuditMonitorPage() {
             <h2><Clock3 size={19} aria-hidden /> Recording-backed queue</h2>
           </div>
           <span className="soft-chip">
-            {resultCount(pendingPagination.totalRows, totalsFinal)} pending
+            {resultCount(pendingPagination.totalRows, queueTotalsFinal)} pending
           </span>
         </div>
         {pendingRowsQuery.isLoading && <LoadingState />}
@@ -910,6 +983,7 @@ export function AuditMonitorPage() {
             <thead>
               <tr>
                 <th>Task / call reference</th>
+                <th>Recording URL</th>
                 <th>Bill month</th>
                 <th>Processing state</th>
                 <th>Attempts</th>
@@ -923,6 +997,19 @@ export function AuditMonitorPage() {
               {(pendingData?.pendingRows ?? []).map((row) => (
                 <tr key={row.callReference}>
                   <td><code>{row.callReference}</code></td>
+                  <td className="recording-url-cell">
+                    {row.recordingUrl && recordingHref(row.recordingUrl) ? (
+                      <a
+                        href={row.recordingUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        {row.recordingUrl}
+                      </a>
+                    ) : (
+                      <code>{row.recordingUrl || '—'}</code>
+                    )}
+                  </td>
                   <td>{date(row.billingPeriodDate)}</td>
                   <td>
                     <span className="status-badge audit_pending">
@@ -942,7 +1029,7 @@ export function AuditMonitorPage() {
               {pendingRowsQuery.isSuccess &&
                 pendingData?.pendingRows.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="table-empty">
+                  <td colSpan={9} className="table-empty">
                     {taskId
                       ? 'No pending call matches this Task ID in the selected bill month.'
                       : 'No recording-backed calls are waiting for audit.'}
@@ -965,7 +1052,7 @@ export function AuditMonitorPage() {
             <h2><FileQuestion size={19} aria-hidden /> Cannot be independently audited</h2>
           </div>
           <span className="soft-chip">
-            {resultCount(noRecordingPagination.totalRows, totalsFinal)} calls
+            {resultCount(noRecordingPagination.totalRows, queueTotalsFinal)} calls
           </span>
         </div>
         <Notice tone="warning" title="KServe supplied no recording evidence">

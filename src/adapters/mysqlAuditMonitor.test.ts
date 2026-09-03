@@ -465,6 +465,35 @@ test('rows mode can isolate each monitor table to one page query', async () => {
   }
 })
 
+test('pending rows expose the exact stored recording URL only', async () => {
+  const recordingUrl =
+    'https://recordings.example.test/exact%20object.ogg?stored=yes&part=1'
+  const queueRow = {
+    call_reference: 'synthetic-task-pending',
+    recording_url: recordingUrl,
+    billing_period_date: '2026-08-01',
+    processing_status: 'fetch_failed',
+    attempt_count: 2,
+    evidence_sha256: null,
+    last_verified_at: null,
+    vendor_billed_minutes: '1.00',
+    vendor_connected_duration_ms: 60_000,
+    auditor_amount: null,
+    billing_status: null,
+    billing_basis: null,
+    last_activity_at: '2026-08-02 00:00:00',
+  }
+  const fake = fakePool([
+    { match: 'pending.processing_status', rows: [queueRow] },
+  ])
+
+  const data = await collectAuditMonitor(fake.pool, QUERY, 'rows', 'pending')
+
+  assert.equal(data.pendingRows[0]?.recordingUrl, recordingUrl)
+  assert.equal('recordingUrl' in (data.noRecordingRows[0] ?? {}), false)
+  assert.match(fake.find('pending.processing_status') ?? '', /ca\.source_url AS recording_url/)
+})
+
 test('pending and no-recording pages use the existing period/id index order', async () => {
   for (const table of ['pending', 'no-recording'] as const) {
     const fake = fakePool([])
@@ -498,6 +527,45 @@ test('summary mode omits all paginated row queries', async () => {
   assert.doesNotMatch(sql, /LIMIT \? OFFSET \?/)
   assert.doesNotMatch(sql, /c\.id AS internal_call_id/)
   assert.doesNotMatch(sql, /kaudit_billing_reaudit_item/)
+})
+
+test('split summary modes isolate core, usage, and financial work', async () => {
+  const core = fakePool([])
+  const coreData = await collectAuditMonitor(core.pool, QUERY, 'summary-core')
+  assert.equal(coreData.summary.totalCalls, 0)
+  assert.equal('aiUsage' in coreData.summary, false)
+  assert.doesNotMatch(core.statements.join('\n'), /kaudit_ai_usage_event/)
+  assert.doesNotMatch(core.statements.join('\n'), /auditor_final_charge/)
+
+  const usage = fakePool([])
+  const usageData = await collectAuditMonitor(
+    usage.pool,
+    QUERY,
+    'summary-usage',
+  )
+  assert.equal(usageData.aiUsage.trackedAuditRuns, 0)
+  assert.equal(usage.statements.length, 1)
+  assert.match(usage.statements[0] ?? '', /kaudit_ai_usage_event/)
+
+  const financial = fakePool([
+    { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },
+  ])
+  const financialData = await collectAuditMonitor(
+    financial.pool,
+    QUERY,
+    'summary-financial',
+  )
+  assert.equal(financialData.auditedFinancials.scopedAuditedCalls, 3)
+  assert.equal(financial.statements.length, 1)
+  assert.match(
+    financial.statements[0] ?? '',
+    /kaudit_call c FORCE INDEX \(idx_call_period_category_started\)/,
+  )
+  assert.match(
+    financial.statements[0] ?? '',
+    /STRAIGHT_JOIN kaudit_call_artifact ca/,
+  )
+  assert.doesNotMatch(financial.statements[0] ?? '', /JOIN kaudit_transcript t/)
 })
 
 test('summary usage totals and per-model costs share one rollup scan', async () => {

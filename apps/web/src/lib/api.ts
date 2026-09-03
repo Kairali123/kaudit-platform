@@ -301,6 +301,8 @@ export interface ManualReauditResumeReceipt {
 
 export interface AuditQueueRow {
   callReference: string
+  /** Exact database value; present only on recording-backed pending rows. */
+  recordingUrl?: string
   billingPeriodDate: string | null
   processingStatus: string
   attemptCount: number
@@ -379,6 +381,43 @@ export type AuditMonitorSummaryData = Pick<
   AuditMonitorData,
   'generatedAt' | 'summary' | 'filters' | 'authority'
 >
+
+type AuditMonitorSummary = AuditMonitorData['summary']
+
+export interface AuditMonitorCoreSummaryData {
+  generatedAt: string
+  summary: Omit<AuditMonitorSummary, 'aiUsage' | 'auditedFinancials'>
+  filters: AuditMonitorData['filters']
+  authority: 'automated'
+}
+
+export interface AuditMonitorUsageSummaryData {
+  generatedAt: string
+  aiUsage: AuditMonitorSummary['aiUsage']
+  aiSpend: Pick<
+    AuditMonitorSummary['auditedFinancials'],
+    | 'aiSpendTrackedCalls'
+    | 'estimatedAiSpendUsd'
+    | 'aiSpendPricingVersion'
+    | 'aiSpendPricingBasis'
+    | 'unpricedAiUsageRows'
+  >
+  authority: 'automated'
+}
+
+export interface AuditMonitorFinancialSummaryData {
+  generatedAt: string
+  auditedFinancials: Pick<
+    AuditMonitorSummary['auditedFinancials'],
+    | 'scopedAuditedCalls'
+    | 'kservePricedCalls'
+    | 'kserveChargeInr'
+    | 'auditorFinalPricedCalls'
+    | 'auditorUnfinalizedCalls'
+    | 'auditorFinalChargeInr'
+  >
+  authority: 'automated'
+}
 
 export type AuditMonitorRowsData = Pick<
   AuditMonitorData,

@@ -61,6 +61,8 @@ export interface AuditMonitorRow {
 
 export interface AuditQueueRow {
   callReference: string
+  /** Exact stored source URL, exposed only for recording-backed pending rows. */
+  recordingUrl?: string
   billingPeriodDate: string | null
   processingStatus: string
   attemptCount: number
@@ -143,6 +145,43 @@ export type AuditMonitorSummaryData = Pick<
   'generatedAt' | 'summary' | 'filters' | 'authority'
 >
 
+type AuditMonitorSummary = AuditMonitorData['summary']
+
+export interface AuditMonitorCoreSummaryData {
+  generatedAt: string
+  summary: Omit<AuditMonitorSummary, 'aiUsage' | 'auditedFinancials'>
+  filters: AuditMonitorData['filters']
+  authority: 'automated'
+}
+
+export interface AuditMonitorUsageSummaryData {
+  generatedAt: string
+  aiUsage: AuditMonitorSummary['aiUsage']
+  aiSpend: Pick<
+    AuditMonitorSummary['auditedFinancials'],
+    | 'aiSpendTrackedCalls'
+    | 'estimatedAiSpendUsd'
+    | 'aiSpendPricingVersion'
+    | 'aiSpendPricingBasis'
+    | 'unpricedAiUsageRows'
+  >
+  authority: 'automated'
+}
+
+export interface AuditMonitorFinancialSummaryData {
+  generatedAt: string
+  auditedFinancials: Pick<
+    AuditMonitorSummary['auditedFinancials'],
+    | 'scopedAuditedCalls'
+    | 'kservePricedCalls'
+    | 'kserveChargeInr'
+    | 'auditorFinalPricedCalls'
+    | 'auditorUnfinalizedCalls'
+    | 'auditorFinalChargeInr'
+  >
+  authority: 'automated'
+}
+
 export type AuditMonitorRowsData = Pick<
   AuditMonitorData,
   | 'generatedAt'
@@ -156,7 +195,13 @@ export type AuditMonitorRowsData = Pick<
   | 'authority'
 > & { totalsFinal: boolean }
 
-export type AuditMonitorSection = 'all' | 'summary' | 'rows'
+export type AuditMonitorSection =
+  | 'all'
+  | 'summary'
+  | 'summary-core'
+  | 'summary-usage'
+  | 'summary-financial'
+  | 'rows'
 export type AuditMonitorRowTable =
   | 'all'
   | 'audited'
@@ -235,6 +280,7 @@ interface DataRow extends RowDataPacket {
 
 interface QueueDataRow extends RowDataPacket {
   call_reference: string
+  recording_url?: string | null
   billing_period_date: Date | string | null
   processing_status: string | null
   attempt_count: number | string | null
@@ -471,9 +517,15 @@ function windowPagination(
   }
 }
 
-function mapQueueRow(row: QueueDataRow): AuditQueueRow {
+function mapQueueRow(
+  row: QueueDataRow,
+  includeRecordingUrl = false,
+): AuditQueueRow {
   return {
     callReference: row.call_reference,
+    ...(includeRecordingUrl && typeof row.recording_url === 'string'
+      ? { recordingUrl: row.recording_url }
+      : {}),
     billingPeriodDate: isoDate(row.billing_period_date),
     processingStatus: row.processing_status || 'not_started',
     attemptCount: Number(row.attempt_count || 0),
@@ -515,6 +567,83 @@ function filterSql(query: AuditMonitorQuery): {
   return { sql: `WHERE ${clauses.join(' AND ')}`, params }
 }
 
+function financialAuditedScope(query: AuditMonitorQuery): {
+  sql: string
+  params: unknown[]
+} {
+  const params: unknown[] = []
+  const latestTranscript = query.language
+    ? `AND completed_transcript.id = (
+          SELECT transcript_latest.id
+          FROM kaudit_transcript transcript_latest
+          WHERE transcript_latest.call_id = c.id
+            AND transcript_latest.call_artifact_id = ca.id
+            AND transcript_latest.status = 'completed'
+          ORDER BY transcript_latest.created_at DESC,
+                   transcript_latest.id DESC
+          LIMIT 1
+        )
+        AND LOWER(COALESCE(completed_transcript.language, ?)) = ?`
+    : ''
+  if (query.language) params.push('unknown', query.language.toLowerCase())
+
+  const clauses = [
+    `EXISTS (
+      SELECT 1
+      FROM kaudit_transcript completed_transcript
+      WHERE completed_transcript.call_id = c.id
+        AND completed_transcript.call_artifact_id = ca.id
+        AND completed_transcript.status = 'completed'
+        ${latestTranscript}
+    )`,
+    'c.canonical_outcome_code IS NOT NULL',
+  ]
+  if (query.periodStart && query.periodEnd) {
+    clauses.push('c.billing_period_date BETWEEN ? AND ?')
+    params.push(query.periodStart, query.periodEnd)
+  }
+  if (query.category) {
+    clauses.push('c.canonical_outcome_code = ?')
+    params.push(query.category)
+  }
+  if (query.taskId) {
+    clauses.push(taskIdPredicate('c'))
+    params.push(query.taskId, query.taskId)
+  }
+
+  const hasPeriod = Boolean(query.periodStart && query.periodEnd)
+  const callIndex = hasPeriod
+    ? ' FORCE INDEX (idx_call_period_category_started)'
+    : ''
+  const join = hasPeriod ? 'STRAIGHT_JOIN' : 'JOIN'
+  return {
+    sql: `SELECT DISTINCT
+       c.id,
+       ${categoryAdjustedDurationSql('ma')}
+         AS grace_adjusted_duration_ms
+     FROM kaudit_call c${callIndex}
+     ${join} kaudit_call_artifact ca
+       ON ca.call_id = c.id
+      AND ca.artifact_type = 'recording'
+      AND ca.is_final = 1
+     ${join} kaudit_media_analysis ma
+       ON ma.call_artifact_id = ca.id
+      AND ma.status = 'completed'
+      AND ma.classification_status = 'completed'
+      AND ma.id = (
+        SELECT ma_latest.id
+        FROM kaudit_media_analysis ma_latest
+        WHERE ma_latest.call_artifact_id = ca.id
+          AND ma_latest.status = 'completed'
+          AND ma_latest.classification_status = 'completed'
+        ORDER BY ma_latest.created_at DESC, ma_latest.id DESC
+        LIMIT 1
+      )
+     WHERE ${clauses.join(' AND ')}`,
+    params,
+  }
+}
+
 function taskIdPredicate(callAlias: string): string {
   return `(
     ${callAlias}.logical_call_key = ?
@@ -540,22 +669,58 @@ export function collectAuditMonitor(
 export function collectAuditMonitor(
   pool: Pool,
   query: AuditMonitorQuery,
+  section: 'summary-core',
+): Promise<AuditMonitorCoreSummaryData>
+export function collectAuditMonitor(
+  pool: Pool,
+  query: AuditMonitorQuery,
+  section: 'summary-usage',
+): Promise<AuditMonitorUsageSummaryData>
+export function collectAuditMonitor(
+  pool: Pool,
+  query: AuditMonitorQuery,
+  section: 'summary-financial',
+): Promise<AuditMonitorFinancialSummaryData>
+export function collectAuditMonitor(
+  pool: Pool,
+  query: AuditMonitorQuery,
   section: 'rows',
+  rowTable?: AuditMonitorRowTable,
 ): Promise<AuditMonitorRowsData>
 export function collectAuditMonitor(
   pool: Pool,
   query: AuditMonitorQuery,
   section: AuditMonitorSection,
   rowTable?: AuditMonitorRowTable,
-): Promise<AuditMonitorData | AuditMonitorSummaryData | AuditMonitorRowsData>
+): Promise<
+  | AuditMonitorData
+  | AuditMonitorSummaryData
+  | AuditMonitorCoreSummaryData
+  | AuditMonitorUsageSummaryData
+  | AuditMonitorFinancialSummaryData
+  | AuditMonitorRowsData
+>
 export async function collectAuditMonitor(
   pool: Pool,
   query: AuditMonitorQuery,
   section: AuditMonitorSection = 'all',
   rowTable: AuditMonitorRowTable = 'all',
-): Promise<AuditMonitorData | AuditMonitorSummaryData | AuditMonitorRowsData> {
-  const includeSummary = section !== 'rows'
-  const includeRows = section !== 'summary'
+): Promise<
+  | AuditMonitorData
+  | AuditMonitorSummaryData
+  | AuditMonitorCoreSummaryData
+  | AuditMonitorUsageSummaryData
+  | AuditMonitorFinancialSummaryData
+  | AuditMonitorRowsData
+> {
+  const includeCombinedSummary = section === 'all' || section === 'summary'
+  const includeCoreSummary =
+    includeCombinedSummary || section === 'summary-core'
+  const includeUsageSummary =
+    includeCombinedSummary || section === 'summary-usage'
+  const includeFinancialSummary =
+    includeCombinedSummary || section === 'summary-financial'
+  const includeRows = section === 'all' || section === 'rows'
   const filters = filterSql(query)
   const periodClause =
     query.periodStart && query.periodEnd
@@ -572,7 +737,7 @@ export async function collectAuditMonitor(
   const queueScopeClause = `${periodClause}${taskClause}`
   const queueScopeParams = [...periodParams, ...taskParams]
   const summaryPrelude = await Promise.all([
-    includeSummary
+    includeCoreSummary
       ? pool.query<OverallSummaryRow[]>(
       `SELECT
          COUNT(*) AS total_calls,
@@ -635,7 +800,7 @@ export async function collectAuditMonitor(
         [],
         undefined as never,
       ]),
-    includeSummary
+    includeCoreSummary
       ? pool.query<CountRow[]>(
       `SELECT COUNT(DISTINCT run.call_id) AS n
        FROM kaudit_audit_run run
@@ -653,7 +818,7 @@ export async function collectAuditMonitor(
       filters.params,
     )
       : Promise.resolve<[CountRow[], never]>([[], undefined as never]),
-    includeSummary
+    includeCoreSummary
       ? pool.query<RowDataPacket[]>(
       `SELECT DISTINCT c.canonical_outcome_code AS value
        FROM kaudit_call c
@@ -662,7 +827,7 @@ export async function collectAuditMonitor(
       periodParams,
     )
       : Promise.resolve<[RowDataPacket[], never]>([[], undefined as never]),
-    includeSummary
+    includeCoreSummary
       ? pool.query<RowDataPacket[]>(
       `SELECT DISTINCT LOWER(COALESCE(t.language, 'unknown')) AS value
        FROM kaudit_transcript t
@@ -687,7 +852,7 @@ export async function collectAuditMonitor(
   )
   let totalPendingRows = summaryPendingRows
   let totalNoRecordingRows = summaryNoRecordingRows
-  if (query.taskId && includeSummary) {
+  if (query.taskId && includeCoreSummary) {
     const [pendingCountResult, noRecordingCountResult] =
       await Promise.all([
         pool.query<CountRow[]>(
@@ -740,7 +905,7 @@ export async function collectAuditMonitor(
   )
   let usage: UsageSummaryRow | null = null
   let usageCostRows: UsageModelCostRow[] = []
-  if (includeSummary) {
+  if (includeUsageSummary) {
     try {
       const [usageResult] = await pool.query<
         Array<UsageSummaryRow & UsageCostRow>
@@ -780,17 +945,11 @@ export async function collectAuditMonitor(
       usageCostRows = []
     }
   }
-  const [financialRows] = includeSummary
+  const financialScope = financialAuditedScope(query)
+  const [financialRows] = includeFinancialSummary
     ? await pool.query<AuditedFinancialSummaryRow[]>(
-      auditedFinancialSummarySql(
-        `SELECT DISTINCT
-           c.id,
-           ${categoryAdjustedDurationSql('ma')}
-             AS grace_adjusted_duration_ms
-         ${AUDITED_JOIN}
-         ${filters.sql}`,
-      ),
-      filters.params,
+      auditedFinancialSummarySql(financialScope.sql),
+      financialScope.params,
     )
     : [[] as AuditedFinancialSummaryRow[]]
   const financial = financialRows[0]
@@ -805,68 +964,82 @@ export async function collectAuditMonitor(
       })),
   )
   const generatedAt = new Date().toISOString()
+  const coreSummary: AuditMonitorCoreSummaryData['summary'] = {
+    totalCalls,
+    aiAuditedCalls,
+    auditCoveragePercent:
+      totalCalls === 0
+        ? '0.00'
+        : ((aiAuditedCalls / totalCalls) * 100).toFixed(2),
+    recordingAvailableCalls,
+    pendingEligibleCalls: Math.max(0, summaryPendingRows),
+    noRecordingCalls: summaryNoRecordingRows,
+    processingFailureCalls: Number(overall?.processing_failures || 0),
+    reauditV2Calls: count(reauditRows[0][0]),
+  }
+  const aiUsage: AuditMonitorUsageSummaryData['aiUsage'] = {
+    trackedAuditRuns: Number(usage?.tracked_audit_runs || 0),
+    gptInputTokens: Number(usage?.input_tokens || 0),
+    gptOutputTokens: Number(usage?.output_tokens || 0),
+    gptTotalTokens: Number(usage?.total_tokens || 0),
+    whisperAudioSeconds: Number(usage?.audio_seconds || 0).toFixed(3),
+    historicalUsageRecorded: usage != null,
+  }
+  const aiSpend: AuditMonitorUsageSummaryData['aiSpend'] = {
+    aiSpendTrackedCalls: aiUsage.trackedAuditRuns,
+    estimatedAiSpendUsd: aiCost.estimatedUsd,
+    aiSpendPricingVersion: aiCost.pricingVersion,
+    aiSpendPricingBasis: aiCost.pricingBasis,
+    unpricedAiUsageRows: aiCost.unpricedRows,
+  }
+  const auditedFinancials: AuditMonitorFinancialSummaryData['auditedFinancials'] = {
+    scopedAuditedCalls: Number(financial?.audited_calls || 0),
+    kservePricedCalls: Number(financial?.kserve_priced_calls || 0),
+    kserveChargeInr: moneyDecimal(financial?.kserve_charge),
+    auditorFinalPricedCalls: Number(
+      financial?.auditor_final_priced_calls || 0,
+    ),
+    auditorUnfinalizedCalls: Number(
+      financial?.auditor_unfinalized_calls || 0,
+    ),
+    auditorFinalChargeInr: moneyDecimal(financial?.auditor_final_charge),
+  }
+  const summaryFilters: AuditMonitorData['filters'] = {
+    category: query.category,
+    language: query.language,
+    taskId: query.taskId,
+    availableCategories: categories[0].map((row) => String(row.value)),
+    availableLanguages: languages[0].map((row) => String(row.value)),
+  }
+  if (section === 'summary-core') {
+    return {
+      generatedAt,
+      summary: coreSummary,
+      filters: summaryFilters,
+      authority: 'automated',
+    }
+  }
+  if (section === 'summary-usage') {
+    return { generatedAt, aiUsage, aiSpend, authority: 'automated' }
+  }
+  if (section === 'summary-financial') {
+    return { generatedAt, auditedFinancials, authority: 'automated' }
+  }
   const summaryResponse: AuditMonitorSummaryData = {
     generatedAt,
     summary: {
-      totalCalls,
-      aiAuditedCalls,
-      auditCoveragePercent:
-        totalCalls === 0
-          ? '0.00'
-          : ((aiAuditedCalls / totalCalls) * 100).toFixed(2),
-      recordingAvailableCalls,
-      pendingEligibleCalls: Math.max(0, summaryPendingRows),
-      noRecordingCalls: summaryNoRecordingRows,
-      processingFailureCalls: Number(
-        overall?.processing_failures || 0,
-      ),
-      reauditV2Calls: count(reauditRows[0][0]),
-      aiUsage: {
-        trackedAuditRuns: Number(usage?.tracked_audit_runs || 0),
-        gptInputTokens: Number(usage?.input_tokens || 0),
-        gptOutputTokens: Number(usage?.output_tokens || 0),
-        gptTotalTokens: Number(usage?.total_tokens || 0),
-        whisperAudioSeconds: Number(
-          usage?.audio_seconds || 0,
-        ).toFixed(3),
-        historicalUsageRecorded: usage != null,
-      },
+      ...coreSummary,
+      aiUsage,
       auditedFinancials: {
-        scopedAuditedCalls: Number(financial?.audited_calls || 0),
-        aiSpendTrackedCalls: Number(
-          usage?.tracked_audit_runs || 0,
-        ),
+        ...auditedFinancials,
+        ...aiSpend,
         aiSpendUntrackedCalls: Math.max(
           0,
-          Number(financial?.audited_calls || 0) -
-            Number(usage?.tracked_audit_runs || 0),
-        ),
-        estimatedAiSpendUsd: aiCost.estimatedUsd,
-        aiSpendPricingVersion: aiCost.pricingVersion,
-        aiSpendPricingBasis: aiCost.pricingBasis,
-        unpricedAiUsageRows: aiCost.unpricedRows,
-        kservePricedCalls: Number(
-          financial?.kserve_priced_calls || 0,
-        ),
-        kserveChargeInr: moneyDecimal(financial?.kserve_charge),
-        auditorFinalPricedCalls: Number(
-          financial?.auditor_final_priced_calls || 0,
-        ),
-        auditorUnfinalizedCalls: Number(
-          financial?.auditor_unfinalized_calls || 0,
-        ),
-        auditorFinalChargeInr: moneyDecimal(
-          financial?.auditor_final_charge,
+          auditedFinancials.scopedAuditedCalls - aiUsage.trackedAuditRuns,
         ),
       },
     },
-    filters: {
-      category: query.category,
-      language: query.language,
-      taskId: query.taskId,
-      availableCategories: categories[0].map((row) => String(row.value)),
-      availableLanguages: languages[0].map((row) => String(row.value)),
-    },
+    filters: summaryFilters,
     authority: 'automated',
   }
   if (!includeRows) return summaryResponse
@@ -1045,6 +1218,7 @@ export async function collectAuditMonitor(
              pending.logical_call_key
            ) AS call_reference,
            pending.billing_period_date,
+           pending.recording_url,
            pending.processing_status,
            pending.attempt_count,
            pending.evidence_sha256,
@@ -1074,6 +1248,7 @@ export async function collectAuditMonitor(
              c.id AS call_id,
              c.logical_call_key,
              c.billing_period_date,
+             ca.source_url AS recording_url,
              ca.audio_processing_status AS processing_status,
              ca.audio_attempt_count AS attempt_count,
              ca.sha256 AS evidence_sha256,
@@ -1253,8 +1428,8 @@ export async function collectAuditMonitor(
         },
       }
     }),
-    pendingRows: pendingRowResult.map(mapQueueRow),
-    noRecordingRows: noRecordingRowResult.map(mapQueueRow),
+    pendingRows: pendingRowResult.map((row) => mapQueueRow(row, true)),
+    noRecordingRows: noRecordingRowResult.map((row) => mapQueueRow(row)),
     pagination: section === 'rows'
       ? windowPagination(query.page, query.pageSize, fetchedRows.length)
       : pagination(query.page, query.pageSize, totalFilteredRows),
@@ -1281,6 +1456,6 @@ export async function collectAuditMonitor(
     contentBoundary:
       'Admin-only audit metadata. Use Admin review for restricted evidence, transcript, and per-call billing context when available.',
   }
-  if (!includeSummary) return rowsResponse
+  if (!includeCombinedSummary) return rowsResponse
   return { ...summaryResponse, ...rowsResponse }
 }

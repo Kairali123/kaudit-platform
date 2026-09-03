@@ -681,7 +681,6 @@ test('audit monitor is admin-only and excludes raw content fields', async () => 
       for (const forbidden of [
         'transcript',
         'sourceUrl',
-        'recordingUrl',
         'phone',
         'remarks',
         'explanation',
@@ -764,6 +763,18 @@ test('audit monitor Task ID search is exact and invalid input never reaches SQL'
       )
       assert.equal(tableWithoutRows.status, 400)
       assert.equal(calls.length, 0)
+
+      for (const section of [
+        'summary-core',
+        'summary-usage',
+        'summary-financial',
+      ]) {
+        const splitSummary = await fetch(
+          `${baseUrl}/api/v1/audits?section=${section}`,
+          { headers: { cookie: localCookie() } },
+        )
+        assert.equal(splitSummary.status, 200, section)
+      }
 
       const taskId = 'synthetic-task-search'
       const valid = await fetch(
