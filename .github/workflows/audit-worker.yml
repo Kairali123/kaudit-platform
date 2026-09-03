@@ -49,6 +49,7 @@ on:
           - diagnose-billing-performance
           - diagnose-failures
           - repair-june-signed-url-retries
+          - requeue-june-nested-url-retries
       migration_confirmation:
         description: Exact confirmation required by the selected migration mode
         required: false
@@ -135,6 +136,16 @@ jobs:
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
               KAUDIT_RETRY_REPAIR_CONFIRM=RESET_JUNE_SIGNED_URL_RETRIES \
               node scripts/repair-june-signed-url-retries.mjs
+            elif [[ "$AUDIT_MODE" == "requeue-june-nested-url-retries" ]]; then
+              if [[ "$MIGRATION_CONFIRMATION_INPUT" != "REQUEUE_JUNE_NESTED_URL_RETRIES" ]]; then
+                exit 2
+              fi
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_NESTED_URL_REQUEUE_CONFIRM=REQUEUE_JUNE_NESTED_URL_RETRIES \
+              node scripts/requeue-june-nested-url-retries.mjs
             elif [[ "$AUDIT_MODE" == "migration-0015" ]]; then
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0015" ]]; then
                 exit 2

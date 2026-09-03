@@ -106,6 +106,15 @@ test('June signed-URL retry repair is exact, guarded, and model-free', () => {
   assert.match(workflow, /node scripts\/repair-june-signed-url-retries\.mjs/)
 })
 
+test('June nested-URL requeue is exact, guarded, and model-free', () => {
+  assert.match(workflow, /- requeue-june-nested-url-retries/)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "requeue-june-nested-url-retries"[\s\S]{0,260}MIGRATION_CONFIRMATION_INPUT" != "REQUEUE_JUNE_NESTED_URL_RETRIES"[\s\S]{0,360}unset OPENAI_API_KEY[\s\S]{0,360}KAUDIT_NESTED_URL_REQUEUE_CONFIRM=REQUEUE_JUNE_NESTED_URL_RETRIES/,
+  )
+  assert.match(workflow, /node scripts\/requeue-june-nested-url-retries\.mjs/)
+})
+
 test('reusable workflow callers cannot route unknown modes into a worker', () => {
   assert.match(
     workflow,
