@@ -219,12 +219,16 @@ interface CountRow extends RowDataPacket {
 
 interface OverallSummaryRow extends RowDataPacket {
   total_calls: number | string
-  bill_audited_calls: number | string
   audited_calls: number | string
   recording_available: number | string
   pending_calls: number | string
   no_recording_calls: number | string
   processing_failures: number | string
+}
+
+interface AcceptedFallbackSummaryRow extends RowDataPacket {
+  accepted_fallback_calls: number | string
+  accepted_failure_calls: number | string
 }
 
 interface UsageSummaryRow extends RowDataPacket {
@@ -723,15 +727,6 @@ export async function collectAuditMonitor(
       `SELECT
          COUNT(*) AS total_calls,
          SUM(
-           COALESCE(artifact.recording_available, 0) = 0
-           OR (
-             COALESCE(artifact.recording_available, 0) = 1
-             AND c.canonical_outcome_code IS NOT NULL
-             AND COALESCE(artifact.pipeline_complete, 0) = 1
-           )
-           OR COALESCE(resolved_fallback.accepted_as_billed, 0) = 1
-         ) AS bill_audited_calls,
-         SUM(
            COALESCE(artifact.recording_available, 0) = 1
            AND c.canonical_outcome_code IS NOT NULL
            AND COALESCE(artifact.pipeline_complete, 0) = 1
@@ -745,14 +740,12 @@ export async function collectAuditMonitor(
              c.canonical_outcome_code IS NOT NULL
              AND COALESCE(artifact.pipeline_complete, 0) = 1
            )
-           AND COALESCE(resolved_fallback.accepted_as_billed, 0) = 0
          ) AS pending_calls,
          SUM(
            COALESCE(artifact.recording_available, 0) = 0
          ) AS no_recording_calls,
          SUM(
            COALESCE(artifact.processing_failure, 0) = 1
-           AND COALESCE(resolved_fallback.accepted_as_billed, 0) = 0
          ) AS processing_failures
        FROM kaudit_call c
        LEFT JOIN (
@@ -785,24 +778,44 @@ export async function collectAuditMonitor(
            AND ca.is_final = 1
          GROUP BY ca.call_id
        ) artifact ON artifact.call_id = c.id
-       LEFT JOIN (
-         SELECT
-           resolved_calculation.call_id,
-           1 AS accepted_as_billed
-         FROM kaudit_billing_calculation resolved_calculation
-         LEFT JOIN kaudit_billing_calculation superseding_calculation
-           ON superseding_calculation.supersedes_calculation_id =
-              resolved_calculation.id
-         WHERE resolved_calculation.status = 'final'
-           AND resolved_calculation.calculation_basis =
-               'accepted_as_billed_unverified'
-           AND superseding_calculation.id IS NULL
-         GROUP BY resolved_calculation.call_id
-       ) resolved_fallback ON resolved_fallback.call_id = c.id
        WHERE 1=1${periodClause}`,
       periodParams,
     )
       : Promise.resolve<[OverallSummaryRow[], never]>([
+        [],
+        undefined as never,
+      ]),
+    includeCoreSummary
+      ? pool.query<AcceptedFallbackSummaryRow[]>(
+      `SELECT
+         COUNT(DISTINCT resolved_calculation.call_id)
+           AS accepted_fallback_calls,
+         COUNT(DISTINCT CASE
+           WHEN EXISTS (
+             SELECT 1
+             FROM kaudit_call_artifact failed_artifact
+             WHERE failed_artifact.call_id = resolved_calculation.call_id
+               AND failed_artifact.artifact_type = 'recording'
+               AND failed_artifact.is_final = 1
+               AND failed_artifact.audio_processing_status IN
+                   ('fetch_failed','transcribe_failed',
+                    'classify_failed','exhausted')
+           ) THEN resolved_calculation.call_id
+         END) AS accepted_failure_calls
+       FROM kaudit_billing_calculation resolved_calculation
+       JOIN kaudit_call c ON c.id = resolved_calculation.call_id
+       WHERE resolved_calculation.status = 'final'
+         AND resolved_calculation.calculation_basis =
+             'accepted_as_billed_unverified'
+         AND NOT EXISTS (
+           SELECT 1
+           FROM kaudit_billing_calculation superseding_calculation
+           WHERE superseding_calculation.supersedes_calculation_id =
+                 resolved_calculation.id
+         )${periodClause}`,
+      periodParams,
+    )
+      : Promise.resolve<[AcceptedFallbackSummaryRow[], never]>([
         [],
         undefined as never,
       ]),
@@ -835,20 +848,36 @@ export async function collectAuditMonitor(
       : Promise.resolve<[RowDataPacket[], never]>([[], undefined as never]),
   ])
 
-  const [overallRows, reauditRows, filteredRows, categories] =
+  const [
+    overallRows,
+    acceptedFallbackRows,
+    reauditRows,
+    filteredRows,
+    categories,
+  ] =
     summaryPrelude
 
   const overall = overallRows[0][0]
   const totalCalls = Number(overall?.total_calls || 0)
   const aiAuditedCalls = Number(overall?.audited_calls || 0)
-  const billAuditedCalls = Number(
-    overall?.bill_audited_calls ??
-      aiAuditedCalls + Number(overall?.no_recording_calls || 0),
+  const acceptedFallback = acceptedFallbackRows[0][0]
+  const acceptedFallbackCalls = Number(
+    acceptedFallback?.accepted_fallback_calls || 0,
+  )
+  const acceptedFailureCalls = Number(
+    acceptedFallback?.accepted_failure_calls || 0,
   )
   const totalFilteredRows = count(filteredRows[0][0])
-  const summaryPendingRows = Number(overall?.pending_calls || 0)
+  const summaryPendingRows = Math.max(
+    0,
+    Number(overall?.pending_calls || 0) - acceptedFallbackCalls,
+  )
   const summaryNoRecordingRows = Number(
     overall?.no_recording_calls || 0,
+  )
+  const billAuditedCalls = Math.min(
+    totalCalls,
+    aiAuditedCalls + summaryNoRecordingRows + acceptedFallbackCalls,
   )
   let totalPendingRows = summaryPendingRows
   let totalNoRecordingRows = summaryNoRecordingRows
@@ -989,7 +1018,10 @@ export async function collectAuditMonitor(
     recordingAvailableCalls,
     pendingEligibleCalls: Math.max(0, summaryPendingRows),
     noRecordingCalls: summaryNoRecordingRows,
-    processingFailureCalls: Number(overall?.processing_failures || 0),
+    processingFailureCalls: Math.max(
+      0,
+      Number(overall?.processing_failures || 0) - acceptedFailureCalls,
+    ),
     reauditV2Calls: count(reauditRows[0][0]),
   }
   const aiUsage: AuditMonitorUsageSummaryData['aiUsage'] = {

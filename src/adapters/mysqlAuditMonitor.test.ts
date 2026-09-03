@@ -837,29 +837,39 @@ test('bill-audit coverage resolves missing recordings and accepted KServe fallba
       match: 'COUNT(*) AS total_calls',
       rows: [{
         total_calls: 12,
-        bill_audited_calls: 10,
         audited_calls: 3,
         recording_available: 7,
-        pending_calls: 2,
+        pending_calls: 4,
         no_recording_calls: 5,
-        processing_failures: 2,
+        processing_failures: 4,
+      }],
+    },
+    {
+      match: 'AS accepted_fallback_calls',
+      rows: [{
+        accepted_fallback_calls: 2,
+        accepted_failure_calls: 2,
       }],
     },
   ])
 
   const data = await collectAuditMonitor(fake.pool, QUERY, 'summary-core')
-  const summarySql = fake.find('AS bill_audited_calls') ?? ''
+  const overallSql = fake.find('COUNT(*) AS total_calls') ?? ''
+  const fallbackSql = fake.find('AS accepted_fallback_calls') ?? ''
 
   assert.equal(data.summary.billAuditedCalls, 10)
   assert.equal(data.summary.aiAuditedCalls, 3)
   assert.equal(data.summary.auditCoveragePercent, '83.33')
-  assert.match(summarySql, /accepted_as_billed_unverified/)
+  assert.equal(data.summary.pendingEligibleCalls, 2)
+  assert.equal(data.summary.processingFailureCalls, 2)
+  assert.doesNotMatch(overallSql, /kaudit_billing_calculation/)
+  assert.match(fallbackSql, /accepted_as_billed_unverified/)
   assert.equal(
-    summarySql.match(/accepted_as_billed_unverified/g)?.length,
+    fallbackSql.match(/accepted_as_billed_unverified/g)?.length,
     1,
   )
-  assert.match(summarySql, /resolved_fallback\.accepted_as_billed/)
-  assert.match(summarySql, /recording_available, 0\) = 0/)
+  assert.match(fallbackSql, /idx_billing_calc_authority|calculation_basis/)
+  assert.match(overallSql, /recording_available, 0\) = 0/)
 })
 
 test('accepted KServe fallbacks do not remain in the pending queue', async () => {
