@@ -37,6 +37,20 @@ test('an unusable rate card refuses the run and states which side mismatched', (
   assert.match(cli, /process\.exitCode = 3/)
 })
 
+test('only a writing run stops at an unusable rate card', () => {
+  // A preview exists to learn the cohort size AND the rate-card state in one
+  // pass. Stopping at the first blocker turns one diagnostic into two.
+  assert.match(
+    cli,
+    /if \(mode === 'EXECUTE'\) \{\s*\n\s*throw new Error\('CYCLE_CLOSE_RATE_CARD_RULESET_BINDING_INVALID'\)/,
+  )
+  // It still values nothing without a usable card, and still writes nothing.
+  assert.match(cli, /if \(!rateCardUsable\) continue/)
+  assert.match(cli, /rateCardUsable,/)
+  // The refusal is still reported and still non-zero, either way.
+  assert.match(cli, /process\.exitCode = 3/)
+})
+
 test('the command can never repair the binding it refuses', () => {
   // Re-binding a published rate card is an approval decision, not something a
   // batch command may do to unblock itself.

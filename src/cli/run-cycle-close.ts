@@ -79,9 +79,11 @@ try {
    * repairable from this command: a rate card whose stored hash does not match
    * the locked ruleset must be re-published through the approval path.
    */
+  let rateCardUsable = true
   try {
     validateRateCard(rateCard)
   } catch {
+    rateCardUsable = false
     process.stderr.write(`${JSON.stringify({
       event: 'cycle_close_rate_card_unusable',
       code: 'RATE_CARD_RULESET_BINDING_INVALID',
@@ -100,7 +102,15 @@ try {
         'Re-publish the rate card version bound to the locked KServe ruleset, then re-run. No money was written.',
     }, null, 2)}\n`)
     process.exitCode = 3
-    throw new Error('CYCLE_CLOSE_RATE_CARD_RULESET_BINDING_INVALID')
+    /**
+     * A run that would WRITE stops here. A dry run continues, because the
+     * whole point of previewing is to learn the cohort size and the rate-card
+     * state in one pass rather than one blocker at a time. It still writes
+     * nothing: the persistence call below is unreachable in DRY-RUN.
+     */
+    if (mode === 'EXECUTE') {
+      throw new Error('CYCLE_CLOSE_RATE_CARD_RULESET_BINDING_INVALID')
+    }
   }
   const candidates = await listAcceptedAsBilledCandidates(
     pool,
@@ -127,6 +137,9 @@ try {
         unresolvedValidationCandidates += 1
       }
     }
+    // Pricing runs through the same gate, so an unusable card can only be
+    // counted, never valued. The count is what a preview is for.
+    if (!rateCardUsable) continue
     const records = buildAcceptedAsBilledRecords({
       callId: candidate.callId,
       auditRunId: candidate.auditRunId,
@@ -157,6 +170,7 @@ try {
   process.stdout.write(`${JSON.stringify({
     mode,
     cohort,
+    rateCardUsable,
     month: period.month,
     candidates: candidates.length,
     noRecordingZeroCandidates,
