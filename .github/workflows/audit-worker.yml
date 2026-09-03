@@ -48,6 +48,7 @@ on:
           - diagnose-monitor
           - diagnose-billing-performance
           - diagnose-failures
+          - diagnose-openai-transcription
           - repair-june-signed-url-retries
           - requeue-june-nested-url-retries
           - reset-june-pending-reviews
@@ -110,7 +111,15 @@ jobs:
             unset DB_SSL_CA_PEM
           fi
           if [[ "$AUDIT_SYSTEM" == "billing" ]]; then
-            if [[ "$AUDIT_MODE" == "diagnose-requested" ]]; then
+            if [[ "$AUDIT_MODE" == "diagnose-openai-transcription" ]]; then
+              unset DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD
+              unset DB_TLS_MODE DB_SSL_CA_PEM
+              unset KAUDIT_DATABASE_SESSION_SECRET
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              node scripts/diagnose-openai-transcription.mjs
+            elif [[ "$AUDIT_MODE" == "diagnose-requested" ]]; then
               node scripts/report-billing-reaudit-health.mjs
             elif [[ "$AUDIT_MODE" == "diagnose-monitor" ]]; then
               if [[ ! "$DIAGNOSTIC_MONTH_INPUT" =~ ^20[0-9]{2}-(0[1-9]|1[0-2])$ ]]; then

@@ -216,6 +216,23 @@ test('failure diagnostic is read-only, billing-only, and model-free', () => {
   )
 })
 
+test('OpenAI transcription diagnostic cannot read the database or customer audio', () => {
+  assert.match(workflow, /- diagnose-openai-transcription/)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "diagnose-openai-transcription"[\s\S]{0,180}unset DB_HOST DB_PORT DB_NAME DB_USER DB_PASSWORD[\s\S]{0,320}diagnose-openai-transcription\.mjs/,
+  )
+  const command = readFileSync(
+    new URL('../../scripts/diagnose-openai-transcription.mjs', import.meta.url),
+    'utf8',
+  )
+  assert.match(command, /synthetic-silence\.wav/)
+  assert.doesNotMatch(
+    command,
+    /DB_HOST|mysql|source_url|recording_url|kaudit_call|transcript_text/i,
+  )
+})
+
 test('billing performance diagnostic is read-only and month-scoped', () => {
   assert.match(workflow, /- diagnose-billing-performance/)
   assert.match(
