@@ -192,7 +192,7 @@ test('an exhausted call is billed from the stored KServe amount and time', () =>
     records.calculation?.calculationBasis,
     'accepted_as_billed_unverified',
   )
-  assert.equal(records.component?.billingIncrement, 'vendor_asserted_amount')
+  assert.equal(records.component?.billingIncrement, 'vendor_amount')
 })
 
 test('an exhausted call with no KServe amount falls back to the locked rate', () => {
@@ -245,4 +245,76 @@ test('a rate card not bound to the locked ruleset can be refused before any work
     /D-03/,
   )
   assert.doesNotThrow(() => validateRateCard(rateCard))
+})
+
+/**
+ * Column widths of the three tables `persistVerifiedBillingRecords` writes,
+ * read from the live schema on 2026-09-04 via the read-only
+ * `diagnose-billing-write-schema` worker mode. The base billing schema
+ * predates this repository's migrations, so these limits exist nowhere in
+ * source and a value that outgrows one is only found by a failed write.
+ */
+const COLUMN_LIMITS = {
+  billingIncrement: 20,
+  rawUnit: 20,
+  resultStatus: 20,
+  ruleCode: 80,
+  componentType: 60,
+  calculationBasis: 60,
+  engineVersion: 40,
+  reasonCode: 80,
+  findingType: 80,
+  modelName: 100,
+  modelVersion: 80,
+  rulesetVersion: 80,
+  languageCode: 30,
+} as const
+
+test('every bounded label a fallback writes fits its column', () => {
+  const reasons = [
+    'no_recording',
+    'automated_validation_unresolved',
+    'audit_exhausted',
+  ] as const
+  for (const fallbackReason of reasons) {
+    for (const vendorBilledAmount of ['19.00000000', null]) {
+      const records = buildAcceptedAsBilledRecords({
+        callId: `call-${fallbackReason}`,
+        claimedDurationMs: 92_000,
+        connectedDurationMs: 88_000,
+        vendorBilledMinutes: '2.00000000',
+        vendorBilledAmount,
+        fallbackReason,
+        sourceEvidence: {
+          kind: 'call_manifest',
+          referenceId: 'usage-file-widths',
+          sha256: 'b'.repeat(64),
+        },
+        decidedAt: '2026-06-30T18:29:59.999Z',
+      }, rateCard)
+      const label = `${fallbackReason}/${vendorBilledAmount ?? 'no-amount'}`
+      const checks: Array<[keyof typeof COLUMN_LIMITS, string | null]> = [
+        ['billingIncrement', records.component?.billingIncrement ?? null],
+        ['rawUnit', records.component?.rawUnit ?? null],
+        ['resultStatus', records.component?.resultStatus ?? null],
+        ['ruleCode', records.component?.ruleCode ?? null],
+        ['componentType', records.component?.componentType ?? null],
+        ['calculationBasis', records.calculation?.calculationBasis ?? null],
+        ['engineVersion', records.calculation?.engineVersion ?? null],
+        ['reasonCode', records.decision.reasonCode],
+        ['findingType', records.decision.findingType],
+        ['modelName', records.decision.modelName],
+        ['modelVersion', records.decision.modelVersion],
+        ['rulesetVersion', records.decision.rulesetVersion],
+        ['languageCode', records.decision.languageCode],
+      ]
+      for (const [column, value] of checks) {
+        if (value == null) continue
+        assert.ok(
+          value.length <= COLUMN_LIMITS[column],
+          `${label}: ${column} is ${value.length} chars, limit ${COLUMN_LIMITS[column]}`,
+        )
+      }
+    }
+  }
 })

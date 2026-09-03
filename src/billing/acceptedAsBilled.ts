@@ -270,11 +270,14 @@ export function buildAcceptedAsBilledRecords(
       : suppliedAmountScale == null
         ? fixed8(minuteScale)
         : amount,
+    // `kaudit_billing_component_result.billing_increment` is varchar(20).
+    // Every label here must fit it; `vendor_asserted_amount` was 22 and could
+    // never be written, which is why no accepted-as-billed row carries it.
     billingIncrement: fallbackReason === 'no_recording'
       ? 'no_recording_zero'
       : suppliedAmountScale == null
         ? 'vendor_0.5_min'
-        : 'vendor_asserted_amount',
+        : 'vendor_amount',
     unitRate: fallbackReason === 'no_recording' || suppliedAmountScale != null
       ? '1.00000000'
       : '9.50000000',
