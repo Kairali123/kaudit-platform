@@ -98,11 +98,10 @@ try {
     throw new Error('unexpected:source-url')
   }
   if (rows.some((row) =>
-    row.audio_processing_status === 'processing' ||
     Number(row.audio_attempt_count || 0) < 0 ||
     Number(row.audio_attempt_count || 0) > 8
   )) {
-    throw new Error('unexpected:active-or-invalid-state')
+    throw new Error('unexpected:invalid-state')
   }
 
   stage = 'update-artifacts'
@@ -116,7 +115,7 @@ try {
             audio_next_attempt_at = NULL,
             audio_last_error = NULL
       WHERE id IN (${artifactPlaceholders})
-        AND audio_processing_status <> 'processing'`,
+        AND audio_processing_status <> 'completed'`,
     artifactIds,
   )
   artifactsUpdated = Number(artifactResult.affectedRows || 0)
