@@ -51,6 +51,7 @@ on:
           - repair-june-signed-url-retries
           - requeue-june-nested-url-retries
           - reset-june-pending-reviews
+          - recover-june-canary
           - recover-june-pending
       migration_confirmation:
         description: Exact confirmation required by the selected migration mode
@@ -198,6 +199,13 @@ jobs:
               KAUDIT_AUDIT_BATCH=1 \
               KAUDIT_AUDIT_CONCURRENCY=1 \
               KAUDIT_AUDIT_WATCH=false \
+              npm run audit:worker
+            elif [[ "$AUDIT_MODE" == "recover-june-canary" ]]; then
+              KAUDIT_AUDIT_MODE=EXECUTE \
+              KAUDIT_AUDIT_BATCH=2 \
+              KAUDIT_AUDIT_CONCURRENCY=1 \
+              KAUDIT_AUDIT_WATCH=false \
+              KAUDIT_AUDIT_DRAIN=false \
               npm run audit:worker
             elif [[ "$AUDIT_MODE" == "recover-june-pending" ]]; then
               KAUDIT_AUDIT_MODE=EXECUTE \

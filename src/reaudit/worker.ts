@@ -71,6 +71,11 @@ export interface ReauditWorkerSummary {
 
 const MAX_PERSIST_DEADLOCK_RETRIES = 3
 
+function isRetryableProviderResult(result: ReauditItemResult): boolean {
+  return result.errorCode === 'TRANSCRIPTION_PROVIDER_RETRYABLE' ||
+    result.errorCode === 'CLASSIFICATION_PROVIDER_RETRYABLE'
+}
+
 async function persistWithDeadlockRetry(options: {
   results: ReauditResultRepository
   candidate: ReauditCandidate
@@ -245,7 +250,8 @@ export async function runReauditBatch(options: {
       if (
         options.spendGuard &&
         spendClaimed &&
-        result.outcome !== 'source_missing'
+        result.outcome !== 'source_missing' &&
+        !isRetryableProviderResult(result)
       ) {
         try {
           await options.spendGuard.stageResult(candidate, result)
@@ -272,7 +278,8 @@ export async function runReauditBatch(options: {
         try {
           await options.spendGuard.settle(
             candidate,
-            result.outcome === 'source_missing'
+            result.outcome === 'source_missing' ||
+              isRetryableProviderResult(result)
               ? 'no_model_call'
               : 'unknown',
           )
@@ -284,7 +291,8 @@ export async function runReauditBatch(options: {
     if (options.spendGuard && spendClaimed) {
       // Persistence succeeded, so the paid boundary is no longer ambiguous.
       // Failed paid output is terminal and must not remain staged for replay.
-      const settledOutcome = result.outcome === 'source_missing'
+      const settledOutcome = result.outcome === 'source_missing' ||
+        isRetryableProviderResult(result)
         ? 'no_model_call'
         : 'model_spent'
       try {

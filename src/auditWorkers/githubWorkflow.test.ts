@@ -60,7 +60,7 @@ test('hosted worker drains through existing CLIs and never runs a model test', (
 })
 
 test('hosted Billing concurrency is bounded by mode in workflow and runbook', () => {
-  assert.equal(workflow.match(/KAUDIT_AUDIT_CONCURRENCY=1(?!0)/g)?.length, 2)
+  assert.equal(workflow.match(/KAUDIT_AUDIT_CONCURRENCY=1(?!0)/g)?.length, 3)
   assert.equal(workflow.match(/KAUDIT_AUDIT_CONCURRENCY=10/g)?.length, 1)
   assert.match(
     workflow,
@@ -129,6 +129,14 @@ test('June pending recovery uses a low-concurrency drain', () => {
   assert.match(
     workflow,
     /AUDIT_MODE" == "recover-june-pending"[\s\S]{0,180}KAUDIT_AUDIT_BATCH=2[\s\S]{0,80}KAUDIT_AUDIT_CONCURRENCY=2[\s\S]{0,180}KAUDIT_AUDIT_DRAIN=true/,
+  )
+})
+
+test('June recovery canary processes one bounded batch', () => {
+  assert.match(workflow, /- recover-june-canary/)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "recover-june-canary"[\s\S]{0,180}KAUDIT_AUDIT_BATCH=2[\s\S]{0,80}KAUDIT_AUDIT_CONCURRENCY=1[\s\S]{0,180}KAUDIT_AUDIT_DRAIN=false/,
   )
 })
 

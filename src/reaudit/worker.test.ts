@@ -923,6 +923,53 @@ test('a recovered paid failure closes the spend lease after persistence', async 
   assert.equal(summary.retriesScheduled, 1)
 })
 
+test('a retryable provider rejection releases spend without staging', async () => {
+  const item = candidate('provider-retry')
+  const staged: string[] = []
+  const settled: string[] = []
+  const summary = await runReauditBatch({
+    candidates: {
+      async listCandidates() {
+        return [item]
+      },
+    },
+    results: {
+      async markStarted() {
+        return 'acquired'
+      },
+      async persist() {
+        return 'retry_scheduled'
+      },
+    },
+    processor: {
+      async process() {
+        return {
+          callId: item.callId,
+          artifactId: item.artifactId,
+          outcome: 'transcription_failed',
+          errorCode: 'TRANSCRIPTION_PROVIDER_RETRYABLE',
+        }
+      },
+    },
+    spendGuard: {
+      async claim() {
+        return { outcome: 'acquired' }
+      },
+      async stageResult() {
+        staged.push('staged')
+      },
+      async settle(_candidate, outcome) {
+        settled.push(outcome)
+      },
+    },
+    batchSize: 1,
+  })
+
+  assert.equal(summary.retriesScheduled, 1)
+  assert.deepEqual(staged, [])
+  assert.deepEqual(settled, ['no_model_call'])
+})
+
 test('an ambiguous paid boundary persists terminal state without another model call', async () => {
   let processCalls = 0
   const persisted: string[] = []
