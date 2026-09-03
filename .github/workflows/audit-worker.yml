@@ -53,6 +53,8 @@ on:
           - requeue-june-nested-url-retries
           - reset-june-pending-reviews
           - diagnose-june-bill-audit
+          - diagnose-rate-cards
+          - publish-rate-card
           - finalize-june-bill-audit
           - recover-june-canary
           - recover-june-pending
@@ -63,6 +65,16 @@ on:
       diagnostic_month:
         description: YYYY-MM period for a read-only dashboard diagnostic
         required: false
+        type: string
+      rate_card_id:
+        description: Rate card version id for publish-rate-card
+        required: false
+        default: ''
+        type: string
+      rate_card_approver:
+        description: Email of the person accountable for the rate-card approval
+        required: false
+        default: ''
         type: string
 
 permissions:
@@ -108,6 +120,8 @@ jobs:
           AUDIT_MODE: ${{ inputs.mode }}
           DIAGNOSTIC_MONTH_INPUT: ${{ inputs.diagnostic_month }}
           MIGRATION_CONFIRMATION_INPUT: ${{ inputs.migration_confirmation }}
+          RATE_CARD_ID_INPUT: ${{ inputs.rate_card_id }}
+          RATE_CARD_APPROVER_INPUT: ${{ inputs.rate_card_approver }}
         run: |
           if [[ "$DB_TLS_MODE" == "disabled" ]]; then
             unset DB_SSL_CA_PEM
@@ -185,6 +199,37 @@ jobs:
               KAUDIT_CYCLE_CLOSE_COHORT=exhausted-recording \
               KAUDIT_CYCLE_CLOSE_BATCH=50000 \
               npm run billing:cycle-close
+            elif [[ "$AUDIT_MODE" == "diagnose-rate-cards" ]]; then
+              # Read-only. Reports every rate card version and which D-03
+              # conditions it does and does not satisfy. Changes nothing.
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              node scripts/publish-kserve-rate-card.mjs
+            elif [[ "$AUDIT_MODE" == "publish-rate-card" ]]; then
+              # Records a rate-card approval an accountable owner has made.
+              # The approver is supplied deliberately and never defaulted: an
+              # approval with no name attached is not an approval.
+              if [[ "$MIGRATION_CONFIRMATION_INPUT" != "PUBLISH_KSERVE_RATE_CARD" ]]; then
+                exit 2
+              fi
+              if [[ -z "$RATE_CARD_APPROVER_INPUT" ]]; then
+                echo "::error::publish-rate-card requires rate_card_approver"
+                exit 2
+              fi
+              if [[ -z "$RATE_CARD_ID_INPUT" ]]; then
+                echo "::error::publish-rate-card requires rate_card_id"
+                exit 2
+              fi
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_RATE_CARD_PUBLISH_CONFIRM=PUBLISH_KSERVE_RATE_CARD \
+              KAUDIT_RATE_CARD_ID="$RATE_CARD_ID_INPUT" \
+              KAUDIT_RATE_CARD_APPROVER="$RATE_CARD_APPROVER_INPUT" \
+              node scripts/publish-kserve-rate-card.mjs
             elif [[ "$AUDIT_MODE" == "finalize-june-bill-audit" ]]; then
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "FINALIZE_JUNE_BILL_AUDIT" ]]; then
                 exit 2

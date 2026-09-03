@@ -345,3 +345,61 @@ test('automatic local operate command does not start Call Audit', () => {
   assert.doesNotMatch(operate, /npm run callaudit:worker/)
   assert.doesNotMatch(operate, /\bcall-audit\b/)
 })
+
+test('rate-card inspection is read-only and needs no confirmation', () => {
+  assert.match(workflow, /- diagnose-rate-cards/)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "diagnose-rate-cards"[\s\S]{0,500}node scripts\/publish-kserve-rate-card\.mjs/,
+  )
+  // Inspection must never carry the publish confirmation or an approver.
+  assert.doesNotMatch(
+    workflow,
+    /AUDIT_MODE" == "diagnose-rate-cards"[\s\S]{0,500}KAUDIT_RATE_CARD_PUBLISH_CONFIRM/,
+  )
+})
+
+test('publishing a rate card names an accountable approver every time', () => {
+  assert.match(workflow, /- publish-rate-card/)
+  // Three independent gates: the confirmation, the approver, and the card.
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "publish-rate-card"[\s\S]{0,400}MIGRATION_CONFIRMATION_INPUT" != "PUBLISH_KSERVE_RATE_CARD"/,
+  )
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "publish-rate-card"[\s\S]{0,700}-z "\$RATE_CARD_APPROVER_INPUT"/,
+  )
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "publish-rate-card"[\s\S]{0,900}-z "\$RATE_CARD_ID_INPUT"/,
+  )
+  // Both are passed through, never defaulted to a literal in the workflow.
+  assert.match(
+    workflow,
+    /KAUDIT_RATE_CARD_APPROVER="\$RATE_CARD_APPROVER_INPUT"/,
+  )
+  assert.match(workflow, /KAUDIT_RATE_CARD_ID="\$RATE_CARD_ID_INPUT"/)
+  assert.doesNotMatch(
+    workflow,
+    /KAUDIT_RATE_CARD_APPROVER=['"]?[A-Za-z0-9._%+-]+@/,
+  )
+})
+
+test('the rate-card command never edits the locked ruleset', () => {
+  const script = readFileSync(
+    new URL('../../scripts/publish-kserve-rate-card.mjs', import.meta.url),
+    'utf8',
+  )
+  // It binds a card to the locked ruleset; it must never redefine the ruleset.
+  assert.match(script, /import \{ KSERVE_RULESET_SHA256/)
+  assert.doesNotMatch(script, /KSERVE_RULESET_SHA256\s*=/)
+  // An already-published card is history other calculations reference.
+  assert.match(script, /refused:already_published/)
+  assert.match(script, /status <> 'published'/)
+  // No approver default anywhere in the command.
+  assert.match(script, /required\('KAUDIT_RATE_CARD_APPROVER'\)/)
+  // It writes to exactly one table, and only the gate columns.
+  const updates = script.match(/UPDATE\s+(\w+)/g) ?? []
+  assert.deepEqual(updates, ['UPDATE kaudit_rate_card_version'])
+})
