@@ -115,6 +115,15 @@ test('June nested-URL requeue is exact, guarded, and model-free', () => {
   assert.match(workflow, /node scripts\/requeue-june-nested-url-retries\.mjs/)
 })
 
+test('June pending-review reset is exact, guarded, and model-free', () => {
+  assert.match(workflow, /- reset-june-pending-reviews/)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "reset-june-pending-reviews"[\s\S]{0,260}MIGRATION_CONFIRMATION_INPUT" != "RESET_JUNE_278_PENDING_REVIEWS"[\s\S]{0,360}unset OPENAI_API_KEY[\s\S]{0,360}KAUDIT_JUNE_PENDING_RESET_CONFIRM=RESET_JUNE_278_PENDING_REVIEWS/,
+  )
+  assert.match(workflow, /node scripts\/reset-june-pending-review-cohort\.mjs/)
+})
+
 test('reusable workflow callers cannot route unknown modes into a worker', () => {
   assert.match(
     workflow,

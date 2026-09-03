@@ -444,9 +444,19 @@ async function main(): Promise<void> {
   } finally {
     try {
       if (lockAcquired) {
-        await lockConnection.query(
-          `SELECT RELEASE_LOCK('kaudit-independent-reaudit-v2')`,
-        )
+        try {
+          await lockConnection.query(
+            `SELECT RELEASE_LOCK('kaudit-independent-reaudit-v2')`,
+          )
+        } catch {
+          // A dropped owner connection already releases its advisory lock.
+          process.stdout.write(
+            `${JSON.stringify({
+              event: 'billing_audit_lock_release_skipped',
+              category: 'WORKER_LIFECYCLE',
+            })}\n`,
+          )
+        }
       }
     } finally {
       lockConnection.release()

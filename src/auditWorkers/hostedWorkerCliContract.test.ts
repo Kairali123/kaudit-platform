@@ -124,6 +124,14 @@ test('Billing Audit retries a busy advisory lock and publishes a bounded fault',
   assert.doesNotMatch(billingWorker, /KILL\s+(?:CONNECTION|QUERY)/i)
 })
 
+test('Billing Audit does not fail a completed drain when its lock connection has closed', () => {
+  assert.match(billingWorker, /billing_audit_lock_release_skipped/)
+  assert.match(
+    billingWorker,
+    /try \{\s*await lockConnection\.query\([\s\S]{0,180}RELEASE_LOCK[\s\S]{0,180}catch \{/,
+  )
+})
+
 test('an exact append-only one-shot can run without waking a paused queue', () => {
   assert.match(
     billingWorker,

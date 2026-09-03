@@ -51,7 +51,7 @@ const candidate: ReauditCandidate = {
 }
 
 test('engine version identifies the classification repair', () => {
-  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.6.1')
+  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.6.2')
 })
 
 test('merges fragments using the approved pause, duration, and character limits', () => {
@@ -88,6 +88,30 @@ test('classification derives the conversation end from customer blocks', () => {
   )
   assert.equal(result.customerSpoke, true)
   assert.equal(result.lastMeaningfulCustomerExchangeMs, 1_234)
+})
+
+test('classification bounds ASR segment overrun to decoded recording duration', () => {
+  const raw = reviewedClassification({
+    proposed: 'OK',
+    customerSpoke: true,
+    signals: {
+      counterpartyType: 'human',
+      agentHandling: 'normal',
+      conversationOutcome: 'successful',
+      durationOutcome: 'appropriate',
+    },
+  })
+  const result = validateClassification(
+    raw,
+    [
+      { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent prompt' },
+      { number: 2, startMs: 1_100, endMs: 3_010, text: 'Synthetic customer reply' },
+    ],
+    3_000,
+  )
+
+  assert.equal(result.lastMeaningfulCustomerExchangeMs, 3_000)
+  assert.equal(result.lastVerifiedInteractionMs, 3_000)
 })
 
 test('classification validation rejects user silence when customer speech exists', () => {
@@ -785,6 +809,31 @@ test('classification repair gives customer speech precedence over unclear role g
   assert.deepEqual(result.unclearBlockNumbers, [])
   assert.equal(result.decisionSignals?.counterpartyType, 'human')
   assert.equal(result.category, 'CONNECT_NOT_FRUITFUL')
+})
+
+test('classification repair promotes affirmative junk evidence to junk call', () => {
+  const raw = reviewedClassification({
+    proposed: 'CONNECT_NOT_FRUITFUL',
+    customerSpoke: true,
+    signals: {
+      counterpartyType: 'human',
+      agentHandling: 'normal',
+      conversationOutcome: 'no_outcome',
+      durationOutcome: 'appropriate',
+      junkEvidence: 'test_call',
+    },
+  })
+  raw.junkEvidenceBlockNumbers = [2]
+  const blocks = [
+    { number: 1, startMs: 0, endMs: 1_000, text: 'Synthetic agent prompt' },
+    { number: 2, startMs: 1_100, endMs: 2_000, text: 'This is a test call' },
+  ]
+
+  const repaired = repairClassification(raw, blocks)
+  const result = validateClassification(repaired, blocks, 3_000)
+
+  assert.equal(result.category, 'JUNK_CALL')
+  assert.deepEqual(result.junkEvidenceBlockNumbers, [2])
 })
 
 test('unrepairable classifier output retains a bounded terminal code', async () => {

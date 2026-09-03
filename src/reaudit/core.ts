@@ -19,8 +19,8 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.6.1'
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.8.1'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.6.2'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.8.2'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
@@ -432,7 +432,7 @@ export function validateClassification(
   // milliseconds.
   const customerEnds = blocks
     .filter((block) => customerBlocks.has(block.number))
-    .map((block) => block.endMs)
+    .map((block) => Math.min(block.endMs, recordedDurationMs))
   const customerSpoke = customerEnds.length > 0
   const last = customerEnds.length > 0 ? Math.max(...customerEnds) : null
   const agentEnds = blocks
@@ -443,19 +443,16 @@ export function validateClassification(
         !voicemailEvidenceBlocks.has(block.number) &&
         !automationEvidenceBlocks.has(block.number),
     )
-    .map((block) => block.endMs)
+    .map((block) => Math.min(block.endMs, recordedDurationMs))
   const voicemailEnds = blocks
     .filter((block) => voicemailEvidenceBlocks.has(block.number))
-    .map((block) => block.endMs)
+    .map((block) => Math.min(block.endMs, recordedDurationMs))
   const businessEnds = blocks
     .filter((block) => businessRelevantCustomerBlocks.has(block.number))
-    .map((block) => block.endMs)
+    .map((block) => Math.min(block.endMs, recordedDurationMs))
   const verifiedEnds = blocks
     .filter((block) => !unclearBlocks.has(block.number))
-    .map((block) => block.endMs)
-  if (last != null && last > recordedDurationMs) {
-    throw new Error('Customer block end falls outside the recording')
-  }
+    .map((block) => Math.min(block.endMs, recordedDurationMs))
   const decisionSignals =
     raw.decisionSignals?.counterpartyType === 'interactive_automation' &&
     customerBlockNumbers.length > 0
@@ -641,6 +638,7 @@ export function repairClassification(
   else if (counterpartyType === 'interactive_automation') category = 'AI_TO_AI'
   else if (counterpartyType === 'no_response') category = 'USER_SILENCE'
   else if (counterpartyType === 'unclear') category = 'INACTIVE_CALL'
+  else if (junkEvidenceBlockNumbers.length > 0) category = 'JUNK_CALL'
   else if (
     category === 'USER_SILENCE' ||
     category === 'VOICEMAIL' ||
