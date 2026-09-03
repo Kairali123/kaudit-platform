@@ -118,8 +118,10 @@ export async function collectLatestBillingCycle(
     const [rows] = await pool.query<FinalCountRow[]>(
       `SELECT
          COUNT(DISTINCT CASE
-           WHEN calculation.calculation_basis =
-             'accepted_as_billed_unverified'
+           WHEN calculation.calculation_basis IN (
+             'accepted_as_billed_unverified',
+             'no_recording_zero'
+           )
            THEN calculation.call_id
          END) AS accepted_as_billed_calls,
          COUNT(DISTINCT calculation.call_id) AS final_calculation_calls,
@@ -134,7 +136,8 @@ export async function collectLatestBillingCycle(
          AND calculation.calculation_basis IN (
            'independent_conversation_end',
            'independent_category_service_end',
-           'accepted_as_billed_unverified'
+           'accepted_as_billed_unverified',
+           'no_recording_zero'
          )
          AND (
            (calculation.calculation_basis IN (
@@ -142,8 +145,10 @@ export async function collectLatestBillingCycle(
               'independent_category_service_end'
             )
             AND calculation.audit_run_id IS NOT NULL)
-           OR calculation.calculation_basis =
-              'accepted_as_billed_unverified'
+           OR calculation.calculation_basis IN (
+              'accepted_as_billed_unverified',
+              'no_recording_zero'
+           )
          )
          AND calculation.input_manifest_sha256 IS NOT NULL
          AND calculation.ruleset_sha256 IS NOT NULL

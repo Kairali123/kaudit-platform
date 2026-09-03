@@ -227,7 +227,8 @@ export function buildMonthlyEmailReport(options: {
       ).length,
       acceptedAsBilledCalls: rows.filter(
         (row) =>
-          row.resolution === 'accepted_as_billed_unverified',
+          row.resolution === 'accepted_as_billed_unverified' ||
+          row.resolution === 'no_recording_zero',
       ).length,
       vendorUsageAmount: fromScaled(totals.vendor),
       invoiceClaimedAmount: options.invoiceClaimedAmount,

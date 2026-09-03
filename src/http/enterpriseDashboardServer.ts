@@ -1722,7 +1722,6 @@ async function apiResponse(
       ),
       pageSize: integer('pageSize', 25, 10, 100),
       category: safeFilter('category'),
-      language: safeFilter('language'),
       taskId,
       periodStart: period?.start ?? null,
       periodEnd: period?.end ?? null,

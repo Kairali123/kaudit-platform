@@ -321,8 +321,9 @@ explicit resolution:
 
 - `independent_conversation_end`, or
 - `independent_category_service_end`, or
-- `accepted_as_billed_unverified` at cycle close when no usable recording can
-  be obtained after the automated retry policy.
+- `accepted_as_billed_unverified` when recording-backed automated validation
+  exhausts its retry policy, or
+- `no_recording_zero` when KServe supplied no recording URL.
 
 The fallback must be explicitly recorded. It is not called independently
 verified.
@@ -1573,9 +1574,9 @@ not silently become accepted or disputed.
 
 ### “What happens when there is no recording?”
 
-The call remains explicitly unaudited. At cycle close, the approved automated
-fallback may accept KServe's minutes, labeled
-`accepted_as_billed_unverified`.
+The call remains explicitly unaudited by AI. At cycle close, it receives a
+deterministic `no_recording_zero` resolution with zero audited time, zero
+audited amount, and the remark `No Recording Found`.
 
 ### “Is a 90% confidence result 90% accurate?”
 

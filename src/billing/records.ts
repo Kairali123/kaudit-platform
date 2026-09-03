@@ -25,6 +25,7 @@ export interface BillingCalculationRecord {
     | 'independent_conversation_end'
     | 'independent_category_service_end'
     | 'accepted_as_billed_unverified'
+    | 'no_recording_zero'
   claimedDurationMs: number | null
   connectedDurationMs: number | null
   recordedDurationMs: number | null

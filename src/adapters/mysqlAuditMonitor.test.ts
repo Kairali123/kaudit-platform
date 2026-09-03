@@ -326,7 +326,6 @@ const QUERY: AuditMonitorQuery = {
   noRecordingPage: 1,
   pageSize: 25,
   category: null,
-  language: null,
   taskId: null,
   periodStart: '2026-08-01',
   periodEnd: '2026-08-31',
@@ -430,23 +429,6 @@ test('default audited paging limits candidates before display joins', async () =
   assert.match(auditedPage, /EXISTS \(\s*SELECT 1\s*FROM kaudit_transcript/)
 })
 
-test('language-filtered audited paging filters candidates before the limit', async () => {
-  const fake = fakePool([])
-  await collectAuditMonitor(fake.pool, {
-    ...QUERY,
-    language: 'english',
-  }, 'rows', 'audited')
-
-  const auditedPage = fake.calls.find(({ sql }) =>
-    sql.includes('c.id AS internal_call_id'),
-  )?.sql ?? ''
-  assert.match(auditedPage, /\) audited_page/)
-  assert.match(
-    auditedPage,
-    /JOIN kaudit_transcript t[\s\S]*LOWER\(COALESCE\(t\.language, \?\)\) = \?[\s\S]*LIMIT \? OFFSET \?/,
-  )
-})
-
 test('rows mode can isolate each monitor table to one page query', async () => {
   const cases = [
     ['audited', 'c.id AS internal_call_id'],
@@ -481,6 +463,7 @@ test('pending rows expose the exact stored recording URL only', async () => {
     auditor_amount: null,
     billing_status: null,
     billing_basis: null,
+    audit_remark: null,
     last_activity_at: '2026-08-02 00:00:00',
   }
   const fake = fakePool([

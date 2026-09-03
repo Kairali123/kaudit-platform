@@ -33,22 +33,33 @@ test('creates an explicit final accepted-as-billed record without pretending an 
   }, rateCard)
   assert.equal(
     records.calculation?.calculationBasis,
-    'accepted_as_billed_unverified',
+    'no_recording_zero',
   )
   assert.equal(records.calculation?.auditRunId, null)
-  assert.equal(records.calculation?.billableDurationMs, 30_000)
-  assert.equal(records.calculation?.totalAmount, '5.25000000')
+  assert.equal(records.calculation?.billableDurationMs, 0)
+  assert.equal(records.calculation?.totalAmount, '0.00000000')
   assert.ok(records.component)
+  assert.equal(records.component.ruleCode, 'NO_RECORDING_ZERO')
   assert.equal(records.component.rawUnit, 'INR')
   assert.equal(
     records.component.billingIncrement,
-    'vendor_asserted_amount',
+    'no_recording_zero',
   )
   assert.equal(records.decision.modelProvider, 'none')
   assert.equal(
     records.decision.reasonCode,
-    'NO_RECORDING_ACCEPTED_AS_BILLED',
+    'NO_RECORDING_FOUND_ZERO',
   )
+  assert.match(
+    records.decision.decisionOutputJson,
+    /No Recording Found/,
+  )
+  const trace = JSON.parse(records.decision.decisionOutputJson) as {
+    vendorBilledAmount: string
+    amount: string
+  }
+  assert.equal(trace.vendorBilledAmount, '5.25000000')
+  assert.equal(trace.amount, '0.00000000')
 })
 
 test('requires a published card and exact half-minute vendor quantity', () => {
@@ -85,6 +96,7 @@ test('calculates from billed minutes only when KServe amount is blank', () => {
     connectedDurationMs: null,
     vendorBilledMinutes: '0.50000000',
     vendorBilledAmount: null,
+    fallbackReason: 'automated_validation_unresolved',
     sourceEvidence: {
       kind: 'call_manifest',
       referenceId: 'usage-file-legacy',
@@ -93,4 +105,8 @@ test('calculates from billed minutes only when KServe amount is blank', () => {
     decidedAt: '2026-04-30T12:00:00.000Z',
   }, rateCard)
   assert.equal(records.calculation?.totalAmount, '4.75000000')
+  assert.equal(
+    records.calculation?.calculationBasis,
+    'accepted_as_billed_unverified',
+  )
 })

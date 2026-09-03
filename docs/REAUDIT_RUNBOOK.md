@@ -16,9 +16,9 @@ Read-only preflight on 2026-07-27:
 - legacy sensitivity values exist but no longer control automation authority.
 
 The 26,874 calls without recordings cannot be described as independently
-AI-audited. At cycle close, the locked business fallback is accepted-as-billed
-and explicitly unverified; it must not be merged into the independently verified
-population.
+AI-audited. At cycle close, the locked business fallback records zero audited
+time and amount with `No Recording Found`; it must not be merged into the
+independently verified population.
 
 ## Safe sample
 

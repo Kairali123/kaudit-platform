@@ -26,19 +26,19 @@ const SHA256 = /^[a-f0-9]{64}$/
 
 export const ACCEPTED_AS_BILLED_RULESET = {
   schemaVersion: '1',
-  rule: 'accepted_as_billed_unverified',
+  rule: 'cycle_close_unverified_fallback',
   triggers: [
     'no_recording_after_automatic_retry_window',
     'automated_validation_unresolved_at_cycle_close',
   ],
   amount:
-    'vendor-supplied billed amount when present; otherwise vendor billed minutes multiplied by the locked rate',
+    'zero when no recording exists; otherwise vendor-supplied billed amount when present or vendor billed minutes multiplied by the locked rate',
   authority:
     'cycle-close deterministic fallback; not an independent AI audit',
 } satisfies JsonValue
 
 export const ACCEPTED_AS_BILLED_RULESET_VERSION =
-  'cycle-close-fallback/1.2.0'
+  'cycle-close-fallback/1.3.0'
 export const ACCEPTED_AS_BILLED_RULESET_SHA256 =
   canonicalJsonSha256(ACCEPTED_AS_BILLED_RULESET)
 
@@ -120,11 +120,18 @@ export function buildAcceptedAsBilledRecords(
   ) {
     throw new Error('Vendor quantity cannot be represented exactly')
   }
-  const amountScale = suppliedAmountScale ?? legacyAmountScale
+  const fallbackReason = input.fallbackReason ?? 'no_recording'
+  const vendorAssertedAmountScale = suppliedAmountScale ?? legacyAmountScale
+  const vendorAssertedAmount = fixed8(vendorAssertedAmountScale)
+  const amountScale = fallbackReason === 'no_recording'
+    ? 0n
+    : vendorAssertedAmountScale
   const amount = fixed8(amountScale)
-  const vendorAmountSource = suppliedAmountScale == null
-    ? 'legacy_rate_derived'
-    : 'vendor_supplied'
+  const vendorAmountSource = fallbackReason === 'no_recording'
+    ? 'no_recording_zero'
+    : suppliedAmountScale == null
+      ? 'legacy_rate_derived'
+      : 'vendor_supplied'
   const evidence = [input.sourceEvidence]
   const evidenceManifestSha256 = canonicalJsonSha256(
     evidence as unknown as JsonValue,
@@ -132,7 +139,8 @@ export function buildAcceptedAsBilledRecords(
   const inputManifestSha256 = canonicalJsonSha256({
     callId: input.callId,
     vendorBilledMinutes: fixed8(minuteScale),
-    vendorBilledAmount: amount,
+    vendorBilledAmount: vendorAssertedAmount,
+    fallbackAmount: amount,
     vendorAmountSource,
     claimedDurationMs: input.claimedDurationMs,
     connectedDurationMs: input.connectedDurationMs,
@@ -141,19 +149,20 @@ export function buildAcceptedAsBilledRecords(
     fallbackRulesetSha256: ACCEPTED_AS_BILLED_RULESET_SHA256,
     billingRulesetSha256: KSERVE_RULESET_SHA256,
   } as JsonValue)
-  const fallbackReason = input.fallbackReason ?? 'no_recording'
   const reasonCode =
     fallbackReason === 'automated_validation_unresolved'
       ? 'AUTOMATED_VALIDATION_UNRESOLVED_ACCEPTED_AS_BILLED'
-      : 'NO_RECORDING_ACCEPTED_AS_BILLED'
+      : 'NO_RECORDING_FOUND_ZERO'
   const trace = {
     schemaVersion: '1',
     decisionType: 'verified_call_billing',
-    calculationBasis: 'accepted_as_billed_unverified',
+    calculationBasis: fallbackReason === 'no_recording'
+      ? 'no_recording_zero'
+      : 'accepted_as_billed_unverified',
     warning:
       fallbackReason === 'automated_validation_unresolved'
         ? 'Automated validation remained unresolved at cycle close; the KServe claim was accepted without an independently verified duration.'
-        : 'No recording was available; the KServe claim was accepted without independent verification.',
+        : 'No Recording Found',
     callId: input.callId,
     rateCardId: rateCard.id,
     rateCardVersion: rateCard.version,
@@ -166,9 +175,11 @@ export function buildAcceptedAsBilledRecords(
     evidenceManifestSha256,
     inputManifestSha256,
     vendorBilledMinutes: fixed8(minuteScale),
-    vendorBilledAmount: amount,
+    vendorBilledAmount: vendorAssertedAmount,
     vendorAmountSource,
-    billableDurationMs,
+    billableDurationMs: fallbackReason === 'no_recording'
+      ? 0
+      : billableDurationMs,
     amount,
     currency: 'INR',
     outcome: {
@@ -186,7 +197,9 @@ export function buildAcceptedAsBilledRecords(
     engineVersion: KSERVE_BILLING_ENGINE_VERSION,
     inputManifestSha256,
     status: 'final',
-    calculationBasis: 'accepted_as_billed_unverified',
+    calculationBasis: fallbackReason === 'no_recording'
+      ? 'no_recording_zero'
+      : 'accepted_as_billed_unverified',
     claimedDurationMs: input.claimedDurationMs,
     connectedDurationMs: input.connectedDurationMs,
     recordedDurationMs: null,
@@ -194,7 +207,9 @@ export function buildAcceptedAsBilledRecords(
     conversationEndMs: null,
     wrapUpGraceMs: null,
     adjustedChargeableDurationMs: null,
-    billableDurationMs,
+    billableDurationMs: fallbackReason === 'no_recording'
+      ? 0
+      : billableDurationMs,
     oneWayTailMs: null,
     oneWayTailAlert: null,
     subtotalAmount: amount,
@@ -209,18 +224,30 @@ export function buildAcceptedAsBilledRecords(
   }
   const component: BillingComponentRecord = {
     componentType: 'platform',
-    ruleCode: 'ACCEPTED_AS_BILLED_UNVERIFIED',
-    rawQuantity: suppliedAmountScale == null
-      ? fixed8(minuteScale)
-      : amount,
-    rawUnit: suppliedAmountScale == null ? 'minute' : 'INR',
-    billableQuantity: suppliedAmountScale == null
-      ? fixed8(minuteScale)
-      : amount,
-    billingIncrement: suppliedAmountScale == null
-      ? 'vendor_0.5_min'
-      : 'vendor_asserted_amount',
-    unitRate: suppliedAmountScale == null ? '9.50000000' : '1.00000000',
+    ruleCode: fallbackReason === 'no_recording'
+      ? 'NO_RECORDING_ZERO'
+      : 'ACCEPTED_AS_BILLED_UNVERIFIED',
+    rawQuantity: fallbackReason === 'no_recording'
+      ? '0.00000000'
+      : suppliedAmountScale == null
+        ? fixed8(minuteScale)
+        : amount,
+    rawUnit: fallbackReason === 'no_recording' || suppliedAmountScale != null
+      ? 'INR'
+      : 'minute',
+    billableQuantity: fallbackReason === 'no_recording'
+      ? '0.00000000'
+      : suppliedAmountScale == null
+        ? fixed8(minuteScale)
+        : amount,
+    billingIncrement: fallbackReason === 'no_recording'
+      ? 'no_recording_zero'
+      : suppliedAmountScale == null
+        ? 'vendor_0.5_min'
+        : 'vendor_asserted_amount',
+    unitRate: fallbackReason === 'no_recording' || suppliedAmountScale != null
+      ? '1.00000000'
+      : '9.50000000',
     subtotalAmount: amount,
     taxAmount: '0.00000000',
     totalAmount: amount,

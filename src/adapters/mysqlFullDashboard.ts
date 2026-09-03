@@ -173,7 +173,8 @@ export async function collectBilling(
               AND current.calculation_basis IN (
                 'independent_conversation_end',
                 'independent_category_service_end',
-                'accepted_as_billed_unverified'
+                'accepted_as_billed_unverified',
+                'no_recording_zero'
               )
               AND (
                 (current.calculation_basis IN (
@@ -181,8 +182,10 @@ export async function collectBilling(
                    'independent_category_service_end'
                  )
                  AND current.audit_run_id IS NOT NULL)
-                OR current.calculation_basis =
-                   'accepted_as_billed_unverified'
+                OR current.calculation_basis IN (
+                   'accepted_as_billed_unverified',
+                   'no_recording_zero'
+                )
               )
               AND current.input_manifest_sha256 IS NOT NULL
               AND current.ruleset_sha256 IS NOT NULL

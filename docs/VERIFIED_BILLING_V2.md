@@ -41,9 +41,10 @@ A calculation can become `final` only when all of these are true:
 
 Below-threshold calls become `unresolved` and request a secondary automated pass. When
 the configured automated attempts are exhausted, they remain unresolved until cycle
-close. The separately approved close policy may then accept KServe's claimed minutes,
-but that fallback must be labeled `accepted_as_billed_unverified`; it must never be
-stored as an independently verified result.
+close. Recording-backed failures may then retain KServe's claim as
+`accepted_as_billed_unverified`. Calls without recording evidence resolve as
+`no_recording_zero` with zero audited duration and amount. Neither fallback is stored
+as an independently verified result.
 
 ## Trace and legacy isolation
 

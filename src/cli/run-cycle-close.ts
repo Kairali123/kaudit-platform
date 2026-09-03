@@ -62,7 +62,14 @@ try {
   let inserted = 0
   let duplicates = 0
   let acceptedAmountPaise = 0
+  let noRecordingZeroCandidates = 0
+  let recordingFallbackCandidates = 0
   for (const candidate of candidates) {
+    if (candidate.fallbackReason === 'no_recording') {
+      noRecordingZeroCandidates += 1
+    } else {
+      recordingFallbackCandidates += 1
+    }
     const records = buildAcceptedAsBilledRecords({
       callId: candidate.callId,
       auditRunId: candidate.auditRunId,
@@ -94,13 +101,15 @@ try {
     mode,
     month: period.month,
     candidates: candidates.length,
+    noRecordingZeroCandidates,
+    recordingFallbackCandidates,
     inserted,
     duplicates,
     acceptedAsBilledAmount: (
       acceptedAmountPaise / 100
     ).toFixed(2),
     warning:
-      'accepted_as_billed_unverified is a cycle-close fallback, not an independent AI audit',
+      'Cycle-close outcomes are deterministic fallbacks, not independent AI audits',
   }, null, 2)}\n`)
 } finally {
   await pool.end()

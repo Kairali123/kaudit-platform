@@ -1,5 +1,13 @@
 # Decision log
 
+## 2026-09-03 — explicit exhausted and no-recording fallbacks
+
+Recording-backed calls retain normal AI retries. Only an exhausted recording
+may receive the deterministic `accepted_as_billed_unverified` cycle-close
+resolution using KServe's supplied time and amount. A call with no recording
+receives `no_recording_zero`, zero audited time and amount, and the remark
+`No Recording Found`. Neither resolution is represented as model output.
+
 ## 2026-07-29 — replace manual calibration with automated consensus
 
 The owner explicitly approved zero manual labeling. Human-labeled
@@ -39,4 +47,4 @@ are not used to decide whether a call can be processed.
 The platform must display `Audit pending` and must not release Kairali's
 verified bill until every call has an explicit resolution. Calls without
 recordings become resolved only through the approved, recorded cycle-close
-`accepted_as_billed_unverified` fallback.
+`no_recording_zero` fallback.

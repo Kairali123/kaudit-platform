@@ -249,7 +249,6 @@ export function AuditMonitorPage() {
   const [pendingPage, setPendingPage] = useState(1)
   const [noRecordingPage, setNoRecordingPage] = useState(1)
   const [category, setCategory] = useState('')
-  const [language, setLanguage] = useState('')
   const [taskIdDraft, setTaskIdDraft] = useState('')
   const [taskId, setTaskId] = useState('')
   const queryString = new URLSearchParams({
@@ -258,12 +257,10 @@ export function AuditMonitorPage() {
     noRecordingPage: String(noRecordingPage),
     pageSize: '25',
     ...(category ? { category } : {}),
-    ...(language ? { language } : {}),
     ...(taskId ? { taskId } : {}),
   }).toString()
   const summaryFilterQueryString = new URLSearchParams({
     ...(category ? { category } : {}),
-    ...(language ? { language } : {}),
     ...(taskId ? { taskId } : {}),
   }).toString()
   const auditedRowsQuery = useQuery({
@@ -274,7 +271,6 @@ export function AuditMonitorPage() {
       period.month,
       page,
       category,
-      language,
       taskId,
     ],
     queryFn: () =>
@@ -335,7 +331,6 @@ export function AuditMonitorPage() {
       'summary-core',
       period.month,
       category,
-      language,
       taskId,
     ],
     queryFn: () =>
@@ -356,7 +351,6 @@ export function AuditMonitorPage() {
       'summary-usage',
       period.month,
       category,
-      language,
       taskId,
     ],
     queryFn: () =>
@@ -374,7 +368,6 @@ export function AuditMonitorPage() {
       'summary-financial',
       period.month,
       category,
-      language,
       taskId,
     ],
     queryFn: () =>
@@ -431,7 +424,7 @@ export function AuditMonitorPage() {
     setSelected([])
     setReceipt(null)
     setIdempotencyKey(newIdempotencyKey())
-  }, [period.month, page, category, language, taskId])
+  }, [period.month, page, category, taskId])
   const resetPages = () => {
     setPage(1)
     setPendingPage(1)
@@ -443,7 +436,6 @@ export function AuditMonitorPage() {
     setTaskId(nextTaskId)
     setTaskIdDraft(nextTaskId)
     setCategory('')
-    setLanguage('')
     resetPages()
   }
   const clearTaskSearch = () => {
@@ -708,21 +700,6 @@ export function AuditMonitorPage() {
           >
             <option value="">All categories</option>
             {(summaryData?.filters.availableCategories ?? []).map((value) => (
-              <option value={value} key={value}>{value}</option>
-            ))}
-          </select>
-        </label>
-        <label>
-          Language
-          <select
-            value={language}
-            onChange={(event) => {
-              setLanguage(event.target.value)
-              setPage(1)
-            }}
-          >
-            <option value="">All languages</option>
-            {(summaryData?.filters.availableLanguages ?? []).map((value) => (
               <option value={value} key={value}>{value}</option>
             ))}
           </select>
@@ -1076,6 +1053,7 @@ export function AuditMonitorPage() {
                 <th>KServe connected</th>
                 <th>Billing resolution</th>
                 <th>Auditor amount</th>
+                <th>Remarks</th>
                 <th>Admin review</th>
               </tr>
             </thead>
@@ -1095,6 +1073,7 @@ export function AuditMonitorPage() {
                     {row.billingBasis || row.billingStatus || 'Audit pending'}
                   </td>
                   <td>{money(row.auditorAmount)}</td>
+                  <td>{row.auditRemark || '—'}</td>
                   <td>
                     <Link
                       className="table-action"
@@ -1112,7 +1091,7 @@ export function AuditMonitorPage() {
               {noRecordingRowsQuery.isSuccess &&
                 noRecordingData?.noRecordingRows.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="table-empty">
+                  <td colSpan={9} className="table-empty">
                     {taskId
                       ? 'No no-recording call matches this Task ID in the selected bill month.'
                       : 'Every call in this period has a recording URL.'}

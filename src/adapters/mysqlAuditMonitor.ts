@@ -14,7 +14,6 @@ export interface AuditMonitorQuery {
   noRecordingPage: number
   pageSize: number
   category: string | null
-  language: string | null
   taskId: string | null
   periodStart?: string | null
   periodEnd?: string | null
@@ -73,6 +72,7 @@ export interface AuditQueueRow {
   auditorAmount: string | null
   billingStatus: string | null
   billingBasis: string | null
+  auditRemark: string | null
   lastActivityAt: string | null
 }
 
@@ -131,10 +131,8 @@ export interface AuditMonitorData {
   noRecordingPagination: AuditPagination
   filters: {
     category: string | null
-    language: string | null
     taskId: string | null
     availableCategories: string[]
-    availableLanguages: string[]
   }
   authority: 'automated'
   contentBoundary: string
@@ -291,6 +289,7 @@ interface QueueDataRow extends RowDataPacket {
   auditor_amount: string | null
   billing_status: string | null
   billing_basis: string | null
+  audit_remark: string | null
   last_activity_at: Date | string | null
 }
 
@@ -538,6 +537,7 @@ function mapQueueRow(
     auditorAmount: row.auditor_amount,
     billingStatus: row.billing_status,
     billingBasis: row.billing_basis,
+    auditRemark: row.audit_remark,
     lastActivityAt: isoDate(row.last_activity_at),
   }
 }
@@ -556,10 +556,6 @@ function filterSql(query: AuditMonitorQuery): {
     clauses.push('c.canonical_outcome_code = ?')
     params.push(query.category)
   }
-  if (query.language) {
-    clauses.push('LOWER(COALESCE(t.language, ?)) = ?')
-    params.push('unknown', query.language.toLowerCase())
-  }
   if (query.taskId) {
     clauses.push(taskIdPredicate('c'))
     params.push(query.taskId, query.taskId)
@@ -572,21 +568,6 @@ function financialAuditedScope(query: AuditMonitorQuery): {
   params: unknown[]
 } {
   const params: unknown[] = []
-  const latestTranscript = query.language
-    ? `AND completed_transcript.id = (
-          SELECT transcript_latest.id
-          FROM kaudit_transcript transcript_latest
-          WHERE transcript_latest.call_id = c.id
-            AND transcript_latest.call_artifact_id = ca.id
-            AND transcript_latest.status = 'completed'
-          ORDER BY transcript_latest.created_at DESC,
-                   transcript_latest.id DESC
-          LIMIT 1
-        )
-        AND LOWER(COALESCE(completed_transcript.language, ?)) = ?`
-    : ''
-  if (query.language) params.push('unknown', query.language.toLowerCase())
-
   const clauses = [
     `EXISTS (
       SELECT 1
@@ -594,7 +575,6 @@ function financialAuditedScope(query: AuditMonitorQuery): {
       WHERE completed_transcript.call_id = c.id
         AND completed_transcript.call_artifact_id = ca.id
         AND completed_transcript.status = 'completed'
-        ${latestTranscript}
     )`,
     'c.canonical_outcome_code IS NOT NULL',
   ]
@@ -827,19 +807,9 @@ export async function collectAuditMonitor(
       periodParams,
     )
       : Promise.resolve<[RowDataPacket[], never]>([[], undefined as never]),
-    includeCoreSummary
-      ? pool.query<RowDataPacket[]>(
-      `SELECT DISTINCT LOWER(COALESCE(t.language, 'unknown')) AS value
-       FROM kaudit_transcript t
-       JOIN kaudit_call c ON c.id = t.call_id
-       WHERE t.status = 'completed'${periodClause}
-       ORDER BY value`,
-      periodParams,
-    )
-      : Promise.resolve<[RowDataPacket[], never]>([[], undefined as never]),
   ])
 
-  const [overallRows, reauditRows, filteredRows, categories, languages] =
+  const [overallRows, reauditRows, filteredRows, categories] =
     summaryPrelude
 
   const overall = overallRows[0][0]
@@ -1006,10 +976,8 @@ export async function collectAuditMonitor(
   }
   const summaryFilters: AuditMonitorData['filters'] = {
     category: query.category,
-    language: query.language,
     taskId: query.taskId,
     availableCategories: categories[0].map((row) => String(row.value)),
-    availableLanguages: languages[0].map((row) => String(row.value)),
   }
   if (section === 'summary-core') {
     return {
@@ -1242,6 +1210,7 @@ export async function collectAuditMonitor(
            NULL AS auditor_amount,
            NULL AS billing_status,
            NULL AS billing_basis,
+           NULL AS audit_remark,
            pending.last_activity_at
          FROM (
            SELECT
@@ -1299,6 +1268,11 @@ export async function collectAuditMonitor(
            CAST(calculation.total_amount AS CHAR) AS auditor_amount,
            calculation.status AS billing_status,
            calculation.calculation_basis AS billing_basis,
+           CASE
+             WHEN calculation.calculation_basis = 'no_recording_zero'
+             THEN 'No Recording Found'
+             ELSE NULL
+           END AS audit_remark,
            COALESCE(ca.audio_last_attempt_at, ca.created_at, c.created_at)
              AS last_activity_at
          FROM (
@@ -1344,6 +1318,7 @@ export async function collectAuditMonitor(
          LEFT JOIN kaudit_billing_calculation calculation
            ON calculation.call_id = c.id
           AND calculation.status = 'final'
+          AND calculation.calculation_basis = 'no_recording_zero'
           AND NOT EXISTS (
             SELECT 1
             FROM kaudit_billing_calculation superseding

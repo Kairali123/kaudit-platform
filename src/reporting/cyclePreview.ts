@@ -26,6 +26,7 @@ export interface CyclePreviewRow {
   auditResolution:
     | 'provisional_ai_uncalibrated'
     | 'accepted_as_billed_unverified'
+    | 'no_recording_zero'
   category: string
   confidence: string | null
   vendorBilledMinutes: string
@@ -76,14 +77,14 @@ export function buildCyclePreviewRow(
   if (!row.recordingAvailable) {
     return {
       callReference: row.callReference,
-      auditResolution: 'accepted_as_billed_unverified',
+      auditResolution: 'no_recording_zero',
       category: 'NO_RECORDING',
       confidence: null,
       vendorBilledMinutes: row.vendorBilledMinutes,
-      verifiedBillableMinutes: row.vendorBilledMinutes,
+      verifiedBillableMinutes: '0.00000000',
       vendorAmount,
-      verifiedAmount: vendorAmount,
-      variance: '0.00000000',
+      verifiedAmount: '0.00000000',
+      variance: fixed8(scale8(vendorAmount)),
       vendorConnectedDurationMs: row.vendorConnectedDurationMs,
       recordedDurationMs: null,
       conversationEndMs: null,

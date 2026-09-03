@@ -207,8 +207,10 @@ export async function persistProvisionalReconciliation(
            FROM kaudit_billing_calculation
            WHERE call_id = ?
              AND status = 'final'
-             AND calculation_basis =
-               'accepted_as_billed_unverified'
+             AND calculation_basis IN (
+               'accepted_as_billed_unverified',
+               'no_recording_zero'
+             )
              AND NOT EXISTS (
                SELECT 1 FROM kaudit_billing_calculation newer
                WHERE newer.supersedes_calculation_id =
@@ -230,20 +232,20 @@ export async function persistProvisionalReconciliation(
           input.callId,
           calculationRows[0]?.id ?? null,
           row.auditResolution ===
-            'accepted_as_billed_unverified'
-            ? 'NO_RECORDING_ACCEPTED'
+            'no_recording_zero'
+            ? 'NO_RECORDING_ZERO'
             : 'AI_UNCALIBRATED_PREVIEW',
           row.vendorAmount,
           row.verifiedAmount,
           row.variance,
           row.auditResolution ===
-            'accepted_as_billed_unverified'
-            ? 'accepted'
+            'no_recording_zero'
+            ? 'adjusted'
             : 'unresolved',
           Number(row.variance) === 0 ? 'none' : 'material',
           row.auditResolution ===
-            'accepted_as_billed_unverified'
-            ? 'No recording; explicitly accepted at the KServe source quantity.'
+            'no_recording_zero'
+            ? 'No Recording Found'
             : 'Provisional AI-derived amount; calibration is not complete.',
         ],
       )

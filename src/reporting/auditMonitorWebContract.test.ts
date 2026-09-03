@@ -90,6 +90,13 @@ test('Task ID search is exact, submitted deliberately, and clearable', async () 
   assert.match(source, /No no-recording call matches this Task ID/)
 })
 
+test('the monitor has no language filter or language-summary query', async () => {
+  const page = await webSource('pages/AuditMonitorPage.tsx')
+  const api = await webSource('lib/api.ts')
+  assert.doesNotMatch(page, /setLanguage|All languages|availableLanguages/)
+  assert.doesNotMatch(api, /availableLanguages/)
+})
+
 test('pending queue displays the exact recording URL with a safe link', async () => {
   const api = await webSource('lib/api.ts')
   const page = await webSource('pages/AuditMonitorPage.tsx')
@@ -99,4 +106,12 @@ test('pending queue displays the exact recording URL with a safe link', async ()
   assert.match(page, /parsed\.protocol === 'https:'/)
   assert.match(page, /target="_blank"/)
   assert.match(page, /rel="noreferrer"/)
+})
+
+test('no-recording rows show a zero audit resolution and exact remark', async () => {
+  const api = await webSource('lib/api.ts')
+  const page = await webSource('pages/AuditMonitorPage.tsx')
+  assert.match(api, /auditRemark: string \| null/)
+  assert.match(page, /<th>Remarks<\/th>/)
+  assert.match(page, /row\.auditRemark/)
 })

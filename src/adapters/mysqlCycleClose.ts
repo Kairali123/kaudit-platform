@@ -141,6 +141,15 @@ export async function listAcceptedAsBilledCandidates(
                      validation.id
              )
          )
+         OR EXISTS (
+           SELECT 1
+           FROM kaudit_call_artifact exhausted_recording
+           WHERE exhausted_recording.call_id = c.id
+             AND exhausted_recording.artifact_type = 'recording'
+             AND exhausted_recording.is_final = 1
+             AND exhausted_recording.source_url IS NOT NULL
+             AND exhausted_recording.audio_processing_status = 'exhausted'
+         )
        )
        AND NOT EXISTS (
          SELECT 1

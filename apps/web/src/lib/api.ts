@@ -313,6 +313,7 @@ export interface AuditQueueRow {
   auditorAmount: string | null
   billingStatus: string | null
   billingBasis: string | null
+  auditRemark: string | null
   lastActivityAt: string | null
 }
 
@@ -368,10 +369,8 @@ export interface AuditMonitorData {
   noRecordingPagination: AuditPagination
   filters: {
     category: string | null
-    language: string | null
     taskId: string | null
     availableCategories: string[]
-    availableLanguages: string[]
   }
   authority: 'automated'
   contentBoundary: string

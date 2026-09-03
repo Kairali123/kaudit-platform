@@ -5,7 +5,7 @@ import {
   sumCyclePreview,
 } from './cyclePreview.ts'
 
-test('keeps no-recording calls explicit and accepted at the vendor amount', () => {
+test('keeps no-recording calls explicit with zero audited amount', () => {
   const result = buildCyclePreviewRow({
     callId: 'call-1',
     callReference: 'task-1',
@@ -20,10 +20,10 @@ test('keeps no-recording calls explicit and accepted at the vendor amount', () =
     evidenceSha256: 'a'.repeat(64),
     auditRunId: null,
   })
-  assert.equal(result.auditResolution, 'accepted_as_billed_unverified')
+  assert.equal(result.auditResolution, 'no_recording_zero')
   assert.equal(result.vendorAmount, '5.25000000')
-  assert.equal(result.verifiedAmount, '5.25000000')
-  assert.equal(result.variance, '0.00000000')
+  assert.equal(result.verifiedAmount, '0.00000000')
+  assert.equal(result.variance, '5.25000000')
 })
 
 test('uses conversation end plus grace for provisional AI preview and sums exactly', () => {

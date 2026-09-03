@@ -15,11 +15,13 @@ An audit resolution is one of:
 2. `independent_category_service_end` — the same verified evidence path with
    the versioned management category policy selecting the service endpoint and
    category-specific grace; or
-3. `accepted_as_billed_unverified` — no usable recording remained after the
-   automatic retry window and, at cycle close, the approved fallback explicitly
-   accepted KServe's supplied minutes.
+3. `accepted_as_billed_unverified` — a recording existed but automated audit
+   exhausted its retry window; at cycle close, the approved fallback explicitly
+   retains KServe's supplied minutes and amount; or
+4. `no_recording_zero` — no recording URL exists, so audited duration and amount
+   are zero and the recorded remark is `No Recording Found`.
 
-Missing recordings are never silently counted as audited.
+Neither fallback is described as an independent AI audit.
 
 ## How next month's data enters SQL
 
