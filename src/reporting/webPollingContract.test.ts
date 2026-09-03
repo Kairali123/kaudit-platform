@@ -82,6 +82,18 @@ test('the query client does not poll the whole app by default', async () => {
   assert.match(source, /refetchOnWindowFocus: false/)
 })
 
+test('a server answer is surfaced, never replayed automatically', async () => {
+  const source = await webSource('main.tsx')
+  // Retrying a 5xx immediately doubles the load on a database that has just
+  // failed to answer the same aggregate. Only a transport failure — no server
+  // answer at all — is worth an automatic second attempt.
+  assert.match(
+    source,
+    /retry: \(failureCount, error\) =>\s*\n?\s*!\(error instanceof ApiError\) && failureCount < 1/,
+  )
+  assert.doesNotMatch(source, /error\.status === 504/)
+})
+
 test('every polling screen is one of the declared live monitors', async () => {
   const polling: string[] = []
   for (const relative of await webModules()) {
