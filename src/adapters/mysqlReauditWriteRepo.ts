@@ -81,6 +81,11 @@ function failureStatus(outcome: ReauditItemResult['outcome']): string {
   return 'exhausted'
 }
 
+function retryableProviderError(errorCode: string | undefined): boolean {
+  return errorCode === 'TRANSCRIPTION_PROVIDER_RETRYABLE' ||
+    errorCode === 'CLASSIFICATION_PROVIDER_RETRYABLE'
+}
+
 function failureFinding(outcome: ReauditItemResult['outcome']): string {
   if (outcome === 'source_missing') return 'SOURCE_MISSING'
   if (outcome === 'evidence_altered') return 'EVIDENCE_ALTERED'
@@ -389,8 +394,10 @@ export function createMysqlReauditWriteRepo(
           const terminal =
             result.outcome === 'evidence_altered' ||
             result.outcome === 'unsafe_url' ||
-            result.outcome === 'transcription_failed' ||
-            result.outcome === 'classification_failed' ||
+            (result.outcome === 'transcription_failed' &&
+              !retryableProviderError(result.errorCode)) ||
+            (result.outcome === 'classification_failed' &&
+              !retryableProviderError(result.errorCode)) ||
             result.outcome === 'spend_state_unknown' ||
             attempt >= MAX_ATTEMPTS
           const nextAttempt = terminal

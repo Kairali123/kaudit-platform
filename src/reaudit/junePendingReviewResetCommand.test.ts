@@ -26,7 +26,7 @@ test('June pending-review reset is exact and preserves source evidence', () => {
   assert.match(command, /RESET_JUNE_278_PENDING_REVIEWS/)
   assert.match(command, /GET_LOCK\('kaudit-independent-reaudit-v2', 0\)/)
   assert.match(command, /FOR UPDATE/)
-  assert.match(command, /unexpected:state-distribution/)
+  assert.match(command, /unexpected:active-or-invalid-state/)
   assert.match(
     command,
     /SET audio_processing_status = 'pending',\s+audio_attempt_count = 0,\s+audio_last_attempt_at = NULL,\s+audio_next_attempt_at = NULL,\s+audio_last_error = NULL/,

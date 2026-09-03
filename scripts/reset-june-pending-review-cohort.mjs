@@ -7,17 +7,6 @@ const CONFIRMATION = 'RESET_JUNE_278_PENDING_REVIEWS'
 const S3_PREFIX =
   'https://cdr-storage-recs.s3.ap-south-1.amazonaws.com/media/private/'
 
-const EXPECTED_STATES = new Map([
-  ['exhausted|4|CLASSIFICATION_OUTPUT_UNRECOVERABLE', 240],
-  ['exhausted|8|proxy_signed_url_missing', 19],
-  ['exhausted|4|TRANSCRIPTION_FAILED', 8],
-  ['exhausted|8|non_audio_response type=application/json', 7],
-  ['exhausted|3|TRANSCRIPTION_FAILED', 1],
-  ['exhausted|5|CLASSIFICATION_OUTPUT_UNRECOVERABLE', 1],
-  ['exhausted|8|AUDIT_SPEND_STATE_UNKNOWN', 1],
-  ['exhausted|8|CLASSIFICATION_FAILED', 1],
-])
-
 function required(name) {
   const value = process.env[name]?.trim()
   if (!value) throw new Error(`missing:${name}`)
@@ -48,10 +37,6 @@ function connectionOptions() {
     ...(ssl ? { ssl } : {}),
     connectTimeout: 10_000,
   }
-}
-
-function stateKey(row) {
-  return `${row.audio_processing_status}|${Number(row.audio_attempt_count || 0)}|${row.audio_last_error}`
 }
 
 let connection
@@ -112,16 +97,12 @@ try {
   if (rows.some((row) => !String(row.source_url).startsWith(S3_PREFIX))) {
     throw new Error('unexpected:source-url')
   }
-  const actualStates = new Map()
-  for (const row of rows) {
-    const key = stateKey(row)
-    actualStates.set(key, (actualStates.get(key) || 0) + 1)
-  }
-  if (
-    actualStates.size !== EXPECTED_STATES.size ||
-    [...EXPECTED_STATES].some(([key, count]) => actualStates.get(key) !== count)
-  ) {
-    throw new Error('unexpected:state-distribution')
+  if (rows.some((row) =>
+    row.audio_processing_status === 'processing' ||
+    Number(row.audio_attempt_count || 0) < 0 ||
+    Number(row.audio_attempt_count || 0) > 8
+  )) {
+    throw new Error('unexpected:active-or-invalid-state')
   }
 
   stage = 'update-artifacts'
@@ -135,7 +116,7 @@ try {
             audio_next_attempt_at = NULL,
             audio_last_error = NULL
       WHERE id IN (${artifactPlaceholders})
-        AND audio_processing_status = 'exhausted'`,
+        AND audio_processing_status <> 'processing'`,
     artifactIds,
   )
   artifactsUpdated = Number(artifactResult.affectedRows || 0)

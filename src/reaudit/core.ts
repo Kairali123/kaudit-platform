@@ -28,6 +28,24 @@ export const MERGE_MAX_BLOCK_CHARS = 250
 
 const decimal = /^(0|1)(?:\.\d{1,8})?$/
 
+function retryableProviderFailure(error: unknown): boolean {
+  if (!error || typeof error !== 'object') return false
+  const shaped = error as { status?: unknown; code?: unknown }
+  const status = Number(shaped.status)
+  if (status === 408 || status === 409 || status === 429 || status >= 500) {
+    return true
+  }
+  return new Set([
+    'ETIMEDOUT',
+    'ECONNRESET',
+    'ECONNREFUSED',
+    'EAI_AGAIN',
+    'ENETUNREACH',
+    'APIConnectionError',
+    'APIConnectionTimeoutError',
+  ]).has(String(shaped.code || ''))
+}
+
 /**
  * Positive voicemail language only. Silence, an agent introduction, and a
  * request for the customer's name intentionally match none of these cues.
@@ -767,12 +785,14 @@ export async function auditOneCall(options: {
     transcript = await ai.transcribe(fetched.bytes, {
       contentType: fetched.contentType || 'audio/ogg',
     })
-  } catch {
+  } catch (error) {
     return {
       callId: candidate.callId,
       artifactId: candidate.artifactId,
       outcome: 'transcription_failed',
-      errorCode: 'TRANSCRIPTION_FAILED',
+      errorCode: retryableProviderFailure(error)
+        ? 'TRANSCRIPTION_PROVIDER_RETRYABLE'
+        : 'TRANSCRIPTION_FAILED',
     }
   }
   const durationMismatch =
@@ -823,12 +843,14 @@ export async function auditOneCall(options: {
         connectedDurationMs: candidate.connectedDurationMs,
         durationMismatch,
       })
-    } catch {
+    } catch (error) {
       return {
         callId: candidate.callId,
         artifactId: candidate.artifactId,
         outcome: 'classification_failed',
-        errorCode: 'CLASSIFICATION_MODEL_FAILED',
+        errorCode: retryableProviderFailure(error)
+          ? 'CLASSIFICATION_PROVIDER_RETRYABLE'
+          : 'CLASSIFICATION_MODEL_FAILED',
       }
     }
     let classification: ModelClassification

@@ -737,6 +737,37 @@ test('classification failure stores a bounded code instead of thrown prose', asy
   assert.equal(result.errorCode, 'CLASSIFICATION_MODEL_FAILED')
 })
 
+test('transcription throttling returns a bounded retryable code', async () => {
+  const throttled = Object.assign(new Error('synthetic provider prose'), {
+    status: 429,
+  })
+  const result = await auditOneCall({
+    candidate,
+    allowedHosts: ['cdr-storage-recs.s3.ap-south-1.amazonaws.com'],
+    fetcher: {
+      async fetch() {
+        return {
+          ok: true,
+          status: 200,
+          bytes: Buffer.from('synthetic-audio'),
+          contentType: 'audio/ogg',
+        }
+      },
+    },
+    ai: {
+      async transcribe() {
+        throw throttled
+      },
+      async classify() {
+        throw new Error('unreachable')
+      },
+    },
+  })
+
+  assert.equal(result.outcome, 'transcription_failed')
+  assert.equal(result.errorCode, 'TRANSCRIPTION_PROVIDER_RETRYABLE')
+})
+
 test('classification validation contradictions preserve identified customer speech', async () => {
   const ai: ReauditAi = {
     async transcribe() {

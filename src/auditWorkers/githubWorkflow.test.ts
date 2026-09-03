@@ -124,6 +124,14 @@ test('June pending-review reset is exact, guarded, and model-free', () => {
   assert.match(workflow, /node scripts\/reset-june-pending-review-cohort\.mjs/)
 })
 
+test('June pending recovery uses a low-concurrency drain', () => {
+  assert.match(workflow, /- recover-june-pending/)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "recover-june-pending"[\s\S]{0,180}KAUDIT_AUDIT_BATCH=2[\s\S]{0,80}KAUDIT_AUDIT_CONCURRENCY=2[\s\S]{0,180}KAUDIT_AUDIT_DRAIN=true/,
+  )
+})
+
 test('reusable workflow callers cannot route unknown modes into a worker', () => {
   assert.match(
     workflow,

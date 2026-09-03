@@ -156,6 +156,24 @@ test('a paid classification failure is terminal on its first persisted attempt',
   )
 })
 
+test('a transient transcription provider failure schedules a bounded retry', async () => {
+  const fixture = appendPool({ audioAttemptCount: 1 })
+  const repo = createMysqlReauditWriteRepo(fixture.pool)
+
+  const outcome = await repo.persist(
+    candidate,
+    {
+      callId: candidate.callId,
+      artifactId: candidate.artifactId,
+      outcome: 'transcription_failed',
+      errorCode: 'TRANSCRIPTION_PROVIDER_RETRYABLE',
+    },
+    new Date(0),
+  )
+
+  assert.equal(outcome, 'retry_scheduled')
+})
+
 test('ordinary persistence locks the call row instead of an audit-run gap', async () => {
   const fixture = appendPool()
   const repo = createMysqlReauditWriteRepo(fixture.pool)
