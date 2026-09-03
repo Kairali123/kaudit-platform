@@ -86,10 +86,11 @@ export function createMysqlReauditReadRepo(
                AND invoice.status IN ('received','matched','approved')
            )
            AND (? = 1 OR (
-             ca.audio_attempt_count < 8
+             COALESCE(ca.audio_attempt_count, 0) < 8
              AND (
                (
-                 ca.audio_processing_status NOT IN ('completed','exhausted')
+                 COALESCE(ca.audio_processing_status, 'pending')
+                   NOT IN ('completed','exhausted')
                  AND (
                    ca.audio_next_attempt_at IS NULL
                    OR ca.audio_next_attempt_at <= current_timestamp(6)
@@ -136,7 +137,7 @@ export function createMysqlReauditReadRepo(
            ${scopeSql}
          GROUP BY c.id, ca.id, ca.source_url, ca.sha256,
                   ca.audio_attempt_count
-         ORDER BY ca.audio_attempt_count, c.billing_period_date, c.id
+         ORDER BY COALESCE(ca.audio_attempt_count, 0), c.billing_period_date, c.id
          LIMIT ?`,
         [
           options.includePreviouslyClassified ? 1 : 0,

@@ -80,7 +80,7 @@ test('ordinary claiming reopens only bounded legacy exhausted failures', async (
   )
 
   assert.equal(outcome, 'acquired')
-  assert.match(String(update), /audio_attempt_count < 8/)
+  assert.match(String(update), /COALESCE\(audio_attempt_count, 0\) < 8/)
   assert.match(String(update), /CLASSIFICATION_VALIDATION_FAILED/)
   assert.match(String(update), /AUDIT_SPEND_STATE_UNKNOWN/)
   assert.doesNotMatch(String(update), /CLASSIFICATION_OUTPUT_UNRECOVERABLE/)
@@ -182,5 +182,24 @@ test('ordinary persistence locks the call row instead of an audit-run gap', asyn
       (sql) => /FROM kaudit_audit_run[^]*FOR UPDATE/.test(sql),
     ),
     false,
+  )
+})
+
+test('ordinary claims recover a legacy null processing status', async () => {
+  const fixture = appendPool()
+  const repo = createMysqlReauditWriteRepo(fixture.pool)
+
+  await repo.markStarted(candidate, new Date(0))
+
+  const claim = fixture.statements.find((sql) =>
+    sql.includes("SET audio_processing_status = 'processing'"),
+  ) ?? ''
+  assert.match(
+    claim,
+    /COALESCE\(audio_processing_status, 'pending'\)\s+NOT IN \('completed','exhausted'\)/,
+  )
+  assert.match(
+    claim,
+    /audio_attempt_count = COALESCE\(audio_attempt_count, 0\) \+ 1/,
   )
 })

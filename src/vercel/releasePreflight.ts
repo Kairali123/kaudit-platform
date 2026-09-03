@@ -1,5 +1,6 @@
 import {
   ConfigurationError,
+  BILLING_READ_TIMEOUT_VARIABLE,
   DB_TLS_MODE,
   loadRuntimeConfig,
   OIDC_BROWSER_FLOW_GATE,
@@ -151,6 +152,7 @@ export const REPORTABLE_VARIABLES: readonly string[] = Object.freeze([
   DB_TLS_MODE,
   'DB_SSL_CA_FILE',
   'DB_SSL_CA_PEM',
+  BILLING_READ_TIMEOUT_VARIABLE,
   'KAUDIT_AUTH_MODE',
   'KAUDIT_SECURE_HOST',
   'KAUDIT_SECURE_PORT',

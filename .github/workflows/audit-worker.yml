@@ -1,4 +1,5 @@
 name: Kaudit audit worker
+run-name: "${{ inputs.mode || 'new' }} / ${{ inputs.system }} audit workflow"
 
 on:
   workflow_call:
@@ -42,15 +43,17 @@ on:
           - requested
           - migration-0015
           - migration-0017
+          - migration-billing-read-indexes
           - diagnose-requested
           - diagnose-monitor
+          - diagnose-billing-performance
           - diagnose-failures
       migration_confirmation:
-        description: Type APPLY_0015 or APPLY_0017 for the matching migration mode
+        description: Exact confirmation required by the selected migration mode
         required: false
         type: string
       diagnostic_month:
-        description: YYYY-MM period for diagnose-monitor
+        description: YYYY-MM period for a read-only dashboard diagnostic
         required: false
         type: string
 
@@ -63,6 +66,7 @@ concurrency:
 
 jobs:
   drain:
+    name: "${{ inputs.mode || 'new' }} / ${{ inputs.system }}"
     runs-on: ubuntu-latest
     timeout-minutes: 330
     env:
@@ -94,6 +98,8 @@ jobs:
         env:
           AUDIT_SYSTEM: ${{ inputs.system }}
           AUDIT_MODE: ${{ inputs.mode }}
+          DIAGNOSTIC_MONTH_INPUT: ${{ inputs.diagnostic_month }}
+          MIGRATION_CONFIRMATION_INPUT: ${{ inputs.migration_confirmation }}
         run: |
           if [[ "$DB_TLS_MODE" == "disabled" ]]; then
             unset DB_SSL_CA_PEM
@@ -102,22 +108,40 @@ jobs:
             if [[ "$AUDIT_MODE" == "diagnose-requested" ]]; then
               node scripts/report-billing-reaudit-health.mjs
             elif [[ "$AUDIT_MODE" == "diagnose-monitor" ]]; then
-              KAUDIT_DIAGNOSTIC_MONTH="${{ inputs.diagnostic_month }}" \
+              if [[ ! "$DIAGNOSTIC_MONTH_INPUT" =~ ^20[0-9]{2}-(0[1-9]|1[0-2])$ ]]; then
+                echo "::error::diagnose-monitor is read-only and requires diagnostic_month in YYYY-MM format"
+                exit 2
+              fi
+              KAUDIT_DIAGNOSTIC_MONTH="$DIAGNOSTIC_MONTH_INPUT" \
               node scripts/report-audit-monitor-health.mjs
+            elif [[ "$AUDIT_MODE" == "diagnose-billing-performance" ]]; then
+              unset OPENAI_API_KEY
+              unset KAUDIT_DATABASE_SESSION_SECRET
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_DIAGNOSTIC_MONTH="$DIAGNOSTIC_MONTH_INPUT" \
+              node scripts/report-billing-read-performance.mjs
             elif [[ "$AUDIT_MODE" == "diagnose-failures" ]]; then
               node scripts/report-billing-failure-breakdown.mjs
             elif [[ "$AUDIT_MODE" == "migration-0015" ]]; then
-              if [[ "${{ inputs.migration_confirmation }}" != "APPLY_0015" ]]; then
+              if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0015" ]]; then
                 exit 2
               fi
               KAUDIT_MIGRATION_CONFIRM=APPLY_0015 \
               node scripts/apply-billing-reaudit-migration.mjs
             elif [[ "$AUDIT_MODE" == "migration-0017" ]]; then
-              if [[ "${{ inputs.migration_confirmation }}" != "APPLY_0017" ]]; then
+              if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0017" ]]; then
                 exit 2
               fi
               KAUDIT_MIGRATION_CONFIRM=APPLY_0017 \
               npm run migration:billing-spend-lease
+            elif [[ "$AUDIT_MODE" == "migration-billing-read-indexes" ]]; then
+              if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_BILLING_READ_INDEXES" ]]; then
+                exit 2
+              fi
+              KAUDIT_MIGRATION_CONFIRM=APPLY_BILLING_READ_INDEXES \
+              node scripts/apply-billing-read-indexes.mjs
             elif [[ "$AUDIT_MODE" == "targeted" ]]; then
               if [[ -z "$KAUDIT_TARGETED_REAUDIT_SCOPE_B64" ]]; then
                 exit 2

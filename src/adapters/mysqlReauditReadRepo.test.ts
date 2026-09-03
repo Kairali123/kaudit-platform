@@ -52,10 +52,15 @@ test('parameterizes an exact external task-ID scope in the candidate query', asy
     capturedSql,
     /audio_processing_status = 'exhausted'[\s\S]*CLASSIFICATION_VALIDATION_FAILED[\s\S]*AUDIT_SPEND_STATE_UNKNOWN/,
   )
+  assert.match(
+    capturedSql,
+    /COALESCE\(ca\.audio_processing_status, 'pending'\)\s+NOT IN \('completed','exhausted'\)/,
+  )
+  assert.match(capturedSql, /COALESCE\(ca\.audio_attempt_count, 0\) < 8/)
   assert.doesNotMatch(capturedSql, /CLASSIFICATION_OUTPUT_UNRECOVERABLE/)
   assert.match(
     capturedSql,
-    /ORDER BY ca\.audio_attempt_count, c\.billing_period_date, c\.id/,
+    /ORDER BY COALESCE\(ca\.audio_attempt_count, 0\), c\.billing_period_date, c\.id/,
   )
   assert.match(capturedSql, /GROUP BY[^]*ca\.audio_attempt_count/)
   assert.deepEqual(capturedParameters, [
@@ -104,7 +109,10 @@ test('explicit completed-call reader bypasses only processing and history filter
 
   await repo.listCandidates({ limit: 1, includePreviouslyClassified: true })
 
-  assert.match(capturedSql, /\? = 1 OR \(\s*ca\.audio_attempt_count < 8/)
+  assert.match(
+    capturedSql,
+    /\? = 1 OR \(\s*COALESCE\(ca\.audio_attempt_count, 0\) < 8/,
+  )
   assert.match(capturedSql, /\? = 1 OR \(\s*NOT EXISTS/)
   assert.match(capturedSql, /scope_ref\.external_id IN \(\?\)/)
   assert.match(capturedSql, /c\.outcome_taxonomy_version <> \?/)

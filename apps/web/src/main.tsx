@@ -3,6 +3,7 @@ import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import { BrowserRouter } from 'react-router-dom'
 import { App } from './App'
+import { ApiError } from './lib/api'
 import './styles.css'
 
 /**
@@ -19,7 +20,9 @@ const queryClient = new QueryClient({
   defaultOptions: {
     queries: {
       staleTime: 30_000,
-      retry: 1,
+      retry: (failureCount, error) =>
+        !(error instanceof ApiError && error.status === 504) &&
+        failureCount < 1,
       refetchOnWindowFocus: false,
     },
   },

@@ -78,7 +78,11 @@ test('the query client does not poll the whole app by default', async () => {
   )
   // The rest of the default read behaviour is deliberate and still stated.
   assert.match(source, /staleTime: 30_000/)
-  assert.match(source, /retry: 1/)
+  assert.match(
+    source,
+    /error instanceof ApiError && error\.status === 504/,
+  )
+  assert.match(source, /failureCount < 1/)
   assert.match(source, /refetchOnWindowFocus: false/)
 })
 
@@ -148,7 +152,7 @@ test('each declared interval is a bounded number, never unconditional', async ()
       assert.ok(ms <= 60_000, `${relative} polls too slowly: ${ms}ms`)
     }
   }
-  assert.deepEqual(declared.get('components/AuditWorkerControl.tsx'), [5_000])
+  assert.deepEqual(declared.get('components/AuditWorkerControl.tsx'), [15_000])
   assert.deepEqual(
     declared.get('pages/AuditMonitorPage.tsx'),
     [60_000, 60_000, 60_000, 60_000],
@@ -162,9 +166,12 @@ test('audit monitor isolates row tables before expensive summaries', async () =>
   assert.match(source, /section=rows&table=pending/)
   assert.match(source, /section=rows&table=no-recording/)
   assert.match(source, /section: 'summary'/)
-  assert.match(source, /!auditedRowsQuery\.isLoading/)
-  assert.match(source, /!pendingRowsQuery\.isLoading/)
-  assert.match(source, /!noRecordingRowsQuery\.isLoading/)
+  assert.match(source, /auditedRowsQuery\.isFetched/)
+  assert.match(source, /pendingRowsQuery\.isFetched/)
+  assert.match(source, /noRecordingRowsQuery\.isFetched/)
+  assert.doesNotMatch(source, /!auditedRowsQuery\.isFetching/)
+  assert.doesNotMatch(source, /!pendingRowsQuery\.isFetching/)
+  assert.doesNotMatch(source, /!noRecordingRowsQuery\.isFetching/)
   assert.match(source, /placeholderData: keepPreviousData/)
   assert.match(source, /const totalsFinal = summaryData != null/)
   assert.match(source, /function withTotalRows/)

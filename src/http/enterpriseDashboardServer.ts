@@ -88,6 +88,7 @@ import {
   type ManualReauditRequestPort,
 } from '../reaudit/manualRequests.ts'
 import { createMysqlManualReauditRequestRepository } from '../adapters/mysqlManualReauditQueue.ts'
+import { isSafeDatabaseDriverCode } from '../adapters/mysqlPoolAcquisition.ts'
 import { collectBillingMonths } from '../adapters/mysqlBillingMonths.ts'
 import {
   createMysqlBillingCategoryAnalysisRepository,
@@ -213,6 +214,8 @@ import {
 interface Dependencies {
   config: RuntimeConfig
   pool: Pool
+  /** Direct billing SELECTs with a server-side execution limit. */
+  billingReadPool?: Pool
   access: AccessRepository
   audit: AuditSink
   verifier: TokenVerifier | null
@@ -1469,6 +1472,10 @@ function billingCategoryRepository(
   )
 }
 
+function billingReadPool(dependencies: Dependencies): Pool {
+  return dependencies.billingReadPool ?? dependencies.pool
+}
+
 async function apiResponse(
   url: URL,
   dependencies: Dependencies,
@@ -1511,7 +1518,7 @@ async function apiResponse(
   if (pathname === '/api/v1/overview') {
     const [metrics, billing] = await Promise.all([
       collectMetrics(dependencies.pool, period),
-      collectBilling(dependencies.pool, period),
+      collectBilling(billingReadPool(dependencies), period),
     ])
     const billingView = buildBillingView(billing, {
       calibrationComplete:
@@ -1554,7 +1561,7 @@ async function apiResponse(
     }
   }
   if (pathname === '/api/v1/billing') {
-    const billing = await collectBilling(dependencies.pool, period)
+    const billing = await collectBilling(billingReadPool(dependencies), period)
     const billingView = buildBillingView(billing, {
       calibrationComplete:
         dependencies.config.releaseGates.calibrationComplete ||
@@ -1604,7 +1611,7 @@ async function apiResponse(
   if (pathname === '/api/v1/reports') {
     const [billing, snapshots, emailDelivery, settlement] =
       await Promise.all([
-        collectBilling(dependencies.pool, period),
+        collectBilling(billingReadPool(dependencies), period),
         collectRevenueSnapshots(dependencies.pool, period),
         period
           ? collectReportEmailDeliveryStatus(
@@ -3303,11 +3310,15 @@ export function createEnterpriseDashboardServer(
         status?: number
         code?: string
         message?: string
+        kauditPhase?: string
       }
       const boundedUnavailableFailure =
         shaped.status === 503 &&
         typeof shaped.code === 'string' &&
         shaped.code in BOUNDED_UNAVAILABLE_TITLES
+      const statementTimeout =
+        shaped.code === 'ER_STATEMENT_TIMEOUT' ||
+        shaped.code === 'ER_QUERY_TIMEOUT'
       const safeLog = {
         level: authFailure ? 'warn' : 'error',
         event: authFailure
@@ -3315,10 +3326,23 @@ export function createEnterpriseDashboardServer(
           : 'dashboard_request_failed',
         code: authFailure
           ? error.code
-          : userAdminFailure || settlementFailure || reauditFailure ||
+          : statementTimeout
+            ? 'QUERY_TIMEOUT'
+            : userAdminFailure || settlementFailure || reauditFailure ||
               boundedUnavailableFailure
             ? shaped.code
             : 'INTERNAL_ERROR',
+        driverCode:
+          !authFailure &&
+          isSafeDatabaseDriverCode(shaped.code)
+            ? shaped.code
+            : null,
+        phase:
+          !authFailure &&
+          (shaped.kauditPhase === 'pool_acquisition' ||
+            shaped.kauditPhase === 'statement_execution')
+            ? shaped.kauditPhase
+            : null,
         correlationId: correlation,
         occurredAt: new Date().toISOString(),
       }
@@ -3355,6 +3379,14 @@ export function createEnterpriseDashboardServer(
             : error.kind === 'refusal'
               ? 'User account change was refused'
               : 'User administration is temporarily unavailable',
+          correlation,
+        )
+      } else if (statementTimeout) {
+        problem(
+          response,
+          504,
+          'QUERY_TIMEOUT',
+          'The request timed out. Try again.',
           correlation,
         )
       } else if (error instanceof UsageImportValidationError) {

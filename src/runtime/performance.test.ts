@@ -8,6 +8,7 @@ import {
   timeAudit,
   timeRuntimeBootstrap,
 } from './performance.ts'
+import { isSafeDatabaseDriverCode } from '../adapters/mysqlPoolAcquisition.ts'
 
 /**
  * Privacy-safe request timing.
@@ -119,6 +120,57 @@ test('instrumented connections count SQL without logging transaction details', a
   assert.equal(entries[0].dbAcquireCount, 1)
   assert.equal(typeof entries[0].dbAcquireMs, 'number')
   assert.equal(JSON.stringify(entries[0]).includes('private_column'), false)
+})
+
+test('an exact mysql2 queue failure receives a bounded pool classification', async () => {
+  const queueFailure = new Error('Queue limit reached.')
+  const pool = instrumentMysqlPool({
+    async query() {
+      throw queueFailure
+    },
+  } as unknown as Pool)
+
+  await assert.rejects(pool.query('SELECT 1'), (error) => error === queueFailure)
+  const classified = queueFailure as Error & {
+    code?: string
+    kauditPhase?: string
+  }
+  assert.equal(classified.code, 'POOL_QUEUE_LIMIT')
+  assert.equal(classified.kauditPhase, 'pool_acquisition')
+  assert.deepEqual(Object.keys(queueFailure), [])
+})
+
+test('bounded driver codes include connection and TLS diagnosis only', () => {
+  for (const code of [
+    'ER_STATEMENT_TIMEOUT',
+    'POOL_QUEUE_LIMIT',
+    'ECONNREFUSED',
+    'ENOTFOUND',
+    'CERT_HAS_EXPIRED',
+    'UNABLE_TO_VERIFY_LEAF_SIGNATURE',
+  ]) {
+    assert.equal(isSafeDatabaseDriverCode(code), true)
+  }
+  assert.equal(isSafeDatabaseDriverCode('private provider prose'), false)
+  assert.equal(isSafeDatabaseDriverCode('ER_foo'), false)
+})
+
+test('a known connection refusal is tagged as pool acquisition', async () => {
+  const refusal = Object.assign(new Error('private network detail'), {
+    code: 'ECONNREFUSED',
+  })
+  const pool = instrumentMysqlPool({
+    async query() {
+      throw refusal
+    },
+  } as unknown as Pool)
+
+  await assert.rejects(pool.query('SELECT 1'), (error) => error === refusal)
+  assert.equal(
+    (refusal as Error & { kauditPhase?: string }).kauditPhase,
+    'pool_acquisition',
+  )
+  assert.equal(Object.keys(refusal).includes('kauditPhase'), false)
 })
 
 test('runtime bootstrap timing emits duration only', () => {

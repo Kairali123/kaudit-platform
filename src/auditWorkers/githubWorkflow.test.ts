@@ -28,6 +28,17 @@ test('hosted worker is manual, bounded, and serialized per audit system', () => 
   assert.match(workflow, /timeout-minutes: 330/)
   assert.match(workflow, /KAUDIT_WORKER_DEADLINE_SECONDS: "19200"/)
   assert.match(workflow, /KAUDIT_AUDIT_LOCK_WAIT_SECONDS: "30"/)
+  assert.match(
+    workflow,
+    /run-name: "\$\{\{ inputs\.mode \|\| 'new' \}\} \/ \$\{\{ inputs\.system \}\} audit workflow"/,
+  )
+})
+
+test('monitor diagnostics are visibly read-only and require an explicit month', () => {
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "diagnose-monitor"[\s\S]{0,260}diagnose-monitor is read-only and requires diagnostic_month in YYYY-MM format[\s\S]{0,180}report-audit-monitor-health\.mjs/,
+  )
 })
 
 test('hosted worker drains through existing CLIs and never runs a model test', () => {
@@ -68,13 +79,21 @@ test('hosted spend lease migration is explicit, guarded, and billing-only', () =
   assert.match(workflow, /- migration-0017/)
   assert.match(
     workflow,
-    /AUDIT_MODE" == "migration-0017"[\s\S]{0,200}migration_confirmation \}\}" != "APPLY_0017"/,
+    /AUDIT_MODE" == "migration-0017"[\s\S]{0,200}MIGRATION_CONFIRMATION_INPUT" != "APPLY_0017"/,
   )
   assert.match(workflow, /KAUDIT_MIGRATION_CONFIRM=APPLY_0017/)
   assert.match(workflow, /npm run migration:billing-spend-lease/)
   assert.match(
     workflow,
     /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then\s+if \[\[ "\$AUDIT_MODE" != "new" \]\]; then\s+exit 2/,
+  )
+})
+
+test('billing read indexes have a separately confirmed supervised mode', () => {
+  assert.match(workflow, /- migration-billing-read-indexes/)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "migration-billing-read-indexes"[\s\S]{0,220}APPLY_BILLING_READ_INDEXES[\s\S]{0,220}node scripts\/apply-billing-read-indexes\.mjs/,
   )
 })
 
@@ -147,6 +166,22 @@ test('failure diagnostic is read-only, billing-only, and model-free', () => {
   assert.match(
     workflow,
     /AUDIT_MODE" == "diagnose-failures"[\s\S]{0,120}node scripts\/report-billing-failure-breakdown\.mjs/,
+  )
+  assert.match(
+    workflow,
+    /elif \[\[ "\$AUDIT_SYSTEM" == "call" \]\]; then[\s\S]{0,200}if \[\[ "\$AUDIT_MODE" != "new" \]\]; then\s+exit 2/,
+  )
+})
+
+test('billing performance diagnostic is read-only and month-scoped', () => {
+  assert.match(workflow, /- diagnose-billing-performance/)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "diagnose-billing-performance"[\s\S]{0,300}unset OPENAI_API_KEY[\s\S]{0,300}KAUDIT_DIAGNOSTIC_MONTH="\$DIAGNOSTIC_MONTH_INPUT"[\s\S]{0,120}node scripts\/report-billing-read-performance\.mjs/,
+  )
+  assert.match(
+    workflow,
+    /DIAGNOSTIC_MONTH_INPUT: \$\{\{ inputs\.diagnostic_month \}\}/,
   )
   assert.match(
     workflow,

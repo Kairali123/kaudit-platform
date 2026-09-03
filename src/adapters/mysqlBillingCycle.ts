@@ -1,6 +1,7 @@
 import type { Pool, RowDataPacket } from 'mysql2/promise'
 import type { BillingCycleCounts } from '../billing/cycleReadiness.ts'
 import type { BillingMonthScope } from '../reporting/billingMonth.ts'
+import { isDatabaseStatementTimeout } from './mysqlReadTimeout.ts'
 
 interface PeriodRow extends RowDataPacket {
   period_start: string | null
@@ -156,7 +157,8 @@ export async function collectLatestBillingCycle(
       parameters,
     )
     finalCounts = rows[0] ?? null
-  } catch {
+  } catch (error) {
+    if (isDatabaseStatementTimeout(error)) throw error
     finalCounts = null
   }
   try {
@@ -174,7 +176,8 @@ export async function collectLatestBillingCycle(
       parameters,
     )
     unresolvedCounts = rows[0] ?? null
-  } catch {
+  } catch (error) {
+    if (isDatabaseStatementTimeout(error)) throw error
     unresolvedCounts = null
   }
   const base = baseResult[0]

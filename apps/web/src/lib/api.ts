@@ -854,14 +854,28 @@ export class ApiError extends Error {
   }
 }
 
+function fallbackErrorMessage(status: number): string {
+  return status === 504
+    ? 'The request timed out. Try again.'
+    : 'The request could not be completed.'
+}
+
+function requestCorrelationId(): string {
+  return globalThis.crypto.randomUUID()
+}
+
 export async function getJson<T>(path: string): Promise<T> {
+  const requestId = requestCorrelationId()
   const response = await fetch(path, {
     credentials: 'same-origin',
-    headers: { accept: 'application/json' },
+    headers: {
+      accept: 'application/json',
+      'x-correlation-id': requestId,
+    },
   })
-  const correlationId = response.headers.get('x-correlation-id')
+  const correlationId = response.headers.get('x-correlation-id') ?? requestId
   if (!response.ok) {
-    let message = 'The request could not be completed.'
+    let message = fallbackErrorMessage(response.status)
     try {
       const problem = (await response.json()) as { title?: string }
       message = problem.title || message
@@ -877,18 +891,20 @@ export async function postJson<T>(
   path: string,
   value: unknown,
 ): Promise<T> {
+  const requestId = requestCorrelationId()
   const response = await fetch(path, {
     method: 'POST',
     credentials: 'same-origin',
     headers: {
       accept: 'application/json',
       'content-type': 'application/json',
+      'x-correlation-id': requestId,
     },
     body: JSON.stringify(value),
   })
-  const correlationId = response.headers.get('x-correlation-id')
+  const correlationId = response.headers.get('x-correlation-id') ?? requestId
   if (!response.ok) {
-    let message = 'The request could not be completed.'
+    let message = fallbackErrorMessage(response.status)
     try {
       const problem = (await response.json()) as { title?: string }
       message = problem.title || message
@@ -1199,6 +1215,7 @@ export async function postFile<T>(
   file: File,
   metadata: Record<string, string>,
 ): Promise<T> {
+  const requestId = requestCorrelationId()
   const response = await fetch(path, {
     method: 'POST',
     credentials: 'same-origin',
@@ -1206,6 +1223,7 @@ export async function postFile<T>(
       accept: 'application/json',
       'content-type': file.type || 'application/octet-stream',
       'x-kaudit-filename': file.name,
+      'x-correlation-id': requestId,
       ...Object.fromEntries(
         Object.entries(metadata).map(([name, value]) => [
           `x-kaudit-${name}`,
@@ -1215,7 +1233,7 @@ export async function postFile<T>(
     },
     body: file,
   })
-  const correlationId = response.headers.get('x-correlation-id')
+  const correlationId = response.headers.get('x-correlation-id') ?? requestId
   if (!response.ok) {
     let message = 'The upload could not be completed.'
     try {

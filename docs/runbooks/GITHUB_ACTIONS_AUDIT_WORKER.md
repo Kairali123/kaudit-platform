@@ -1,5 +1,10 @@
 # Dashboard-triggered audit workers
 
+GitHub run titles begin with the selected mode. `new / billing` performs the
+bounded new-call drain. Every `diagnose-*` mode is read-only, performs no audit,
+and exits after printing its diagnostic result. `diagnose-monitor` also requires
+an explicit `YYYY-MM` diagnostic month.
+
 This deployment shape is for installations whose dashboard runs on Vercel but
 which do not have a persistent worker host. An administrator starts a bounded
 GitHub-hosted worker from the Billing Audit or Call Audit report. The worker
@@ -132,6 +137,50 @@ Run `diagnose-failures` with `system=billing` to inspect aggregate failure
 families, classification subcodes, current retry-state buckets, and worker
 totals. This mode is read-only and model-free. It emits no identifiers, URLs,
 transcript content, prompts, raw errors, or amounts.
+
+## Billing read performance diagnostic
+
+Before applying dashboard read indexes, manually dispatch the worker with:
+
+```
+system=billing
+mode=diagnose-billing-performance
+diagnostic_month=YYYY-MM
+```
+
+This mode is read-only and model-free. It runs the same seven aggregate reads
+used by the billing dashboard with a 45-second database-side limit per query,
+then reports:
+
+- database engine family;
+- required index state as `present`, `equivalent`, or `missing`;
+- timing buckets for each billing read stage; and
+- summarized `EXPLAIN FORMAT=JSON` access type, chosen key, and estimated rows.
+
+It never logs query parameters, aggregate values, money, identifiers, URLs,
+transcript content, prompts, or raw errors. Unrelated model, proxy, session, and
+targeted re-audit secrets are removed from the diagnostic process environment.
+
+Do not set `KAUDIT_BILLING_READ_TIMEOUT_SECONDS` yet. After all required
+indexes are confirmed and the post-index p99 is measured, set it to a whole
+number from 1 through 25 that is safely above that p99. With the variable
+absent, production billing reads remain unbounded; this prevents an unmeasured
+timeout from turning the current slow page into a hard outage.
+
+A successful diagnostic does not authorize a migration. Review its index and
+plan output, capture the pre-change API response through the authenticated
+operator flow, and obtain separate supervised approval before applying 0014,
+0016, or 0018. Run the same diagnostic and compare the sanitized API response
+after each approved index change. P1-P5 must not change displayed billing
+values.
+
+After that approval, dispatch `system=billing` with
+`mode=migration-billing-read-indexes` and the exact confirmation
+`APPLY_BILLING_READ_INDEXES`. The command skips any equivalent existing index,
+refuses a conflicting named definition, adds only the ten allowlisted indexes
+from 0014, 0016, and 0018, requires online `LOCK=NONE` DDL, and verifies every
+index after application. A partial infrastructure failure may leave a verified
+prefix applied; rerunning the same confirmed command safely skips that prefix.
 
 ## Operation
 

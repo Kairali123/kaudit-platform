@@ -328,16 +328,13 @@ export function AuditMonitorPage() {
       getJson<AuditMonitorSummaryData>(
         period.apiPath(`/api/v1/audits?${summaryQueryString}`),
       ),
-    // Rows are the operator's priority. Starting aggregates only after the
-    // initial table reads settle prevents both halves from fighting for DB
-    // connections while still allowing metrics when one table fails.
+    // Start after each table has made its first attempt. `isFetched` remains
+    // true during later polling, so one slow/retrying table cannot starve the
+    // KPI request forever as the three one-minute refresh windows overlap.
     enabled:
-      !auditedRowsQuery.isLoading &&
-      !pendingRowsQuery.isLoading &&
-      !noRecordingRowsQuery.isLoading &&
-      !auditedRowsQuery.isFetching &&
-      !pendingRowsQuery.isFetching &&
-      !noRecordingRowsQuery.isFetching,
+      auditedRowsQuery.isFetched &&
+      pendingRowsQuery.isFetched &&
+      noRecordingRowsQuery.isFetched,
     refetchInterval: 60_000,
   })
   const [selected, setSelected] = useState<string[]>([])

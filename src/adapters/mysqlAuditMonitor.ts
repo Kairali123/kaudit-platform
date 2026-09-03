@@ -1102,10 +1102,10 @@ export async function collectAuditMonitor(
                  AND completed_transcript.status = 'completed'
              )
            )${queueScopeClause}
-           ORDER BY c.billing_period_date DESC, c.id
+           ORDER BY c.billing_period_date DESC, c.id DESC
            LIMIT ? OFFSET ?
          ) pending
-         ORDER BY pending.billing_period_date DESC, pending.call_id`,
+         ORDER BY pending.billing_period_date DESC, pending.call_id DESC`,
         [...queueScopeParams, rowLimit, pendingOffset],
       ) : Promise.resolve([[] as QueueDataRow[]]),
       includeNoRecordingRows ? pool.query<QueueDataRow[]>(
@@ -1141,7 +1141,7 @@ export async function collectAuditMonitor(
                AND recording.is_final = 1
                AND recording.source_url IS NOT NULL
            )${queueScopeClause}
-           ORDER BY c.billing_period_date DESC, c.id
+           ORDER BY c.billing_period_date DESC, c.id DESC
            LIMIT ? OFFSET ?
          ) c
          LEFT JOIN kaudit_call_artifact ca
@@ -1174,7 +1174,7 @@ export async function collectAuditMonitor(
             FROM kaudit_billing_calculation superseding
             WHERE superseding.supersedes_calculation_id = calculation.id
           )
-         ORDER BY c.billing_period_date DESC, c.id
+         ORDER BY c.billing_period_date DESC, c.id DESC
          `,
         [...queueScopeParams, rowLimit, noRecordingOffset],
       ) : Promise.resolve([[] as QueueDataRow[]]),

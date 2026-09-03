@@ -242,21 +242,22 @@ export function createMysqlReauditWriteRepo(
         const [updated] = await connection.execute<ResultSetHeader>(
           `UPDATE kaudit_call_artifact
            SET audio_processing_status = 'processing',
-               audio_attempt_count = audio_attempt_count + 1,
+               audio_attempt_count = COALESCE(audio_attempt_count, 0) + 1,
                audio_last_attempt_at = ?,
                audio_next_attempt_at = NULL,
                audio_last_error = NULL
            WHERE id = ? AND call_id = ? AND artifact_type = 'recording'
              AND is_final = 1 AND source_url IS NOT NULL
              AND (
-               audio_processing_status NOT IN ('completed','exhausted')
+               COALESCE(audio_processing_status, 'pending')
+                 NOT IN ('completed','exhausted')
                OR (
                  audio_processing_status = 'exhausted'
                  AND audio_last_error IN (
                    'CLASSIFICATION_VALIDATION_FAILED',
                    'AUDIT_SPEND_STATE_UNKNOWN'
                  )
-                 AND audio_attempt_count < 8
+                 AND COALESCE(audio_attempt_count, 0) < 8
                )
              )`,
           [at, candidate.artifactId, candidate.callId],

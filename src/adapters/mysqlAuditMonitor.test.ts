@@ -465,6 +465,26 @@ test('rows mode can isolate each monitor table to one page query', async () => {
   }
 })
 
+test('pending and no-recording pages use the existing period/id index order', async () => {
+  for (const table of ['pending', 'no-recording'] as const) {
+    const fake = fakePool([])
+    await collectAuditMonitor(fake.pool, QUERY, 'rows', table)
+    const pageQuery = fake.calls.find(({ sql }) =>
+      sql.includes('LIMIT ? OFFSET ?'),
+    )?.sql ?? ''
+    assert.match(
+      pageQuery,
+      /ORDER BY c\.billing_period_date DESC, c\.id DESC\s*LIMIT \? OFFSET \?/,
+      table,
+    )
+    assert.doesNotMatch(
+      pageQuery,
+      /ORDER BY c\.billing_period_date DESC, c\.id\s*LIMIT/,
+      table,
+    )
+  }
+})
+
 test('summary mode omits all paginated row queries', async () => {
   const fake = fakePool([
     { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },

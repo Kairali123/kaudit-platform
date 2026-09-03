@@ -15,6 +15,7 @@ import {
   previousBillingMonth,
   type BillingMonthScope,
 } from '../reporting/billingMonth.ts'
+import { isDatabaseStatementTimeout } from './mysqlReadTimeout.ts'
 
 // Aggregate-only, read-only adapter for the full local dashboard. No query selects
 // call IDs, phone data, transcript text, evidence URLs, or health content. Every
@@ -25,7 +26,8 @@ async function one(pool: Pool, sql: string, params: unknown[] = []): Promise<Rec
   try {
     const [result] = await pool.query(sql, params)
     return (result as any[])[0] ?? null
-  } catch {
+  } catch (error) {
+    if (isDatabaseStatementTimeout(error)) throw error
     return null
   }
 }
@@ -34,7 +36,8 @@ async function many(pool: Pool, sql: string, params: unknown[] = []): Promise<an
   try {
     const [result] = await pool.query(sql, params)
     return result as any[]
-  } catch {
+  } catch (error) {
+    if (isDatabaseStatementTimeout(error)) throw error
     return []
   }
 }

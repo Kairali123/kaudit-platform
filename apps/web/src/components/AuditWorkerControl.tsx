@@ -33,8 +33,9 @@ export function AuditWorkerControl({ system }: { system: AuditSystem }) {
       getJson<AuditWorkerControlData>('/api/v1/audit-workers'),
     // Opt-in live monitor: a worker's observed state changes outside this app
     // (a worker starts, stops, or picks up the desired state), so the control
-    // polls on a bounded interval. Polling is not a client default.
-    refetchInterval: 5_000,
+    // polls on a bounded interval. Worker heartbeats are minute-scale, so a
+    // 15-second refresh remains responsive without overlapping slow DB reads.
+    refetchInterval: 15_000,
   })
   const mutation = useMutation({
     mutationFn: (desiredState: 'running' | 'paused') =>

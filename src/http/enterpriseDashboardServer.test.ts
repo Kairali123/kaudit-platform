@@ -464,25 +464,112 @@ test('local authenticated me endpoint enforces role lookup and audits access', a
   )
 })
 
-test('protected response fails closed when the audit sink is unavailable', async () => {
-  await withServer(
-    {
-      async record() {
-        throw new Error('synthetic audit outage')
+test('protected response fails closed and logs bounded driver context', async () => {
+  const originalWrite = process.stderr.write
+  const writes: string[] = []
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    writes.push(String(chunk))
+    return true
+  }) as typeof process.stderr.write
+  const outage = Object.assign(new Error('synthetic audit outage'), {
+    code: 'ER_CON_COUNT_ERROR',
+    kauditPhase: 'pool_acquisition',
+  })
+  try {
+    await withServer(
+      {
+        async record() {
+          throw outage
+        },
+        async readiness() {
+          return false
+        },
       },
+      async (baseUrl) => {
+        const response = await fetch(`${baseUrl}/api/v1/me`, {
+          headers: { cookie: localCookie() },
+        })
+        assert.equal(response.status, 500)
+        const body = (await response.json()) as Record<string, unknown>
+        assert.equal(body.code, 'INTERNAL_ERROR')
+        assert.equal(JSON.stringify(body).includes('synthetic audit outage'), false)
+        assert.equal(JSON.stringify(body).includes('ER_CON_COUNT_ERROR'), false)
+      },
+    )
+  } finally {
+    process.stderr.write = originalWrite
+  }
+  const failure = writes
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .find((line) => line.event === 'dashboard_request_failed')
+  assert.equal(failure?.code, 'INTERNAL_ERROR')
+  assert.equal(failure?.driverCode, 'ER_CON_COUNT_ERROR')
+  assert.equal(failure?.phase, 'pool_acquisition')
+  assert.equal(JSON.stringify(failure).includes('synthetic audit outage'), false)
+})
+
+test('a bounded billing statement timeout returns a sanitized 504', async () => {
+  const originalWrite = process.stderr.write
+  const writes: string[] = []
+  process.stderr.write = ((chunk: string | Uint8Array) => {
+    writes.push(String(chunk))
+    return true
+  }) as typeof process.stderr.write
+  const timeout = Object.assign(new Error('synthetic private timeout detail'), {
+    code: 'ER_STATEMENT_TIMEOUT',
+    kauditPhase: 'statement_execution',
+  })
+  const timeoutPool = {
+    async query() {
+      throw timeout
+    },
+  } as unknown as Pool
+  const server = createEnterpriseDashboardServer({
+    config,
+    pool: timeoutPool,
+    billingReadPool: timeoutPool,
+    access,
+    audit: {
+      async record() {},
       async readiness() {
-        return false
+        return true
       },
     },
-    async (baseUrl) => {
-      const response = await fetch(`${baseUrl}/api/v1/me`, {
-        headers: { cookie: localCookie() },
-      })
-      assert.equal(response.status, 500)
-      const body = (await response.json()) as Record<string, unknown>
-      assert.equal(body.code, 'INTERNAL_ERROR')
-      assert.equal(JSON.stringify(body).includes('synthetic audit outage'), false)
-    },
+    verifier: null,
+  })
+  await new Promise<void>((resolve) =>
+    server.listen(0, '127.0.0.1', resolve),
+  )
+  const address = server.address() as AddressInfo
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}/api/v1/billing?month=2026-05`,
+      { headers: { cookie: localCookie() } },
+    )
+    assert.equal(response.status, 504)
+    const body = (await response.json()) as Record<string, unknown>
+    assert.equal(body.code, 'QUERY_TIMEOUT')
+    assert.equal(body.title, 'The request timed out. Try again.')
+    assert.equal(JSON.stringify(body).includes('ER_STATEMENT_TIMEOUT'), false)
+    assert.equal(
+      JSON.stringify(body).includes('synthetic private timeout detail'),
+      false,
+    )
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => error ? reject(error) : resolve()),
+    )
+    process.stderr.write = originalWrite
+  }
+  const failure = writes
+    .map((line) => JSON.parse(line) as Record<string, unknown>)
+    .find((line) => line.event === 'dashboard_request_failed')
+  assert.equal(failure?.code, 'QUERY_TIMEOUT')
+  assert.equal(failure?.driverCode, 'ER_STATEMENT_TIMEOUT')
+  assert.equal(failure?.phase, 'statement_execution')
+  assert.equal(
+    JSON.stringify(failure).includes('synthetic private timeout detail'),
+    false,
   )
 })
 

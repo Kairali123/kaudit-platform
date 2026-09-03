@@ -2,6 +2,21 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { ConfigurationError, loadRuntimeConfig } from './runtime.ts'
 
+test('billing read timeout is optional but strictly bounded', () => {
+  assert.doesNotThrow(() => loadRuntimeConfig(base()))
+  assert.doesNotThrow(() => loadRuntimeConfig({
+    ...base(),
+    KAUDIT_BILLING_READ_TIMEOUT_SECONDS: '20',
+  }))
+  assert.throws(
+    () => loadRuntimeConfig({
+      ...base(),
+      KAUDIT_BILLING_READ_TIMEOUT_SECONDS: '30',
+    }),
+    /KAUDIT_BILLING_READ_TIMEOUT_SECONDS/,
+  )
+})
+
 function base(): NodeJS.ProcessEnv {
   return {
     NODE_ENV: 'test',

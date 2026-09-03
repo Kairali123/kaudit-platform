@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { performance } from 'node:perf_hooks'
 import type { Pool, PoolConnection } from 'mysql2/promise'
+import { tagKnownPoolAcquisitionFailure } from '../adapters/mysqlPoolAcquisition.ts'
 
 type TimingPhase = 'auditMs' | 'sqlMs'
 type CacheResult = 'bypass' | 'hit' | 'miss'
@@ -181,6 +182,9 @@ export function instrumentMysqlPool(pool: Pool): Pool {
           const startedAt = performance.now()
           try {
             return await value.apply(target, args)
+          } catch (error) {
+            tagKnownPoolAcquisitionFailure(error)
+            throw error
           } finally {
             recordSql(elapsedSince(startedAt))
           }

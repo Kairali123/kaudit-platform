@@ -19,6 +19,22 @@ export type DatabaseTlsMode = 'required' | 'disabled'
 
 /** The variable that carries {@link DatabaseTlsMode}. */
 export const DB_TLS_MODE = 'DB_TLS_MODE'
+export const BILLING_READ_TIMEOUT_VARIABLE =
+  'KAUDIT_BILLING_READ_TIMEOUT_SECONDS'
+
+export function configuredBillingReadTimeoutSeconds(
+  env: NodeJS.ProcessEnv,
+): number | null {
+  const raw = env[BILLING_READ_TIMEOUT_VARIABLE]?.trim()
+  if (!raw) return null
+  const timeout = Number(raw)
+  if (!Number.isInteger(timeout) || timeout < 1 || timeout > 25) {
+    throw new ConfigurationError(
+      `${BILLING_READ_TIMEOUT_VARIABLE} must be an integer from 1 to 25`,
+    )
+  }
+  return timeout
+}
 
 /**
  * The browser half of OIDC: this application runs the authorization-code flow
@@ -295,6 +311,7 @@ function resolveMaxTokenAgeSeconds(
 }
 
 export function loadRuntimeConfig(env: NodeJS.ProcessEnv): RuntimeConfig {
+  configuredBillingReadTimeoutSeconds(env)
   const rawEnvironment = env.NODE_ENV?.trim() || 'development'
   if (!['development', 'test', 'production'].includes(rawEnvironment)) {
     throw new ConfigurationError('NODE_ENV must be development, test, or production')

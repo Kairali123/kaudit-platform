@@ -8,7 +8,11 @@ import { createMysqlLoginService } from '../adapters/mysqlLoginService.ts'
 import { createMysqlUserAdministration } from '../adapters/mysqlUserAdministration.ts'
 import { createOidcVerifier } from '../auth/oidcVerifier.ts'
 import { createOidcAuthorizationClient } from '../auth/oidcAuthorizationClient.ts'
-import { loadRuntimeConfig, type RuntimeConfig } from '../config/runtime.ts'
+import {
+  configuredBillingReadTimeoutSeconds,
+  loadRuntimeConfig,
+  type RuntimeConfig,
+} from '../config/runtime.ts'
 import { createEnterpriseDashboardServer } from '../http/enterpriseDashboardServer.ts'
 import { createMysqlCycleImportService } from '../adapters/mysqlCycleImport.ts'
 import { createLocalImportObjectStore } from '../adapters/localImportObjectStore.ts'
@@ -20,6 +24,8 @@ import { createOpenAiCallAuditModel } from '../adapters/openaiCallAuditClient.ts
 import { resolveDatabaseTls, type CaFileReader } from './databaseTls.ts'
 import { createGitHubActionsAuditWorkerDispatcher } from '../auditWorkers/dispatcher.ts'
 import { instrumentMysqlPool } from './performance.ts'
+import { tagPoolAcquisitionFailures } from '../adapters/mysqlPoolAcquisition.ts'
+import { withDatabaseSelectTimeout } from '../adapters/mysqlReadTimeout.ts'
 
 /**
  * How the runtime holds MySQL connections.
@@ -127,7 +133,7 @@ export function createDashboardRuntime(
   const config = loadRuntimeConfig(env)
   const ssl = resolveDatabaseTls(config, env, options.readCaFile)
   const createPool = options.createPool ?? mysql.createPool
-  const pool = instrumentMysqlPool(createPool({
+  const pool = instrumentMysqlPool(tagPoolAcquisitionFailures(createPool({
     host: config.database.host,
     port: config.database.port,
     database: config.database.name,
@@ -141,7 +147,12 @@ export function createDashboardRuntime(
     connectTimeout: 10_000,
     decimalNumbers: false,
     ...poolLimits(options.poolProfile),
-  }))
+  })))
+  const billingReadTimeoutSeconds =
+    configuredBillingReadTimeoutSeconds(env)
+  const billingReadPool = billingReadTimeoutSeconds == null
+    ? pool
+    : withDatabaseSelectTimeout(pool, billingReadTimeoutSeconds)
   const access = createMysqlAccessRepository(pool)
   const audit = createMysqlAuditSink(pool)
   const credentials =
@@ -251,6 +262,7 @@ export function createDashboardRuntime(
   const server = createEnterpriseDashboardServer({
     config,
     pool,
+    billingReadPool,
     access,
     audit,
     imports,
