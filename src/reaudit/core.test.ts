@@ -51,7 +51,7 @@ const candidate: ReauditCandidate = {
 }
 
 test('engine version identifies the classification repair', () => {
-  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.6.2')
+  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.6.3')
 })
 
 test('merges fragments using the approved pause, duration, and character limits', () => {

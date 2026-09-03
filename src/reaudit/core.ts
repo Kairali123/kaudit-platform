@@ -19,8 +19,8 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.6.2'
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.8.2'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.6.3'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.8.3'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
