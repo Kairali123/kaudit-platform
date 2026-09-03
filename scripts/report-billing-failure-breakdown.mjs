@@ -46,6 +46,10 @@ const FETCH_ERROR_CATEGORIES = [
   'TOO_LARGE',
   'TIMEOUT',
   'NETWORK_FAILURE',
+  'PROXY_JSON_INVALID',
+  'PROXY_JSON_TOO_LARGE',
+  'PROXY_SIGNED_URL_MISSING',
+  'PROXY_SIGNED_URL_REJECTED',
   'NOT_APPLICABLE',
   'OTHER_FETCH_FAILURE',
 ]
@@ -161,6 +165,14 @@ try {
               ELSE '8+'
             END AS attempt_bucket,
             CASE
+              WHEN audio_last_error = 'proxy_json_invalid'
+                THEN 'PROXY_JSON_INVALID'
+              WHEN audio_last_error = 'proxy_json_too_large'
+                THEN 'PROXY_JSON_TOO_LARGE'
+              WHEN audio_last_error = 'proxy_signed_url_missing'
+                THEN 'PROXY_SIGNED_URL_MISSING'
+              WHEN audio_last_error = 'proxy_signed_url_rejected'
+                THEN 'PROXY_SIGNED_URL_REJECTED'
               WHEN audio_processing_status <> 'fetch_failed'
                 THEN 'NOT_APPLICABLE'
               WHEN audio_last_error = 'HTTP 400' THEN 'HTTP_400'
