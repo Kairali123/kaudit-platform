@@ -810,6 +810,9 @@ test('an exact Task ID scopes every status table without entering SQL text', asy
   assert.equal(data.pagination.totalRows, 0)
   assert.equal(data.pendingPagination.totalRows, 0)
   assert.equal(data.noRecordingPagination.totalRows, 0)
+  assert.equal(data.summary.billAuditedCalls, 8)
+  assert.equal(data.summary.aiAuditedCalls, 3)
+  assert.equal(data.summary.auditCoveragePercent, '66.67')
   assert.equal(data.summary.pendingEligibleCalls, 4)
   assert.equal(data.summary.noRecordingCalls, 5)
   const scoped = fake.calls.filter(({ sql }) =>
@@ -826,4 +829,48 @@ test('an exact Task ID scopes every status table without entering SQL text', asy
   assert.ok(scoped.some(({ sql }) => sql.includes(') pending')))
   assert.ok(scoped.some(({ sql }) => sql.includes("'no_recording'")))
   assert.ok(scoped.some(({ sql }) => sql.includes('grace_adjusted_duration_ms')))
+})
+
+test('bill-audit coverage resolves missing recordings and accepted KServe fallbacks', async () => {
+  const fake = fakePool([
+    {
+      match: 'COUNT(*) AS total_calls',
+      rows: [{
+        total_calls: 12,
+        bill_audited_calls: 10,
+        audited_calls: 3,
+        recording_available: 7,
+        pending_calls: 2,
+        no_recording_calls: 5,
+        processing_failures: 2,
+      }],
+    },
+  ])
+
+  const data = await collectAuditMonitor(fake.pool, QUERY, 'summary-core')
+  const summarySql = fake.find('AS bill_audited_calls') ?? ''
+
+  assert.equal(data.summary.billAuditedCalls, 10)
+  assert.equal(data.summary.aiAuditedCalls, 3)
+  assert.equal(data.summary.auditCoveragePercent, '83.33')
+  assert.match(summarySql, /accepted_as_billed_unverified/)
+  assert.equal(
+    summarySql.match(/accepted_as_billed_unverified/g)?.length,
+    1,
+  )
+  assert.match(summarySql, /resolved_fallback\.accepted_as_billed/)
+  assert.match(summarySql, /recording_available, 0\) = 0/)
+})
+
+test('accepted KServe fallbacks do not remain in the pending queue', async () => {
+  const fake = fakePool([
+    { match: 'auditor_final_charge', rows: [FINANCIAL_ROW] },
+    { match: 'grace_adjusted_duration_ms', rows: [AUDITED_ROW] },
+  ])
+
+  await collectAuditMonitor(fake.pool, QUERY, 'rows')
+
+  const pendingSql = fake.find('pending.processing_status') ?? ''
+  assert.match(pendingSql, /accepted_as_billed_unverified/)
+  assert.match(pendingSql, /resolved_calculation\.status = 'final'/)
 })

@@ -22,6 +22,7 @@ async function webSource(relative: string): Promise<string> {
 
 test('the web client type exposes capped amount and missing-duration counts', async () => {
   const source = await webSource('lib/api.ts')
+  assert.match(source, /billAuditedCalls: number/)
   assert.match(source, /auditorFinalChargeInr: string/)
   assert.match(source, /auditorFinalPricedCalls: number/)
   assert.match(source, /auditorUnfinalizedCalls: number/)
@@ -118,4 +119,16 @@ test('no-recording rows show a zero audit resolution and exact remark', async ()
   assert.match(api, /auditRemark: string \| null/)
   assert.match(page, /<th>Remarks<\/th>/)
   assert.match(page, /row\.auditRemark/)
+  assert.match(page, /Bill audited at zero/)
+  assert.match(page, /No Recording Found/)
+  assert.match(page, /audited amount is ₹0\.00/)
+})
+
+test('the primary coverage metric is bill audit, with AI analysis kept separate', async () => {
+  const page = await webSource('pages/AuditMonitorPage.tsx')
+  assert.match(page, /label: 'Bill-audited calls'/)
+  assert.match(page, /summary\.billAuditedCalls\.toLocaleString/)
+  assert.match(page, /summary\.aiAuditedCalls\.toLocaleString/)
+  assert.match(page, /independently analyzed/)
+  assert.doesNotMatch(page, /Admin-only AI processing coverage/)
 })

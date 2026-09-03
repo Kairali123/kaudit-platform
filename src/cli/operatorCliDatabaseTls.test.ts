@@ -89,12 +89,17 @@ function tlsConstructions(source: string): string[] {
  */
 const INLINE_TLS_CLIS = [
   'run-report-email-worker.ts',
-  'run-cycle-close.ts',
   'run-automated-validation.ts',
   'run-cycle-preview.ts',
   'run-admin-grant.ts',
   'run-call-audit-batch.ts',
 ] as const
+
+test('run-cycle-close.ts uses the shared TLS resolver for inline or file CA input', () => {
+  const source = read(path.join(CLI_DIRECTORY, 'run-cycle-close.ts'))
+  assert.match(source, /resolveDatabaseTls\(config, process\.env\)/)
+  assert.equal(source.includes('readFileSync('), false)
+})
 
 for (const fileName of INLINE_TLS_CLIS) {
   const source = read(path.join(CLI_DIRECTORY, fileName))

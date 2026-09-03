@@ -173,6 +173,12 @@ pooled connection past the request that asked for it and surface as a host
 timeout rather than this server's own `QUERY_TIMEOUT`. Measure the monitor's
 sections alongside the billing stages before choosing a value.
 
+For the supervised June 2026 close, `finalize-june-bill-audit` requires the
+exact confirmation `FINALIZE_JUNE_BILL_AUDIT`. It performs no model call. It
+records no-recording calls as `no_recording_zero` and recording-backed calls
+that exhausted automatic retries as `accepted_as_billed_unverified`, using the
+published `rcv-2026-02-28-v1` rate card and the stored KServe billed quantity.
+
 A successful diagnostic does not authorize a migration. Review its index and
 plan output, capture the pre-change API response through the authenticated
 operator flow, and obtain separate supervised approval before applying 0014,

@@ -1,4 +1,3 @@
-import fs from 'node:fs'
 import mysql from 'mysql2/promise'
 import { loadRuntimeConfig } from '../config/runtime.ts'
 import {
@@ -12,6 +11,7 @@ import {
   persistVerifiedBillingRecords,
 } from '../adapters/mysqlVerifiedBilling.ts'
 import { parseBillingMonth } from '../reporting/billingMonth.ts'
+import { resolveDatabaseTls } from '../runtime/databaseTls.ts'
 
 const config = loadRuntimeConfig(process.env)
 const mode =
@@ -31,16 +31,7 @@ const batch = Number(process.env.KAUDIT_CYCLE_CLOSE_BATCH || 1000)
 if (!Number.isInteger(batch) || batch < 1 || batch > 50_000) {
   throw new Error('KAUDIT_CYCLE_CLOSE_BATCH must be 1..50000')
 }
-// Both flags, always: mysql2 skips the hostname check unless `verifyIdentity`
-// is set, so a CA-only pool would accept any host holding any certificate the
-// configured authority ever issued.
-const ssl = config.database.sslCaFile
-  ? {
-      ca: fs.readFileSync(config.database.sslCaFile, 'utf8'),
-      rejectUnauthorized: true,
-      verifyIdentity: true,
-    }
-  : undefined
+const ssl = resolveDatabaseTls(config, process.env)
 const pool = mysql.createPool({
   host: config.database.host,
   port: config.database.port,

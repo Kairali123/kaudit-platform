@@ -124,6 +124,21 @@ test('June pending-review reset is exact, guarded, and model-free', () => {
   assert.match(workflow, /node scripts\/reset-june-pending-review-cohort\.mjs/)
 })
 
+test('June bill-audit fallback finalization is exact, guarded, and model-free', () => {
+  assert.match(workflow, /- finalize-june-bill-audit/)
+  assert.match(
+    workflow,
+    /AUDIT_MODE" == "finalize-june-bill-audit"[\s\S]{0,260}MIGRATION_CONFIRMATION_INPUT" != "FINALIZE_JUNE_BILL_AUDIT"[\s\S]{0,360}unset OPENAI_API_KEY/,
+  )
+  assert.match(workflow, /KAUDIT_CYCLE_CLOSE_MODE=EXECUTE/)
+  assert.match(workflow, /KAUDIT_CYCLE_CLOSE_MONTH=2026-06/)
+  assert.match(
+    workflow,
+    /KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1/,
+  )
+  assert.match(workflow, /npm run billing:cycle-close/)
+})
+
 test('June pending recovery uses a low-concurrency drain', () => {
   assert.match(workflow, /- recover-june-pending/)
   assert.match(

@@ -52,6 +52,7 @@ on:
           - repair-june-signed-url-retries
           - requeue-june-nested-url-retries
           - reset-june-pending-reviews
+          - finalize-june-bill-audit
           - recover-june-canary
           - recover-june-pending
       migration_confirmation:
@@ -168,6 +169,19 @@ jobs:
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
               KAUDIT_JUNE_PENDING_RESET_CONFIRM=RESET_JUNE_278_PENDING_REVIEWS \
               node scripts/reset-june-pending-review-cohort.mjs
+            elif [[ "$AUDIT_MODE" == "finalize-june-bill-audit" ]]; then
+              if [[ "$MIGRATION_CONFIRMATION_INPUT" != "FINALIZE_JUNE_BILL_AUDIT" ]]; then
+                exit 2
+              fi
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_CYCLE_CLOSE_MODE=EXECUTE \
+              KAUDIT_CYCLE_CLOSE_MONTH=2026-06 \
+              KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
+              KAUDIT_CYCLE_CLOSE_BATCH=50000 \
+              npm run billing:cycle-close
             elif [[ "$AUDIT_MODE" == "migration-0015" ]]; then
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0015" ]]; then
                 exit 2

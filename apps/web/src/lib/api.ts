@@ -327,6 +327,7 @@ export interface AuditMonitorData {
   generatedAt: string
   summary: {
     totalCalls: number
+    billAuditedCalls: number
     aiAuditedCalls: number
     auditCoveragePercent: string
     recordingAvailableCalls: number

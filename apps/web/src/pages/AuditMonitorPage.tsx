@@ -453,10 +453,10 @@ export function AuditMonitorPage() {
     const result: Tile[] = []
     if (summary) {
       result.push({
-        label: 'AI-audited calls',
-        value: summary.aiAuditedCalls.toLocaleString('en-IN'),
-        sub: `${summary.auditCoveragePercent}% of ${summary.totalCalls.toLocaleString('en-IN')} ingested`,
-        status: summary.aiAuditedCalls > 0 ? 'good' : 'pending',
+        label: 'Bill-audited calls',
+        value: summary.billAuditedCalls.toLocaleString('en-IN'),
+        sub: `${summary.auditCoveragePercent}% of ${summary.totalCalls.toLocaleString('en-IN')} ingested · ${summary.aiAuditedCalls.toLocaleString('en-IN')} independently analyzed`,
+        status: summary.billAuditedCalls > 0 ? 'good' : 'pending',
       }, {
         label: 'Eligible, still pending',
         value: summary.pendingEligibleCalls.toLocaleString('en-IN'),
@@ -465,8 +465,8 @@ export function AuditMonitorPage() {
       }, {
         label: 'No recording',
         value: summary.noRecordingCalls.toLocaleString('en-IN'),
-        sub: 'Cannot be independently AI-audited',
-        status: summary.noRecordingCalls > 0 ? 'warn' : 'good',
+        sub: 'Bill audited at ₹0.00 · No Recording Found',
+        status: 'good',
       })
     }
     if (usage) {
@@ -562,7 +562,7 @@ export function AuditMonitorPage() {
       <PageHeader
         eyebrow="Developer control"
         title="Audit monitor"
-        description={`Admin-only AI processing coverage and privacy-safe audit metadata for ${period.label}.`}
+        description={`Admin-only bill-audit coverage and privacy-safe audit metadata for ${period.label}.`}
         badge={
           <span className="status-badge automated">
             <LockKeyhole size={13} aria-hidden /> Admin only
@@ -1014,17 +1014,17 @@ export function AuditMonitorPage() {
       <section className="data-table content-section audit-table queue-table no-recording-table">
         <div className="table-heading">
           <div>
-            <span className="eyebrow">No recording URL</span>
-            <h2><FileQuestion size={19} aria-hidden /> Cannot be independently audited</h2>
+            <span className="eyebrow">No recording supplied</span>
+            <h2><FileQuestion size={19} aria-hidden /> Bill audited at zero</h2>
           </div>
           <span className="soft-chip">
             {resultCount(noRecordingPagination.totalRows, queueTotalsFinal)} calls
           </span>
         </div>
-        <Notice tone="warning" title="KServe supplied no recording evidence">
-          <AlertTriangle size={17} aria-hidden /> These calls cannot be
-          listened to or transcribed. Admin review shows the available
-          KServe usage and billing resolution without inventing evidence.
+        <Notice tone="warning" title="No Recording Found">
+          <AlertTriangle size={17} aria-hidden /> The bill audit found no
+          recording URL, so the audited amount is ₹0.00. No listening or
+          transcription result is claimed.
         </Notice>
         {noRecordingRowsQuery.isLoading && <LoadingState />}
         {noRecordingRowsQuery.error && <ErrorState
@@ -1053,13 +1053,13 @@ export function AuditMonitorPage() {
                   <td>{date(row.billingPeriodDate)}</td>
                   <td>
                     <span className="status-badge provisional">
-                      No recording URL
+                      No recording supplied
                     </span>
                   </td>
                   <td>{row.vendorBilledMinutes || '—'}</td>
                   <td>{seconds(row.vendorConnectedDurationMs)}</td>
                   <td>
-                    {row.billingBasis || row.billingStatus || 'Audit pending'}
+                    {row.billingBasis || 'Audited · no recording'}
                   </td>
                   <td>{money(row.auditorAmount)}</td>
                   <td>{row.auditRemark || '—'}</td>

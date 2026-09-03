@@ -93,6 +93,7 @@ export interface AuditMonitorData {
   generatedAt: string
   summary: {
     totalCalls: number
+    billAuditedCalls: number
     aiAuditedCalls: number
     auditCoveragePercent: string
     recordingAvailableCalls: number
@@ -218,6 +219,7 @@ interface CountRow extends RowDataPacket {
 
 interface OverallSummaryRow extends RowDataPacket {
   total_calls: number | string
+  bill_audited_calls: number | string
   audited_calls: number | string
   recording_available: number | string
   pending_calls: number | string
@@ -721,6 +723,15 @@ export async function collectAuditMonitor(
       `SELECT
          COUNT(*) AS total_calls,
          SUM(
+           COALESCE(artifact.recording_available, 0) = 0
+           OR (
+             COALESCE(artifact.recording_available, 0) = 1
+             AND c.canonical_outcome_code IS NOT NULL
+             AND COALESCE(artifact.pipeline_complete, 0) = 1
+           )
+           OR COALESCE(resolved_fallback.accepted_as_billed, 0) = 1
+         ) AS bill_audited_calls,
+         SUM(
            COALESCE(artifact.recording_available, 0) = 1
            AND c.canonical_outcome_code IS NOT NULL
            AND COALESCE(artifact.pipeline_complete, 0) = 1
@@ -734,12 +745,14 @@ export async function collectAuditMonitor(
              c.canonical_outcome_code IS NOT NULL
              AND COALESCE(artifact.pipeline_complete, 0) = 1
            )
+           AND COALESCE(resolved_fallback.accepted_as_billed, 0) = 0
          ) AS pending_calls,
          SUM(
            COALESCE(artifact.recording_available, 0) = 0
          ) AS no_recording_calls,
          SUM(
            COALESCE(artifact.processing_failure, 0) = 1
+           AND COALESCE(resolved_fallback.accepted_as_billed, 0) = 0
          ) AS processing_failures
        FROM kaudit_call c
        LEFT JOIN (
@@ -772,6 +785,20 @@ export async function collectAuditMonitor(
            AND ca.is_final = 1
          GROUP BY ca.call_id
        ) artifact ON artifact.call_id = c.id
+       LEFT JOIN (
+         SELECT
+           resolved_calculation.call_id,
+           1 AS accepted_as_billed
+         FROM kaudit_billing_calculation resolved_calculation
+         LEFT JOIN kaudit_billing_calculation superseding_calculation
+           ON superseding_calculation.supersedes_calculation_id =
+              resolved_calculation.id
+         WHERE resolved_calculation.status = 'final'
+           AND resolved_calculation.calculation_basis =
+               'accepted_as_billed_unverified'
+           AND superseding_calculation.id IS NULL
+         GROUP BY resolved_calculation.call_id
+       ) resolved_fallback ON resolved_fallback.call_id = c.id
        WHERE 1=1${periodClause}`,
       periodParams,
     )
@@ -814,6 +841,10 @@ export async function collectAuditMonitor(
   const overall = overallRows[0][0]
   const totalCalls = Number(overall?.total_calls || 0)
   const aiAuditedCalls = Number(overall?.audited_calls || 0)
+  const billAuditedCalls = Number(
+    overall?.bill_audited_calls ??
+      aiAuditedCalls + Number(overall?.no_recording_calls || 0),
+  )
   const totalFilteredRows = count(filteredRows[0][0])
   const summaryPendingRows = Number(overall?.pending_calls || 0)
   const summaryNoRecordingRows = Number(
@@ -849,6 +880,20 @@ export async function collectAuditMonitor(
              c.canonical_outcome_code IS NOT NULL
              AND completed_media.call_artifact_id IS NOT NULL
              AND completed_transcript.call_artifact_id IS NOT NULL
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM kaudit_billing_calculation resolved_calculation
+             WHERE resolved_calculation.call_id = c.id
+               AND resolved_calculation.status = 'final'
+               AND resolved_calculation.calculation_basis =
+                     'accepted_as_billed_unverified'
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM kaudit_billing_calculation superseding_calculation
+                 WHERE superseding_calculation.supersedes_calculation_id =
+                       resolved_calculation.id
+               )
            )${queueScopeClause}`,
           queueScopeParams,
         ),
@@ -935,11 +980,12 @@ export async function collectAuditMonitor(
   const generatedAt = new Date().toISOString()
   const coreSummary: AuditMonitorCoreSummaryData['summary'] = {
     totalCalls,
+    billAuditedCalls,
     aiAuditedCalls,
     auditCoveragePercent:
       totalCalls === 0
         ? '0.00'
-        : ((aiAuditedCalls / totalCalls) * 100).toFixed(2),
+        : ((billAuditedCalls / totalCalls) * 100).toFixed(2),
     recordingAvailableCalls,
     pendingEligibleCalls: Math.max(0, summaryPendingRows),
     noRecordingCalls: summaryNoRecordingRows,
@@ -1242,6 +1288,20 @@ export async function collectAuditMonitor(
                WHERE completed_transcript.call_artifact_id = ca.id
                  AND completed_transcript.status = 'completed'
              )
+           )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM kaudit_billing_calculation resolved_calculation
+             WHERE resolved_calculation.call_id = c.id
+               AND resolved_calculation.status = 'final'
+               AND resolved_calculation.calculation_basis =
+                     'accepted_as_billed_unverified'
+               AND NOT EXISTS (
+                 SELECT 1
+                 FROM kaudit_billing_calculation superseding_calculation
+                 WHERE superseding_calculation.supersedes_calculation_id =
+                       resolved_calculation.id
+               )
            )${queueScopeClause}
            ORDER BY c.billing_period_date DESC, c.id DESC
            LIMIT ? OFFSET ?
