@@ -4,6 +4,8 @@ on:
   schedule:
     # GitHub cron schedules use UTC. Offset from the top of the hour to reduce delay.
     - cron: '47 */6 * * *'
+    # Daily sweep for calls the vendor supplied no recording for.
+    - cron: '23 2 * * *'
 
 jobs:
   billing-audit:
@@ -12,4 +14,15 @@ jobs:
     with:
       system: billing
       mode: new
+    secrets: inherit
+
+  # Settles the no-recording cohort of ENDED months at INR 0.00, the standing
+  # Finance/Ops rule: no recording means no evidence to support a charge. It
+  # runs in its own concurrency group, so it never delays the audit drain.
+  no-recording-close:
+    if: github.event.schedule == '23 2 * * *'
+    uses: ./.github/workflows/audit-worker.yml
+    with:
+      system: billing
+      mode: finalize-no-recording-auto
     secrets: inherit

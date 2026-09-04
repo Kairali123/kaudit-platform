@@ -408,3 +408,41 @@ test('the rate-card command never edits the locked ruleset', () => {
   const updates = script.match(/UPDATE\s+(\w+)/g) ?? []
   assert.deepEqual(updates, ['UPDATE kaudit_rate_card_version'])
 })
+
+test('unrelated worker modes are not forced to queue behind each other', () => {
+  // A cycle close settling one month should not wait for an audit drain on
+  // another. Two runs of the SAME mode still serialize, and the billing drain
+  // holds its own MySQL advisory lock, so two drains can never overlap.
+  assert.match(
+    workflow,
+    /group: kaudit-audit-worker-\$\{\{ inputs\.system \}\}-\$\{\{ inputs\.mode \|\| 'new' \}\}/,
+  )
+  assert.match(workflow, /cancel-in-progress: false/)
+})
+
+test('the no-recording close runs automatically, on ended months only', () => {
+  assert.match(workflow, /- finalize-no-recording-auto/)
+  assert.match(scheduledWorkflow, /mode: finalize-no-recording-auto/)
+  assert.match(scheduledWorkflow, /cron: '23 2 \* \* \*'/)
+  // A month still receiving calls could settle one minutes before its
+  // recording arrives, so the sweep starts one month back and never touches
+  // the current month.
+  assert.match(workflow, /for back in 1 2; do/)
+  assert.match(workflow, /date -u \+%Y-%m-01\) -\$\{back\} month/)
+  // Model-free, like every other cycle-close mode.
+  assert.match(
+    workflow,
+    /finalize-no-recording-auto"[\s\S]{0,900}unset OPENAI_API_KEY/,
+  )
+  // A failing month must not be swallowed by the loop.
+  assert.match(workflow, /npm run billing:cycle-close \|\| status=\$\?/)
+  assert.match(workflow, /exit \$status/)
+})
+
+test('the scheduled audit drain is unchanged by the new sweep', () => {
+  assert.match(scheduledWorkflow, /cron: '47 \*\/6 \* \* \*'/)
+  assert.match(
+    scheduledWorkflow,
+    /if: github\.event\.schedule == '47 \*\/6 \* \* \*'[\s\S]{0,200}mode: new/,
+  )
+})

@@ -55,6 +55,7 @@ on:
           - diagnose-june-bill-audit
           - diagnose-june-no-recording
           - finalize-june-no-recording
+          - finalize-no-recording-auto
           - diagnose-rate-cards
           - diagnose-billing-write-schema
           - publish-rate-card
@@ -84,7 +85,12 @@ permissions:
   contents: read
 
 concurrency:
-  group: kaudit-audit-worker-${{ inputs.system }}
+  # Scoped by MODE as well as system, so unrelated work runs side by side: a
+  # cycle close settling one month does not have to wait for an audit drain on
+  # another. Two runs of the SAME mode still serialize, and the billing drain
+  # additionally holds its own MySQL advisory lock, so two audit drains can
+  # never overlap regardless of what this group allows.
+  group: kaudit-audit-worker-${{ inputs.system }}-${{ inputs.mode || 'new' }}
   cancel-in-progress: false
 
 jobs:
@@ -239,6 +245,33 @@ jobs:
               KAUDIT_CYCLE_CLOSE_COHORT=no-recording \
               KAUDIT_CYCLE_CLOSE_BATCH=50000 \
               npm run billing:cycle-close
+            elif [[ "$AUDIT_MODE" == "finalize-no-recording-auto" ]]; then
+              # Standing application of the Finance/Ops rule: a call KServe
+              # supplied no recording for has no evidence to support a charge,
+              # so it settles at INR 0.00.
+              #
+              # ENDED months only. A month still receiving calls could settle a
+              # call minutes before its recording arrives; once the month is
+              # closed there is nothing further to wait for. Two months are
+              # swept rather than one so a late import is still picked up, and
+              # an already-settled call is simply not a candidate.
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              status=0
+              for back in 1 2; do
+                settle_month="$(date -u -d "$(date -u +%Y-%m-01) -${back} month" +%Y-%m)"
+                echo "::group::no-recording close for ${settle_month}"
+                KAUDIT_CYCLE_CLOSE_MODE=EXECUTE \
+                KAUDIT_CYCLE_CLOSE_MONTH="$settle_month" \
+                KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
+                KAUDIT_CYCLE_CLOSE_COHORT=no-recording \
+                KAUDIT_CYCLE_CLOSE_BATCH=50000 \
+                npm run billing:cycle-close || status=$?
+                echo "::endgroup::"
+              done
+              exit $status
             elif [[ "$AUDIT_MODE" == "diagnose-billing-write-schema" ]]; then
               # Read-only column shapes for the tables a fallback writes. The
               # base billing schema predates this repo's migrations, so widths
