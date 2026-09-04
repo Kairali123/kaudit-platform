@@ -190,14 +190,23 @@ try {
   const settle = async (
     candidate: (typeof candidates)[number],
   ): Promise<void> => {
-    if (candidate.fallbackReason === 'no_recording') {
-      noRecordingZeroCandidates += 1
-    } else {
-      recordingFallbackCandidates += 1
-      if (candidate.fallbackReason === 'audit_exhausted') {
-        auditExhaustedCandidates += 1
+    /**
+     * The reason counters describe the fallback population. An audited call is
+     * not a fallback: it is priced from its own audit, and the query's reason
+     * column only labels it for the cases where a fallback IS needed. Counting
+     * it here reported every audited call as an unresolved validation, which is
+     * the opposite of what happened to it.
+     */
+    if (cohort !== 'audited-projection') {
+      if (candidate.fallbackReason === 'no_recording') {
+        noRecordingZeroCandidates += 1
       } else {
-        unresolvedValidationCandidates += 1
+        recordingFallbackCandidates += 1
+        if (candidate.fallbackReason === 'audit_exhausted') {
+          auditExhaustedCandidates += 1
+        } else {
+          unresolvedValidationCandidates += 1
+        }
       }
     }
     // Pricing runs through the same gate, so an unusable card can only be
