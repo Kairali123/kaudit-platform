@@ -45,6 +45,8 @@ export interface RawBillingMetrics {
   rateCardApprovedAt: string | null
   reconciliationStatus: string | null
   claimedSubtotal: string | null
+  /** Where the claim came from, so the tile can say rather than imply. */
+  claimedSubtotalBasis?: 'reconciled' | 'vendor_invoice' | 'unavailable'
   verifiedSubtotal: string | null
   netVariance: string | null
   cycle: RawBillingCycle
@@ -258,7 +260,13 @@ export function buildBillingView(
     {
       label: 'Invoice / vendor claim',
       value: formatMoney(b.claimedSubtotal, b.currency),
-      sub: b.reconciliationStatus ? `reconciliation: ${b.reconciliationStatus}` : 'no reconciliation total',
+      // The claim and the agreement to it are different facts, so the tile
+      // names which one it is showing instead of leaving the reader to assume.
+      sub: b.reconciliationStatus
+        ? `reconciliation: ${b.reconciliationStatus}`
+        : b.claimedSubtotalBasis === 'vendor_invoice'
+          ? 'vendor invoice — reconciliation not started'
+          : 'no vendor invoice recorded',
       status: b.claimedSubtotal == null ? 'pending' : 'warn',
     },
     {
@@ -267,7 +275,9 @@ export function buildBillingView(
         b.netVariance ?? subtract(b.claimedSubtotal, b.verifiedSubtotal ?? b.calculatedTotal),
         b.currency,
       ),
-      sub: 'identified — not recovered savings',
+      sub: b.netVariance != null
+        ? 'identified — not recovered savings'
+        : 'claim minus verified — not a closed reconciliation',
       status: 'warn',
     },
     {

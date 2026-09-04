@@ -147,7 +147,7 @@ export async function collectBilling(
     ? ' AND calculation_call.billing_period_date BETWEEN ? AND ?'
     : ''
   const periodParams = period ? [period.start, period.end] : []
-  const [summary, authority, rateCard, reconciliation, cycle] = await Promise.all([
+  const [summary, authority, rateCard, invoice, reconciliation, cycle] = await Promise.all([
     one(
       pool,
       `SELECT
@@ -239,6 +239,28 @@ export async function collectBilling(
        ORDER BY created_at DESC LIMIT 1`,
       period ? [period.end, period.start] : [],
     ),
+    /**
+     * The vendor's own claim for the period, independent of any reconciliation.
+     *
+     * The claim is a FACT recorded when the invoice was imported; a
+     * reconciliation is a later, separate act of agreeing it. Reading the claim
+     * only from the reconciliation meant a month with a perfectly good stored
+     * invoice showed no vendor claim and, because the variance subtracts from
+     * it, no variance either — the two numbers the page exists to compare.
+     */
+    one(
+      pool,
+      `SELECT CAST(invoice.subtotal_amount AS CHAR) AS invoice_subtotal,
+              invoice.currency
+       FROM kaudit_invoice invoice
+       ${period
+         ? 'WHERE invoice.period_start = ? AND invoice.period_end = ?'
+         : ''}
+       ORDER BY invoice.period_start DESC, invoice.created_at DESC,
+                invoice.id DESC
+       LIMIT 1`,
+      periodParams,
+    ),
     one(
       pool,
       `SELECT reconciliation.status,
@@ -272,7 +294,18 @@ export async function collectBilling(
     rateCardApprovedBy: s(rateCard?.approved_by),
     rateCardApprovedAt: s(rateCard?.approved_at),
     reconciliationStatus: s(reconciliation?.status),
-    claimedSubtotal: s(reconciliation?.claimed_subtotal),
+    /**
+     * A closed reconciliation is the agreed claim and wins. Without one, the
+     * stored invoice is still what the vendor asked for, and the tile says
+     * which of the two it is showing rather than showing nothing.
+     */
+    claimedSubtotal:
+      s(reconciliation?.claimed_subtotal) ?? s(invoice?.invoice_subtotal),
+    claimedSubtotalBasis: s(reconciliation?.claimed_subtotal) != null
+      ? 'reconciled'
+      : s(invoice?.invoice_subtotal) != null
+        ? 'vendor_invoice'
+        : 'unavailable',
     verifiedSubtotal: s(reconciliation?.verified_subtotal),
     netVariance: s(reconciliation?.net_variance),
     cycle,
