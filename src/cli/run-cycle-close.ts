@@ -195,6 +195,11 @@ try {
         records,
         rateCard,
         correlationId: `cycle-close:${period.month}`,
+        // The candidate query selected this call precisely because no live
+        // final calculation exists for it, so the writer's supersede and
+        // duplicate probes match nothing — and each one takes a gap lock that
+        // every other settling lane then waits on.
+        firstSettlement: true,
       })
       if (result.outcome === 'inserted') inserted += 1
       else duplicates += 1

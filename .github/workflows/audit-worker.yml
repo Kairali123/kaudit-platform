@@ -197,7 +197,7 @@ jobs:
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
               KAUDIT_CYCLE_CLOSE_MODE=DRY-RUN \
-              KAUDIT_CYCLE_CLOSE_MONTH=2026-06 \
+              KAUDIT_CYCLE_CLOSE_MONTH="${DIAGNOSTIC_MONTH_INPUT:-2026-06}" \
               KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
               KAUDIT_CYCLE_CLOSE_COHORT=exhausted-recording \
               KAUDIT_CYCLE_CLOSE_BATCH=50000 \
@@ -217,7 +217,7 @@ jobs:
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
               KAUDIT_CYCLE_CLOSE_MODE=DRY-RUN \
-              KAUDIT_CYCLE_CLOSE_MONTH=2026-06 \
+              KAUDIT_CYCLE_CLOSE_MONTH="${DIAGNOSTIC_MONTH_INPUT:-2026-06}" \
               KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
               KAUDIT_CYCLE_CLOSE_COHORT=no-recording \
               KAUDIT_CYCLE_CLOSE_BATCH=50000 \
@@ -234,7 +234,7 @@ jobs:
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
               KAUDIT_CYCLE_CLOSE_MODE=EXECUTE \
-              KAUDIT_CYCLE_CLOSE_MONTH=2026-06 \
+              KAUDIT_CYCLE_CLOSE_MONTH="${DIAGNOSTIC_MONTH_INPUT:-2026-06}" \
               KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
               KAUDIT_CYCLE_CLOSE_COHORT=no-recording \
               KAUDIT_CYCLE_CLOSE_BATCH=50000 \
@@ -283,7 +283,7 @@ jobs:
               # population is already resolved at zero by its own basis and
               # must not be re-priced by a run aimed at the exhausted cohort.
               KAUDIT_CYCLE_CLOSE_MODE=EXECUTE \
-              KAUDIT_CYCLE_CLOSE_MONTH=2026-06 \
+              KAUDIT_CYCLE_CLOSE_MONTH="${DIAGNOSTIC_MONTH_INPUT:-2026-06}" \
               KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
               KAUDIT_CYCLE_CLOSE_COHORT=exhausted-recording \
               KAUDIT_CYCLE_CLOSE_BATCH=50000 \

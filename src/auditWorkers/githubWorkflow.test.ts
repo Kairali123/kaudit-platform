@@ -131,7 +131,12 @@ test('June bill-audit fallback finalization is exact, guarded, and model-free', 
     /AUDIT_MODE" == "finalize-june-bill-audit"[\s\S]{0,260}MIGRATION_CONFIRMATION_INPUT" != "FINALIZE_JUNE_BILL_AUDIT"[\s\S]{0,360}unset OPENAI_API_KEY/,
   )
   assert.match(workflow, /KAUDIT_CYCLE_CLOSE_MODE=EXECUTE/)
-  assert.match(workflow, /KAUDIT_CYCLE_CLOSE_MONTH=2026-06/)
+  // The month is an input now, so a later cycle needs no code change; June
+  // stays the default so an existing dispatch keeps its exact behaviour.
+  assert.match(
+    workflow,
+    /KAUDIT_CYCLE_CLOSE_MONTH="\$\{DIAGNOSTIC_MONTH_INPUT:-2026-06\}"/,
+  )
   assert.match(
     workflow,
     /KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1/,

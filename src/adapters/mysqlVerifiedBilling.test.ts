@@ -37,3 +37,37 @@ test('rows that must not move under a write still take an exclusive lock', () =>
   // contend for those.
   assert.match(source, /FROM kaudit_automated_decision[\s\S]{0,300}FOR UPDATE/)
 })
+
+test('a first settlement skips probes that can only take gap locks', () => {
+  // The candidate query already established no live final calculation exists.
+  // Each probe below is then a SELECT ... FOR UPDATE matching no row, so
+  // InnoDB takes a GAP lock, and concurrent lanes settling a cohort fight over
+  // those gaps — which is what turned a bulk close into seconds per call.
+  for (const probe of [
+    /const duplicate = firstSettlement \? null : await findExistingDecision/,
+    /const \[exactRows\] = firstSettlement/,
+    /const supersedesCalculationId = firstSettlement\s*\n\s*\? null/,
+    /const supersedesDecisionId = firstSettlement\s*\n\s*\? null/,
+  ]) {
+    assert.match(source, probe)
+  }
+})
+
+test('the manifest unique key is what still prevents a double write', () => {
+  // With the probes skipped the constraint is the defence, so its violation is
+  // the duplicate answer rather than a crash — and only on that path.
+  assert.match(source, /ER_DUP_ENTRY/)
+  assert.match(
+    source,
+    /if \(firstSettlement && isDuplicateKey\(error\)\) \{[\s\S]{0,160}outcome: 'duplicate'/,
+  )
+  // A normal write still surfaces a duplicate key as a real failure.
+  assert.match(source, /if \(firstSettlement && isDuplicateKey/)
+})
+
+test('the rate card is still validated on every write, fast path included', () => {
+  assert.match(
+    source,
+    /await connection\.beginTransaction\(\)\s*\n\s*await lockAndValidateRateCard/,
+  )
+})

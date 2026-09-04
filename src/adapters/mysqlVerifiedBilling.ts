@@ -167,21 +167,45 @@ export async function persistVerifiedBillingDecision(
   })
 }
 
+/** Raised by MySQL when the manifest unique key already holds this row. */
+function isDuplicateKey(error: unknown): boolean {
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    (error as { code?: unknown }).code === 'ER_DUP_ENTRY'
+  )
+}
+
 export async function persistVerifiedBillingRecords(
   pool: Pool,
   options: {
     records: VerifiedBillingRecords
     rateCard: PublishedRateCard
     correlationId: string | null
+    /**
+     * The caller has already established, in the same query that selected this
+     * call, that no live final calculation exists for it.
+     *
+     * The four probes below are then provably no-ops — there is no prior
+     * decision for this manifest, and nothing to supersede — but each is a
+     * `SELECT ... FOR UPDATE` whose predicate matches no row, so InnoDB takes a
+     * GAP lock instead. Settling a cohort concurrently, every lane then fights
+     * every other lane for those gaps, and a bulk close degrades to seconds per
+     * call. Skipping them removes the contention; `uq_billing_calc_manifest`
+     * remains the real defence and a duplicate is reported, never written
+     * twice.
+     */
+    firstSettlement?: boolean
   },
 ): Promise<PersistVerifiedBillingResult> {
   const records = options.records
+  const firstSettlement = options.firstSettlement === true
   const connection = await pool.getConnection()
   try {
     await connection.beginTransaction()
     await lockAndValidateRateCard(connection, options.rateCard)
 
-    const duplicate = await findExistingDecision(
+    const duplicate = firstSettlement ? null : await findExistingDecision(
       connection,
       records.decision.callId,
       records.decision.inputManifestSha256,
@@ -206,8 +230,9 @@ export async function persistVerifiedBillingRecords(
 
     let billingCalculationId: string | null = null
     if (records.calculation && records.component) {
-      const [exactRows] =
-        await connection.execute<ExistingCalculationRow[]>(
+      const [exactRows] = firstSettlement
+        ? [[] as ExistingCalculationRow[]]
+        : await connection.execute<ExistingCalculationRow[]>(
           `SELECT id, decision_trace_sha256
            FROM kaudit_billing_calculation
            WHERE call_id = ? AND rate_card_version_id = ?
@@ -233,8 +258,9 @@ export async function persistVerifiedBillingRecords(
         billingCalculationId = exact.id
       } else {
         billingCalculationId = randomUUID()
-        const supersedesCalculationId =
-          await findCurrentCalculation(
+        const supersedesCalculationId = firstSettlement
+          ? null
+          : await findCurrentCalculation(
             connection,
             records.calculation.callId,
           )
@@ -312,10 +338,12 @@ export async function persistVerifiedBillingRecords(
     }
 
     const decisionId = randomUUID()
-    const supersedesDecisionId = await findPreviousDecision(
-      connection,
-      records.decision.callId,
-    )
+    const supersedesDecisionId = firstSettlement
+      ? null
+      : await findPreviousDecision(
+        connection,
+        records.decision.callId,
+      )
     await connection.execute(
       `INSERT INTO kaudit_automated_decision
          (id, call_id, audit_run_id, billing_calculation_id, decision_type,
@@ -399,6 +427,19 @@ export async function persistVerifiedBillingRecords(
     }
   } catch (error) {
     await connection.rollback()
+    /**
+     * With the probes skipped, `uq_billing_calc_manifest` is what stops a
+     * second write of the same manifest — so its violation is the duplicate
+     * answer, not a failure. Reported, never written twice, and only on the
+     * path that deliberately relies on the constraint.
+     */
+    if (firstSettlement && isDuplicateKey(error)) {
+      return {
+        outcome: 'duplicate',
+        decisionId: records.decision.inputManifestSha256,
+        billingCalculationId: null,
+      }
+    }
     throw error
   } finally {
     connection.release()
