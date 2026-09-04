@@ -16,7 +16,28 @@ import type { AcceptedAsBilledFallbackReason } from '../billing/acceptedAsBilled
  * so a run aimed at a handful of exhausted calls cannot re-price thousands of
  * unrelated ones.
  */
-export type CycleCloseCohort = 'all' | 'exhausted-recording'
+export type CycleCloseCohort =
+  | 'all'
+  | 'exhausted-recording'
+  | 'no-recording'
+
+/**
+ * Calls KServe supplied no recording for.
+ *
+ * They can never be listened to, so there is no evidence to support a charge
+ * and the fallback prices them at zero. Kept as its own cohort so a run aimed
+ * at them cannot touch recording-backed work, and vice versa.
+ */
+const NO_RECORDING_SQL = `
+  NOT EXISTS (
+    SELECT 1
+    FROM kaudit_call_artifact recording
+    WHERE recording.call_id = c.id
+      AND recording.artifact_type = 'recording'
+      AND recording.is_final = 1
+      AND recording.source_url IS NOT NULL
+  )
+`
 
 /**
  * Exhausted statuses the audit worker still re-claims.
@@ -136,15 +157,10 @@ export async function listAcceptedAsBilledCandidates(
    */
   const eligibilitySql = cohort === 'exhausted-recording'
     ? EXHAUSTED_RECORDING_SQL
+    : cohort === 'no-recording'
+    ? NO_RECORDING_SQL
     : `(
-         NOT EXISTS (
-           SELECT 1
-           FROM kaudit_call_artifact recording
-           WHERE recording.call_id = c.id
-             AND recording.artifact_type = 'recording'
-             AND recording.is_final = 1
-             AND recording.source_url IS NOT NULL
-         )
+         ${NO_RECORDING_SQL}
          OR EXISTS (
            SELECT 1
            FROM kaudit_automated_decision validation

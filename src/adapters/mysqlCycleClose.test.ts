@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { Pool } from 'mysql2/promise'
-import { listAcceptedAsBilledCandidates } from './mysqlCycleClose.ts'
+import {
+  listAcceptedAsBilledCandidates,
+  type CycleCloseCohort,
+} from './mysqlCycleClose.ts'
 
 test('cycle close admits recording-backed calls only after audit exhaustion', async () => {
   let statement = ''
@@ -30,9 +33,7 @@ test('cycle close admits recording-backed calls only after audit exhaustion', as
   )
 })
 
-async function capture(
-  cohort?: 'all' | 'exhausted-recording',
-): Promise<string> {
+async function capture(cohort?: CycleCloseCohort): Promise<string> {
   let statement = ''
   const pool = {
     async execute(sql: string) {
@@ -121,4 +122,45 @@ test('every cohort still refuses a call that already has a final calculation', a
       cohort,
     )
   }
+})
+
+/**
+ * The eligibility clause only.
+ *
+ * The `fallback_reason` CASE in the SELECT list names every reason whatever
+ * the cohort — that is how a row is labelled, not how it is selected. Cohort
+ * scoping lives in the WHERE, so that is what these assertions read.
+ */
+function eligibilityClause(statement: string): string {
+  const at = statement.indexOf('WHERE c.billing_period_date')
+  assert.ok(at > 0, 'the candidate query must be month-bounded')
+  return statement.slice(at)
+}
+
+test('the no-recording cohort reaches only calls with no recording', async () => {
+  const where = eligibilityClause(await capture('no-recording'))
+
+  assert.match(
+    where,
+    /NOT EXISTS \(\s*SELECT 1\s*FROM kaudit_call_artifact recording/,
+  )
+  // It must not reach recording-backed work of any kind.
+  assert.doesNotMatch(where, /exhausted_recording/)
+  assert.doesNotMatch(where, /decision_status = 'unresolved'/)
+})
+
+test('a no-recording call reports the no_recording reason', async () => {
+  const statement = await capture('no-recording')
+  assert.match(statement, /THEN 'no_recording'/)
+})
+
+test('the two targeted cohorts are mutually exclusive by construction', async () => {
+  const exhausted = eligibilityClause(await capture('exhausted-recording'))
+  const noRecording = eligibilityClause(await capture('no-recording'))
+
+  // A call cannot satisfy both: one requires a final recording with a source
+  // URL, the other requires that no such recording exists.
+  assert.match(exhausted, /exhausted_recording\.source_url IS NOT NULL/)
+  assert.doesNotMatch(noRecording, /exhausted_recording/)
+  assert.notEqual(exhausted, noRecording)
 })

@@ -40,9 +40,13 @@ if (!Number.isInteger(batch) || batch < 1 || batch > 50_000) {
  */
 const cohortValue =
   process.env.KAUDIT_CYCLE_CLOSE_COHORT?.trim() || 'all'
-if (cohortValue !== 'all' && cohortValue !== 'exhausted-recording') {
+if (
+  cohortValue !== 'all' &&
+  cohortValue !== 'exhausted-recording' &&
+  cohortValue !== 'no-recording'
+) {
   throw new Error(
-    'KAUDIT_CYCLE_CLOSE_COHORT must be all or exhausted-recording',
+    'KAUDIT_CYCLE_CLOSE_COHORT must be all, exhausted-recording, or no-recording',
   )
 }
 const cohort: CycleCloseCohort = cohortValue
@@ -126,6 +130,8 @@ try {
   let recordingFallbackCandidates = 0
   let auditExhaustedCandidates = 0
   let unresolvedValidationCandidates = 0
+  let skipped = 0
+  const skippedCodes = new Map<string, number>()
   for (const candidate of candidates) {
     if (candidate.fallbackReason === 'no_recording') {
       noRecordingZeroCandidates += 1
@@ -140,32 +146,52 @@ try {
     // Pricing runs through the same gate, so an unusable card can only be
     // counted, never valued. The count is what a preview is for.
     if (!rateCardUsable) continue
-    const records = buildAcceptedAsBilledRecords({
-      callId: candidate.callId,
-      auditRunId: candidate.auditRunId,
-      fallbackReason: candidate.fallbackReason,
-      claimedDurationMs: candidate.claimedDurationMs,
-      connectedDurationMs: candidate.connectedDurationMs,
-      vendorBilledMinutes: candidate.vendorBilledMinutes,
-      vendorBilledAmount: candidate.vendorBilledAmount,
-      sourceEvidence: {
-        kind: 'call_manifest',
-        referenceId: candidate.evidenceObjectId,
-        sha256: candidate.evidenceSha256,
-      },
-      decidedAt,
-    }, rateCard)
-    acceptedAmountPaise += Math.round(
-      Number(records.calculation?.totalAmount || 0) * 100,
-    )
-    if (mode === 'DRY-RUN') continue
-    const result = await persistVerifiedBillingRecords(pool, {
-      records,
-      rateCard,
-      correlationId: `cycle-close:${period.month}`,
-    })
-    if (result.outcome === 'inserted') inserted += 1
-    else duplicates += 1
+    /**
+     * One call cannot abandon the rest.
+     *
+     * A cohort is now tens of thousands of calls, and a single malformed
+     * vendor quantity used to throw out of the loop, leaving a partial cycle
+     * with no statement of where it stopped. Each call is its own transaction
+     * and re-running skips what is already written, so an isolated failure is
+     * recorded and stepped over. It is never silent: the count is reported and
+     * the run exits non-zero so a partial close cannot read as a clean one.
+     */
+    try {
+      const records = buildAcceptedAsBilledRecords({
+        callId: candidate.callId,
+        auditRunId: candidate.auditRunId,
+        fallbackReason: candidate.fallbackReason,
+        claimedDurationMs: candidate.claimedDurationMs,
+        connectedDurationMs: candidate.connectedDurationMs,
+        vendorBilledMinutes: candidate.vendorBilledMinutes,
+        vendorBilledAmount: candidate.vendorBilledAmount,
+        sourceEvidence: {
+          kind: 'call_manifest',
+          referenceId: candidate.evidenceObjectId,
+          sha256: candidate.evidenceSha256,
+        },
+        decidedAt,
+      }, rateCard)
+      acceptedAmountPaise += Math.round(
+        Number(records.calculation?.totalAmount || 0) * 100,
+      )
+      if (mode === 'DRY-RUN') continue
+      const result = await persistVerifiedBillingRecords(pool, {
+        records,
+        rateCard,
+        correlationId: `cycle-close:${period.month}`,
+      })
+      if (result.outcome === 'inserted') inserted += 1
+      else duplicates += 1
+    } catch (error) {
+      skipped += 1
+      // Bounded: the code only. A raw driver or validation message can quote
+      // a vendor quantity or an identifier.
+      const code = error instanceof Error && /^[A-Za-z0-9_.:-]{1,60}$/.test(error.message)
+        ? error.message
+        : 'CANDIDATE_NOT_SETTLED'
+      skippedCodes.set(code, (skippedCodes.get(code) ?? 0) + 1)
+    }
   }
   process.stdout.write(`${JSON.stringify({
     mode,
@@ -179,12 +205,17 @@ try {
     unresolvedValidationCandidates,
     inserted,
     duplicates,
+    skipped,
+    skippedCodes: Object.fromEntries(skippedCodes),
     acceptedAsBilledAmount: (
       acceptedAmountPaise / 100
     ).toFixed(2),
     warning:
       'Cycle-close outcomes are deterministic fallbacks, not independent AI audits',
   }, null, 2)}\n`)
+  // A close that left calls unsettled is not a clean close, whatever the
+  // insert count says.
+  if (skipped > 0) process.exitCode = 4
 } finally {
   await pool.end()
 }

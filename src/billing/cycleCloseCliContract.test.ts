@@ -65,10 +65,8 @@ test('the command can never repair the binding it refuses', () => {
 
 test('the settled cohort is explicit, validated, and reported', () => {
   assert.match(cli, /KAUDIT_CYCLE_CLOSE_COHORT/)
-  assert.match(
-    cli,
-    /cohortValue !== 'all' && cohortValue !== 'exhausted-recording'/,
-  )
+  assert.match(cli, /cohortValue !== 'all' &&/)
+  assert.match(cli, /cohortValue !== 'exhausted-recording'/)
   // The default stays the original whole population, so no existing caller
   // silently changes what it settles.
   assert.match(cli, /KAUDIT_CYCLE_CLOSE_COHORT\?\.trim\(\) \|\| 'all'/)
@@ -108,4 +106,26 @@ test('the pool allows the same connect budget as the hosted workers', () => {
   // host with 30s, so a cycle close that uses the default fails where they
   // succeed — and reports it as a connection error, not as "nothing to do".
   assert.match(cli, /connectTimeout: 30_000/)
+})
+
+test('one unsettleable call cannot abandon the rest of the cohort', () => {
+  // A cohort is now tens of thousands of calls. A single malformed vendor
+  // quantity used to throw out of the loop, leaving a partial cycle with no
+  // statement of where it stopped.
+  assert.match(cli, /try \{\s*\n\s*const records = buildAcceptedAsBilledRecords/)
+  assert.match(cli, /skipped \+= 1/)
+  // Never silent: reported, and the run cannot exit clean.
+  assert.match(cli, /skipped,/)
+  assert.match(cli, /skippedCodes: Object\.fromEntries\(skippedCodes\)/)
+  assert.match(cli, /if \(skipped > 0\) process\.exitCode = 4/)
+  // The recorded code stays bounded; a raw message can quote a quantity.
+  assert.match(cli, /CANDIDATE_NOT_SETTLED/)
+})
+
+test('the no-recording cohort is accepted and validated', () => {
+  assert.match(cli, /cohortValue !== 'no-recording'/)
+  assert.match(
+    cli,
+    /must be all, exhausted-recording, or no-recording/,
+  )
 })

@@ -53,6 +53,8 @@ on:
           - requeue-june-nested-url-retries
           - reset-june-pending-reviews
           - diagnose-june-bill-audit
+          - diagnose-june-no-recording
+          - finalize-june-no-recording
           - diagnose-rate-cards
           - diagnose-billing-write-schema
           - publish-rate-card
@@ -208,6 +210,35 @@ jobs:
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
               node scripts/publish-kserve-rate-card.mjs
+            elif [[ "$AUDIT_MODE" == "diagnose-june-no-recording" ]]; then
+              # Read-only preview of the no-recording cohort at zero.
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_CYCLE_CLOSE_MODE=DRY-RUN \
+              KAUDIT_CYCLE_CLOSE_MONTH=2026-06 \
+              KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
+              KAUDIT_CYCLE_CLOSE_COHORT=no-recording \
+              KAUDIT_CYCLE_CLOSE_BATCH=50000 \
+              npm run billing:cycle-close
+            elif [[ "$AUDIT_MODE" == "finalize-june-no-recording" ]]; then
+              # Records KServe's no-recording calls at INR 0.00 under the
+              # no_recording_zero basis. Approved by Finance/Ops: there is no
+              # recording to audit, so no evidence supports a charge.
+              if [[ "$MIGRATION_CONFIRMATION_INPUT" != "FINALIZE_JUNE_NO_RECORDING_ZERO" ]]; then
+                exit 2
+              fi
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_CYCLE_CLOSE_MODE=EXECUTE \
+              KAUDIT_CYCLE_CLOSE_MONTH=2026-06 \
+              KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
+              KAUDIT_CYCLE_CLOSE_COHORT=no-recording \
+              KAUDIT_CYCLE_CLOSE_BATCH=50000 \
+              npm run billing:cycle-close
             elif [[ "$AUDIT_MODE" == "diagnose-billing-write-schema" ]]; then
               # Read-only column shapes for the tables a fallback writes. The
               # base billing schema predates this repo's migrations, so widths
