@@ -143,3 +143,23 @@ test('candidates settle in bounded lanes, each still its own transaction', () =>
   assert.match(cli, /await settle\(candidate\)/)
   assert.match(cli, /await persistVerifiedBillingRecords\(pool, \{/)
 })
+
+test('a skip names its reason instead of collapsing to a catch-all', () => {
+  // The earlier version accepted any code-shaped message and collapsed the
+  // rest, so the one field that exists to explain a skip explained nothing.
+  assert.match(cli, /SETTLEMENT_FAILURE_CODES = new Map/)
+  for (const code of [
+    'VENDOR_MINUTES_NOT_HALF_MINUTE_MULTIPLE',
+    'VENDOR_MINUTES_MALFORMED',
+    'VENDOR_QUANTITY_INEXACT',
+    'EVIDENCE_HASH_MISSING',
+    'RATE_CARD_GATE_REFUSED',
+  ]) {
+    assert.ok(cli.includes(code), `${code} must be a reportable reason`)
+  }
+  // Prose still never escapes: an unrecognized failure stays the catch-all.
+  assert.match(cli, /: 'CANDIDATE_NOT_SETTLED'/)
+  assert.doesNotMatch(cli, /\? error\.message\s*\n?\s*: 'CANDIDATE_NOT_SETTLED'/)
+  // A driver code is bounded by shape before it is reported.
+  assert.match(cli, /\^\[A-Z\]\[A-Z0-9_\]\{2,39\}\$/)
+})

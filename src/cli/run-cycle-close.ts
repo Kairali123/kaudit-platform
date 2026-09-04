@@ -50,6 +50,42 @@ if (
   )
 }
 const cohort: CycleCloseCohort = cohortValue
+
+/**
+ * Why one call could not be settled, as a bounded code.
+ *
+ * The builder's refusals are exact, known sentences, so they map to codes by
+ * ALLOWLIST rather than by pattern-matching the message. An earlier version
+ * accepted any message that looked code-shaped and collapsed everything else
+ * to the catch-all — which meant the one field that exists to explain a skip
+ * explained nothing. Prose is still never emitted: an unrecognized failure
+ * stays the catch-all, because it may carry a driver detail or a quantity.
+ */
+const SETTLEMENT_FAILURE_CODES = new Map([
+  [
+    'Vendor billed minutes must use the locked 0.5-minute increments',
+    'VENDOR_MINUTES_NOT_HALF_MINUTE_MULTIPLE',
+  ],
+  [
+    'vendorBilledMinutes must be a positive scale-8 decimal',
+    'VENDOR_MINUTES_MALFORMED',
+  ],
+  ['Vendor quantity cannot be represented exactly', 'VENDOR_QUANTITY_INEXACT'],
+  ['source evidence must carry a SHA-256 hash', 'EVIDENCE_HASH_MISSING'],
+  ['callId is required', 'CALL_ID_MISSING'],
+  ['decidedAt must be an ISO timestamp', 'DECIDED_AT_INVALID'],
+])
+
+function settlementFailureCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : ''
+  const known = SETTLEMENT_FAILURE_CODES.get(message)
+  if (known) return known
+  if (message.startsWith('D-03:')) return 'RATE_CARD_GATE_REFUSED'
+  const driverCode = (error as { code?: unknown } | null)?.code
+  return typeof driverCode === 'string' && /^[A-Z][A-Z0-9_]{2,39}$/.test(driverCode)
+    ? `DB_${driverCode}`
+    : 'CANDIDATE_NOT_SETTLED'
+}
 /**
  * How many calls settle at once.
  *
@@ -205,12 +241,10 @@ try {
       else duplicates += 1
     } catch (error) {
       skipped += 1
-      // Bounded: the code only. A raw driver or validation message can quote
-      // a vendor quantity or an identifier.
-      const code = error instanceof Error && /^[A-Za-z0-9_.:-]{1,60}$/.test(error.message)
-        ? error.message
-        : 'CANDIDATE_NOT_SETTLED'
-      skippedCodes.set(code, (skippedCodes.get(code) ?? 0) + 1)
+      skippedCodes.set(
+        settlementFailureCode(error),
+        (skippedCodes.get(settlementFailureCode(error)) ?? 0) + 1,
+      )
     }
   }
   /**
