@@ -52,10 +52,27 @@ test('billing cycle uses bounded month queries and preserves calculated values',
   })
   assert.equal(statements.length, 3)
   for (const statement of statements) {
-    assert.deepEqual(statement.parameters, ['2026-05-01', '2026-05-31'])
+    // Every statement is month-bounded; the base count additionally binds the
+    // engine family, whose placeholder sits ahead of the period bounds.
+    assert.deepEqual(
+      statement.parameters.slice(-2),
+      ['2026-05-01', '2026-05-31'],
+    )
     assert.match(statement.sql, /billing_period_date BETWEEN \? AND \?/)
   }
   assert.match(statements[0]?.sql ?? '', /FROM kaudit_audit_run audit_run/)
+  // Counting audited calls must follow the engine FAMILY. Pinning one exact
+  // build reported a fully audited month as almost entirely pending, because
+  // every audit had been written by a later version of the same engine.
+  assert.match(statements[0]?.sql ?? '', /audit_run\.engine_version LIKE \?/)
+  assert.doesNotMatch(
+    statements[0]?.sql ?? '',
+    /kairali-independent-reaudit\/\d/,
+  )
+  assert.equal(
+    statements[0]?.parameters[0],
+    'kairali-independent-reaudit/%',
+  )
   assert.match(
     statements[1]?.sql ?? '',
     /newer\.supersedes_calculation_id = calculation\.id/,

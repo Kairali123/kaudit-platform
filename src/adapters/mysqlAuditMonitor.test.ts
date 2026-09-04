@@ -810,9 +810,11 @@ test('an exact Task ID scopes every status table without entering SQL text', asy
   assert.equal(data.pagination.totalRows, 0)
   assert.equal(data.pendingPagination.totalRows, 0)
   assert.equal(data.noRecordingPagination.totalRows, 0)
-  assert.equal(data.summary.billAuditedCalls, 8)
+  // Audited only; no cycle-close fallback exists in this fixture, and the 5
+  // no-recording calls carry no billing determination of their own.
+  assert.equal(data.summary.billAuditedCalls, 3)
   assert.equal(data.summary.aiAuditedCalls, 3)
-  assert.equal(data.summary.auditCoveragePercent, '66.67')
+  assert.equal(data.summary.auditCoveragePercent, '25.00')
   assert.equal(data.summary.pendingEligibleCalls, 4)
   assert.equal(data.summary.noRecordingCalls, 5)
   const scoped = fake.calls.filter(({ sql }) =>
@@ -857,9 +859,13 @@ test('bill-audit coverage resolves missing recordings and accepted KServe fallba
   const overallSql = fake.find('COUNT(*) AS total_calls') ?? ''
   const fallbackSql = fake.find('AS accepted_fallback_calls') ?? ''
 
-  assert.equal(data.summary.billAuditedCalls, 10)
+  // 3 independently audited + 2 settled by cycle close. The 5 no-recording
+  // calls are NOT bill-audited merely for lacking a recording: no billing
+  // determination exists for them until cycle close records one.
+  assert.equal(data.summary.billAuditedCalls, 5)
   assert.equal(data.summary.aiAuditedCalls, 3)
-  assert.equal(data.summary.auditCoveragePercent, '83.33')
+  assert.equal(data.summary.auditCoveragePercent, '41.67')
+  assert.equal(data.summary.noRecordingCalls, 5)
   assert.equal(data.summary.pendingEligibleCalls, 2)
   assert.equal(data.summary.processingFailureCalls, 2)
   assert.doesNotMatch(overallSql, /kaudit_billing_calculation/)
@@ -883,4 +889,61 @@ test('accepted KServe fallbacks do not remain in the pending queue', async () =>
   const pendingSql = fake.find('pending.processing_status') ?? ''
   assert.match(pendingSql, /accepted_as_billed_unverified/)
   assert.match(pendingSql, /resolved_calculation\.status = 'final'/)
+})
+
+test('audited-call counts match the engine family, not one frozen build', async () => {
+  // The engine version moves whenever the engine's identity changes. Pinning
+  // one exact build silently stops counting every audit written by a later
+  // one, which reported a fully audited month as almost entirely pending.
+  const fake = fakePool([])
+  await collectAuditMonitor(fake.pool, QUERY, 'summary-core')
+  const reauditQuery = fake.calls.find(({ sql }) =>
+    sql.includes('FROM kaudit_audit_run run'),
+  )
+  assert.ok(reauditQuery, 'the core summary must count independent audits')
+  assert.match(reauditQuery.sql, /run\.engine_version LIKE \?/)
+  assert.doesNotMatch(reauditQuery.sql, /kairali-independent-reaudit\/\d/)
+  assert.ok(
+    reauditQuery.params.includes('kairali-independent-reaudit/%'),
+    'the family prefix is bound as a parameter',
+  )
+})
+
+test('a call with no recording is not counted as bill-audited on its own', async () => {
+  // Having no recording is not a billing determination. Counting it as one
+  // reported 100% coverage while no amount existed for most of the month.
+  const fake = fakePool([
+    {
+      match: 'total_calls',
+      rows: [{
+        total_calls: 100,
+        audited_calls: 30,
+        recording_available: 40,
+        pending_calls: 10,
+        no_recording_calls: 60,
+        processing_failures: 0,
+      }],
+    },
+    { match: 'accepted_fallback_calls', rows: [{
+      accepted_fallback_calls: 5,
+      accepted_failure_calls: 5,
+    }] },
+  ])
+
+  const data = await collectAuditMonitor(fake.pool, QUERY, 'summary-core')
+
+  // 30 audited + 5 settled by fallback. The 60 no-recording calls are NOT
+  // included merely for lacking a recording.
+  assert.equal(data.summary.billAuditedCalls, 35)
+  assert.equal(data.summary.noRecordingCalls, 60)
+  assert.equal(data.summary.auditCoveragePercent, '35.00')
+})
+
+test('a settled no-recording call does count once cycle close records it', async () => {
+  const fake = fakePool([])
+  await collectAuditMonitor(fake.pool, QUERY, 'summary-core')
+  const fallbackQuery = fake.find('accepted_fallback_calls') ?? ''
+  // Both cycle-close bases, so the monitor agrees with the billing cycle's
+  // own definition of a resolved call.
+  assert.match(fallbackQuery, /'accepted_as_billed_unverified',\s*\n?\s*'no_recording_zero'/)
 })

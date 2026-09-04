@@ -20,6 +20,23 @@ import type {
 import { REAUDIT_CATEGORIES } from './types.ts'
 
 export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.6.5'
+
+/**
+ * The engine FAMILY, for readers asking "was this call audited by our
+ * independent engine" rather than "by which build".
+ *
+ * The version above moves whenever the engine's identity changes, and it has
+ * moved many times. A reader that pins one exact version silently stops
+ * counting every audit written by a later build — which is how the billing
+ * cycle came to report a fully audited month as almost entirely pending. Match
+ * this prefix instead, and let the run's own `engine_version` carry the exact
+ * provenance.
+ */
+export const REAUDIT_ENGINE_FAMILY = 'kairali-independent-reaudit/'
+
+if (!REAUDIT_ENGINE_VERSION.startsWith(REAUDIT_ENGINE_FAMILY)) {
+  throw new Error('Reaudit engine version must belong to its engine family')
+}
 export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.8.5'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000

@@ -7,6 +7,7 @@ import { calculateOpenAiAuditCost } from '../usage/openAiCost.ts'
 import type { ManualReauditRowStatus } from '../reaudit/manualRequests.ts'
 import { readManualReauditRowStatuses } from './mysqlManualReauditQueue.ts'
 import { KSERVE_VENDOR_RATE_PER_MINUTE } from './mysqlKserveVendorBilled.ts'
+import { REAUDIT_ENGINE_FAMILY } from '../reaudit/core.ts'
 
 export interface AuditMonitorQuery {
   page: number
@@ -805,8 +806,12 @@ export async function collectAuditMonitor(
        FROM kaudit_billing_calculation resolved_calculation
        JOIN kaudit_call c ON c.id = resolved_calculation.call_id
        WHERE resolved_calculation.status = 'final'
-         AND resolved_calculation.calculation_basis =
-             'accepted_as_billed_unverified'
+         -- Both cycle-close bases, so a settled no-recording call counts as
+         -- determined here exactly as the billing cycle counts it.
+         AND resolved_calculation.calculation_basis IN (
+           'accepted_as_billed_unverified',
+           'no_recording_zero'
+         )
          AND NOT EXISTS (
            SELECT 1
            FROM kaudit_billing_calculation superseding_calculation
@@ -824,9 +829,9 @@ export async function collectAuditMonitor(
       `SELECT COUNT(DISTINCT run.call_id) AS n
        FROM kaudit_audit_run run
        JOIN kaudit_call c ON c.id = run.call_id
-       WHERE run.engine_version = 'kairali-independent-reaudit/2.0.0'
+       WHERE run.engine_version LIKE ?
          AND run.status = 'completed'${periodClause}`,
-      periodParams,
+      [`${REAUDIT_ENGINE_FAMILY}%`, ...periodParams],
     )
       : Promise.resolve<[CountRow[], never]>([[], undefined as never]),
     section === 'all'
@@ -875,9 +880,19 @@ export async function collectAuditMonitor(
   const summaryNoRecordingRows = Number(
     overall?.no_recording_calls || 0,
   )
+  /**
+   * A call is bill-audited when a billing determination EXISTS for it: an
+   * independent audit, or a persisted cycle-close fallback.
+   *
+   * Having no recording is not a determination. Counting those calls here
+   * reported a month as fully bill-audited while no amount had been written
+   * for 62% of it, and disagreed with the billing cycle's own readiness for
+   * the same period. They stay in `noRecordingCalls` until cycle close records
+   * them, at which point the fallback count picks them up.
+   */
   const billAuditedCalls = Math.min(
     totalCalls,
-    aiAuditedCalls + summaryNoRecordingRows + acceptedFallbackCalls,
+    aiAuditedCalls + acceptedFallbackCalls,
   )
   let totalPendingRows = summaryPendingRows
   let totalNoRecordingRows = summaryNoRecordingRows

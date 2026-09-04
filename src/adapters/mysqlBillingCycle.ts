@@ -2,6 +2,7 @@ import type { Pool, RowDataPacket } from 'mysql2/promise'
 import type { BillingCycleCounts } from '../billing/cycleReadiness.ts'
 import type { BillingMonthScope } from '../reporting/billingMonth.ts'
 import { isDatabaseStatementTimeout } from './mysqlReadTimeout.ts'
+import { REAUDIT_ENGINE_FAMILY } from '../reaudit/core.ts'
 
 interface PeriodRow extends RowDataPacket {
   period_start: string | null
@@ -87,8 +88,7 @@ export async function collectLatestBillingCycle(
          SELECT 1
          FROM kaudit_audit_run audit_run
          WHERE audit_run.call_id = call_row.id
-           AND audit_run.engine_version =
-             'kairali-independent-reaudit/2.0.0'
+           AND audit_run.engine_version LIKE ?
            AND audit_run.status = 'completed'
        )) AS completed_audit_calls,
        SUM(EXISTS (
@@ -106,7 +106,9 @@ export async function collectLatestBillingCycle(
        )) AS processing_failure_calls
      FROM kaudit_call call_row
      WHERE call_row.billing_period_date BETWEEN ? AND ?`,
-    parameters,
+    // The engine-family placeholder sits in the SELECT list, so it precedes
+    // the period bounds.
+    [`${REAUDIT_ENGINE_FAMILY}%`, ...parameters],
   )
 
   // Migration 0006 adds calculation_basis and the automated decision table.

@@ -465,8 +465,12 @@ export function AuditMonitorPage() {
       }, {
         label: 'No recording',
         value: summary.noRecordingCalls.toLocaleString('en-IN'),
-        sub: 'Bill audited at ₹0.00 · No Recording Found',
-        status: 'good',
+        // States the fact, not an outcome. These calls carry a billing
+        // determination only once cycle close records one; until then they
+        // are unverifiable and unpriced, and saying otherwise reported a
+        // month as fully audited while most of it had no amount at all.
+        sub: 'KServe supplied no recording · cannot be independently audited',
+        status: summary.noRecordingCalls > 0 ? 'warn' : 'good',
       })
     }
     if (usage) {

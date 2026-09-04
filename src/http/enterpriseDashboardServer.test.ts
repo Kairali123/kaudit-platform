@@ -866,8 +866,25 @@ test('audit monitor Task ID search is exact and invalid input never reaches SQL'
         calls.some(({ sql }) => sql.includes(taskId)),
         false,
       )
+      // Task ID matching stays EXACT — never a wildcard search. A LIKE may
+      // appear for the audit engine-family prefix, which matches an internal
+      // version string, so the property under guard is that no caller-supplied
+      // reference is ever matched by pattern.
       assert.equal(
-        calls.some(({ sql }) => /\bLIKE\b/i.test(sql)),
+        calls.some(({ sql }) =>
+          /(task_ref\.external_id|logical_call_key)\s+LIKE/i.test(sql),
+        ),
+        false,
+      )
+      assert.equal(
+        calls.some(({ params }) =>
+          params.some(
+            (value) =>
+              typeof value === 'string' &&
+              value.includes('%') &&
+              value.includes(taskId),
+          ),
+        ),
         false,
       )
     },
