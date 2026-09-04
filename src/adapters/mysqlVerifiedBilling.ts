@@ -48,6 +48,17 @@ export class BillingPersistenceIntegrityError extends Error {
   readonly code = 'BILLING_PERSISTENCE_INTEGRITY'
 }
 
+/**
+ * Holds the rate card still for the duration of this write.
+ *
+ * A SHARED lock, deliberately. The guarantee needed is that the card cannot be
+ * modified while money is written against it, and a shared lock gives exactly
+ * that: any concurrent UPDATE of the row blocks, while other billing writes
+ * reading the same card proceed together. An exclusive lock added nothing to
+ * the guarantee — every write in a cycle close targets the SAME card row, so it
+ * serialized the entire run against itself and turned a bulk close into one
+ * call at a time.
+ */
 async function lockAndValidateRateCard(
   connection: PoolConnection,
   rateCard: PublishedRateCard,
@@ -56,7 +67,7 @@ async function lockAndValidateRateCard(
     `SELECT id, version, status, currency, ruleset_sha256,
             approved_by, approved_at
      FROM kaudit_rate_card_version
-     WHERE id = ? FOR UPDATE`,
+     WHERE id = ? LOCK IN SHARE MODE`,
     [rateCard.id],
   )
   const row = rows[0]

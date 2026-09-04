@@ -50,6 +50,18 @@ if (
   )
 }
 const cohort: CycleCloseCohort = cohortValue
+/**
+ * How many calls settle at once.
+ *
+ * Each call remains its own transaction with its own manifest hash, decision
+ * trace and evidence hash; this only stops the run waiting on one database
+ * round trip at a time. A cohort can be tens of thousands of calls, and
+ * sequentially that is round-trip-bound into the hour range.
+ */
+const concurrency = Number(process.env.KAUDIT_CYCLE_CLOSE_CONCURRENCY || 12)
+if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 32) {
+  throw new Error('KAUDIT_CYCLE_CLOSE_CONCURRENCY must be 1..32')
+}
 const ssl = resolveDatabaseTls(config, process.env)
 const pool = mysql.createPool({
   host: config.database.host,
@@ -68,7 +80,8 @@ const pool = mysql.createPool({
   // runner, and a cycle close that cannot connect is indistinguishable from
   // one that found nothing to settle.
   connectTimeout: 30_000,
-  connectionLimit: 4,
+  // One connection per settling lane, plus headroom for the rate-card read.
+  connectionLimit: concurrency + 2,
 })
 
 try {
@@ -132,7 +145,9 @@ try {
   let unresolvedValidationCandidates = 0
   let skipped = 0
   const skippedCodes = new Map<string, number>()
-  for (const candidate of candidates) {
+  const settle = async (
+    candidate: (typeof candidates)[number],
+  ): Promise<void> => {
     if (candidate.fallbackReason === 'no_recording') {
       noRecordingZeroCandidates += 1
     } else {
@@ -145,7 +160,7 @@ try {
     }
     // Pricing runs through the same gate, so an unusable card can only be
     // counted, never valued. The count is what a preview is for.
-    if (!rateCardUsable) continue
+    if (!rateCardUsable) return
     /**
      * One call cannot abandon the rest.
      *
@@ -175,7 +190,7 @@ try {
       acceptedAmountPaise += Math.round(
         Number(records.calculation?.totalAmount || 0) * 100,
       )
-      if (mode === 'DRY-RUN') continue
+      if (mode === 'DRY-RUN') return
       const result = await persistVerifiedBillingRecords(pool, {
         records,
         rateCard,
@@ -193,6 +208,27 @@ try {
       skippedCodes.set(code, (skippedCodes.get(code) ?? 0) + 1)
     }
   }
+  /**
+   * Bounded lanes over one shared cursor.
+   *
+   * Ordering does not matter here: every candidate is independent, each writes
+   * its own transaction, and the counters above are only incremented between
+   * awaits on a single-threaded event loop.
+   */
+  let nextIndex = 0
+  await Promise.all(
+    Array.from(
+      { length: Math.min(concurrency, candidates.length) },
+      async () => {
+        for (;;) {
+          const candidate = candidates[nextIndex]
+          if (!candidate) return
+          nextIndex += 1
+          await settle(candidate)
+        }
+      },
+    ),
+  )
   process.stdout.write(`${JSON.stringify({
     mode,
     cohort,

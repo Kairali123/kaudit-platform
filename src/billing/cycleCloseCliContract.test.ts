@@ -45,7 +45,7 @@ test('only a writing run stops at an unusable rate card', () => {
     /if \(mode === 'EXECUTE'\) \{\s*\n\s*throw new Error\('CYCLE_CLOSE_RATE_CARD_RULESET_BINDING_INVALID'\)/,
   )
   // It still values nothing without a usable card, and still writes nothing.
-  assert.match(cli, /if \(!rateCardUsable\) continue/)
+  assert.match(cli, /if \(!rateCardUsable\) return/)
   assert.match(cli, /rateCardUsable,/)
   // The refusal is still reported and still non-zero, either way.
   assert.match(cli, /process\.exitCode = 3/)
@@ -79,7 +79,7 @@ test('the settled cohort is explicit, validated, and reported', () => {
 test('a dry run reads and prices but never persists', () => {
   assert.match(
     cli,
-    /if \(mode === 'DRY-RUN'\) continue\s*\n\s*const result = await persistVerifiedBillingRecords/,
+    /if \(mode === 'DRY-RUN'\) return\s*\n\s*const result = await persistVerifiedBillingRecords/,
   )
   assert.match(cli, /=== 'EXECUTE'\s*\n?\s*\? 'EXECUTE'\s*\n?\s*: 'DRY-RUN'/)
 })
@@ -128,4 +128,18 @@ test('the no-recording cohort is accepted and validated', () => {
     cli,
     /must be all, exhausted-recording, or no-recording/,
   )
+})
+
+test('candidates settle in bounded lanes, each still its own transaction', () => {
+  // Sequential settling is round-trip bound: tens of thousands of calls take
+  // an hour with the database idle between each one.
+  assert.match(cli, /KAUDIT_CYCLE_CLOSE_CONCURRENCY/)
+  assert.match(cli, /concurrency < 1 \|\| concurrency > 32/)
+  assert.match(cli, /Math\.min\(concurrency, candidates\.length\)/)
+  // The pool has to be able to carry the lanes, or they queue on connections.
+  assert.match(cli, /connectionLimit: concurrency \+ 2/)
+  // Parallelism must not become batching: one call, one transaction, one
+  // manifest hash and trace.
+  assert.match(cli, /await settle\(candidate\)/)
+  assert.match(cli, /await persistVerifiedBillingRecords\(pool, \{/)
 })
