@@ -172,6 +172,29 @@ test('Billing Audit retries a busy advisory lock and publishes a bounded fault',
   assert.doesNotMatch(billingWorker, /KILL\s+(?:CONNECTION|QUERY)/i)
 })
 
+test('the advisory lock is held for the whole run, not just taken once', () => {
+  // The lock lives on ONE connection that was otherwise touched only to take
+  // it and release it. A drain runs for hours, so that connection sat idle
+  // long enough for the server to close it — and closing it RELEASES the lock,
+  // silently, letting a second worker audit the same queue concurrently.
+  assert.match(billingWorker, /LOCK_KEEPALIVE_INTERVAL_MS/)
+  assert.match(
+    billingWorker,
+    /IS_USED_LOCK\('kaudit-independent-reaudit-v2'\)\s*\n?\s*= CONNECTION_ID\(\)/,
+  )
+  // Losing the lock stops the run; it never races another worker for the same
+  // pre-model spend leases.
+  assert.match(billingWorker, /lockLost = true/)
+  assert.match(billingWorker, /!lockLost &&/)
+  assert.match(billingWorker, /billing_audit_lock_lost/)
+  // An unusable lock connection counts as a lost lock, not as a healthy one.
+  assert.match(
+    billingWorker,
+    /\} catch \{\s*\n\s*\/\/ An unusable lock connection is a released lock\.\s*\n\s*lockLost = true/,
+  )
+  assert.match(billingWorker, /await lockKeepalive\?\.stop\(\)/)
+})
+
 test('Billing Audit does not fail a completed drain when its lock connection has closed', () => {
   assert.match(billingWorker, /billing_audit_lock_release_skipped/)
   assert.match(

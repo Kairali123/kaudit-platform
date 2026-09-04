@@ -79,6 +79,17 @@ const DRAIN_DEFERRED_HORIZON_MS = 2 * 60 * 60_000
 /** Consecutive infrastructure faults a bounded run waits out before stopping. */
 const MAX_CONSECUTIVE_BATCH_FAULTS = 5
 const BATCH_FAULT_MAX_BACKOFF_MS = 120_000
+/**
+ * How often the advisory-lock connection is exercised.
+ *
+ * The lock lives on ONE connection and was otherwise touched only to take it
+ * and to release it. A drain runs for hours, so that connection sat idle long
+ * enough for the server to close it — and closing it RELEASES the lock, without
+ * anything in this process noticing. A second worker could then acquire it and
+ * audit the same queue concurrently, which is how two runs came to fight over
+ * the same pre-model spend leases.
+ */
+const LOCK_KEEPALIVE_INTERVAL_MS = 60_000
 
 async function main(): Promise<void> {
   if (required('KAUDIT_AUDIT_MODE') !== 'EXECUTE') {
@@ -202,6 +213,8 @@ async function main(): Promise<void> {
     throw asReauditFatalError('pool_acquisition', error)
   }
   let lockAcquired = false
+  let lockKeepalive: { stop(): Promise<void> } | null = null
+  let lockLost = false
   try {
     try {
       lockAcquired = await acquireBillingAuditLock({
@@ -239,6 +252,29 @@ async function main(): Promise<void> {
       )
       throw new ReauditFatalError('claim', 'WORKER_LOCK_BUSY')
     }
+    /**
+     * Hold the lock for real, and stop if it was ever lost.
+     *
+     * The keepalive both prevents the idle close and verifies ownership: if
+     * this connection is no longer the holder, another worker may already be
+     * claiming the same calls, and continuing would risk paying twice for one
+     * question. A lost lock ends the run rather than racing.
+     */
+    lockKeepalive = startActiveHeartbeat({
+      intervalMs: LOCK_KEEPALIVE_INTERVAL_MS,
+      record: async () => {
+        try {
+          const [heldRows] = await lockConnection.query<RowDataPacket[]>(
+            `SELECT IS_USED_LOCK('kaudit-independent-reaudit-v2')
+                    = CONNECTION_ID() AS held`,
+          )
+          if (Number(heldRows[0]?.held) !== 1) lockLost = true
+        } catch {
+          // An unusable lock connection is a released lock.
+          lockLost = true
+        }
+      },
+    })
     const candidates: ReauditCandidateRepository = requestedMode
       ? createMysqlManualReauditCandidateRepository(pool, {
           recoverInterruptedClaims: true,
@@ -282,6 +318,22 @@ async function main(): Promise<void> {
       `[audit-worker] started; mode=${requestedMode ? 'requested-reaudit' : appendReaudit ? 'append-reaudit' : 'new-only'}; scope=${requestedMode ? 'durable admin request queue' : taskIds ? `${taskIds.length} exact task IDs` : 'all eligible calls'}\n`,
     )
     for (;;) {
+      if (lockLost) {
+        process.stdout.write(
+          `${JSON.stringify({
+            event: 'billing_audit_lock_lost',
+            category: 'WORKER_LOCK_BUSY',
+          })}\n`,
+        )
+        try {
+          await control.recordObservation({
+            system: 'billing',
+            observedState: 'faulted',
+            errorCode: 'BILLING_AUDIT_LOCK_LOST',
+          })
+        } catch { /* the stale-heartbeat rule still publishes liveness */ }
+        break
+      }
       if (shutdownRequested) {
         await control.recordObservation({
           system: 'billing',
@@ -330,6 +382,7 @@ async function main(): Promise<void> {
           }),
           shouldContinue: async () =>
             !shutdownRequested &&
+            !lockLost &&
             (targetedOneShot ||
               (await control.getDesiredState('billing')) === 'running') &&
             ((!drain && !requestedMode) || Date.now() < deadline),
@@ -624,6 +677,9 @@ async function main(): Promise<void> {
       )
     }
   } finally {
+    try {
+      await lockKeepalive?.stop()
+    } catch { /* stopping a timer cannot fail the run */ }
     try {
       if (lockAcquired) {
         try {
