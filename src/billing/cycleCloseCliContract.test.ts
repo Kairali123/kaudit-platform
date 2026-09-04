@@ -112,7 +112,10 @@ test('one unsettleable call cannot abandon the rest of the cohort', () => {
   // A cohort is now tens of thousands of calls. A single malformed vendor
   // quantity used to throw out of the loop, leaving a partial cycle with no
   // statement of where it stopped.
-  assert.match(cli, /try \{\s*\n\s*const records = buildAcceptedAsBilledRecords/)
+  // Both builders sit inside the per-call try, so neither an audited
+  // projection nor a vendor-claim fallback can throw out of the cohort.
+  assert.match(cli, /try \{[\s\S]{0,600}buildAuditedProjectionRecords/)
+  assert.match(cli, /try \{[\s\S]{0,2500}buildAcceptedAsBilledRecords/)
   assert.match(cli, /skipped \+= 1/)
   // Never silent: reported, and the run cannot exit clean.
   assert.match(cli, /skipped,/)
@@ -126,7 +129,7 @@ test('the no-recording cohort is accepted and validated', () => {
   assert.match(cli, /cohortValue !== 'no-recording'/)
   assert.match(
     cli,
-    /must be all, exhausted-recording, or no-recording/,
+    /must be all, exhausted-recording, no-recording, or audited-projection/,
   )
 })
 

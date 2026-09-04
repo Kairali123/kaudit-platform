@@ -55,6 +55,8 @@ on:
           - diagnose-june-bill-audit
           - diagnose-june-no-recording
           - finalize-june-no-recording
+          - diagnose-audited-projection
+          - finalize-audited-projection
           - finalize-no-recording-auto
           - diagnose-rate-cards
           - diagnose-billing-write-schema
@@ -243,6 +245,37 @@ jobs:
               KAUDIT_CYCLE_CLOSE_MONTH="${DIAGNOSTIC_MONTH_INPUT:-2026-06}" \
               KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
               KAUDIT_CYCLE_CLOSE_COHORT=no-recording \
+              KAUDIT_CYCLE_CLOSE_BATCH=50000 \
+              npm run billing:cycle-close
+            elif [[ "$AUDIT_MODE" == "diagnose-audited-projection" ]]; then
+              # Read-only preview of settling audited calls from their OWN
+              # audited duration. No model, no recording re-read.
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_CYCLE_CLOSE_MODE=DRY-RUN \
+              KAUDIT_CYCLE_CLOSE_MONTH="${DIAGNOSTIC_MONTH_INPUT:-2026-06}" \
+              KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
+              KAUDIT_CYCLE_CLOSE_COHORT=audited-projection \
+              KAUDIT_CYCLE_CLOSE_BATCH=50000 \
+              npm run billing:cycle-close
+            elif [[ "$AUDIT_MODE" == "finalize-audited-projection" ]]; then
+              # Settles audited calls at this platform's own audited amount,
+              # capped per call at KServe's charge. Deterministic arithmetic
+              # over facts the audit already persisted: no model is called and
+              # no recording is read again.
+              if [[ "$MIGRATION_CONFIRMATION_INPUT" != "FINALIZE_AUDITED_PROJECTION" ]]; then
+                exit 2
+              fi
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_CYCLE_CLOSE_MODE=EXECUTE \
+              KAUDIT_CYCLE_CLOSE_MONTH="${DIAGNOSTIC_MONTH_INPUT:-2026-06}" \
+              KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
+              KAUDIT_CYCLE_CLOSE_COHORT=audited-projection \
               KAUDIT_CYCLE_CLOSE_BATCH=50000 \
               npm run billing:cycle-close
             elif [[ "$AUDIT_MODE" == "finalize-no-recording-auto" ]]; then

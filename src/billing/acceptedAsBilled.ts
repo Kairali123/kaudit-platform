@@ -31,6 +31,7 @@ export const ACCEPTED_AS_BILLED_RULESET = {
     'no_recording_after_automatic_retry_window',
     'automated_validation_unresolved_at_cycle_close',
     'independent_audit_exhausted_at_cycle_close',
+    'audited_duration_unavailable_at_cycle_close',
   ],
   amount:
     'zero when no recording exists; otherwise vendor-supplied billed amount when present or vendor billed minutes multiplied by the locked rate',
@@ -39,7 +40,7 @@ export const ACCEPTED_AS_BILLED_RULESET = {
 } satisfies JsonValue
 
 export const ACCEPTED_AS_BILLED_RULESET_VERSION =
-  'cycle-close-fallback/1.4.0'
+  'cycle-close-fallback/1.5.0'
 
 /**
  * Why a call was settled from the vendor's own claim instead of an audit.
@@ -55,6 +56,13 @@ export type AcceptedAsBilledFallbackReason =
   | 'no_recording'
   | 'automated_validation_unresolved'
   | 'audit_exhausted'
+  /**
+   * The audit COMPLETED but established no chargeable duration, so there is no
+   * audited amount to bill. Distinct from `audit_exhausted`, where the audit
+   * never produced a result at all: here a recording was listened to and
+   * classified, and the classification simply never fixed a service endpoint.
+   */
+  | 'audited_duration_unavailable'
 export const ACCEPTED_AS_BILLED_RULESET_SHA256 =
   canonicalJsonSha256(ACCEPTED_AS_BILLED_RULESET)
 
@@ -177,7 +185,9 @@ export function buildAcceptedAsBilledRecords(
       ? 'AUTOMATED_VALIDATION_UNRESOLVED_ACCEPTED_AS_BILLED'
       : fallbackReason === 'audit_exhausted'
         ? 'INDEPENDENT_AUDIT_EXHAUSTED_ACCEPTED_AS_BILLED'
-        : 'NO_RECORDING_FOUND_ZERO'
+        : fallbackReason === 'audited_duration_unavailable'
+          ? 'AUDITED_DURATION_UNAVAILABLE_ACCEPTED_AS_BILLED'
+          : 'NO_RECORDING_FOUND_ZERO'
   const trace = {
     schemaVersion: '1',
     decisionType: 'verified_call_billing',
@@ -189,7 +199,9 @@ export function buildAcceptedAsBilledRecords(
         ? 'Automated validation remained unresolved at cycle close; the KServe claim was accepted without an independently verified duration.'
         : fallbackReason === 'audit_exhausted'
           ? 'The independent audit exhausted its retry budget and produced no result; the KServe claim was accepted without an independently verified duration.'
-          : 'No Recording Found',
+          : fallbackReason === 'audited_duration_unavailable'
+            ? 'The independent audit completed but established no chargeable duration, so the KServe claim was accepted rather than an audited amount asserted.'
+            : 'No Recording Found',
     callId: input.callId,
     rateCardId: rateCard.id,
     rateCardVersion: rateCard.version,
@@ -302,7 +314,9 @@ export function buildAcceptedAsBilledRecords(
         ? 'AUTOMATED_VALIDATION_UNRESOLVED'
         : fallbackReason === 'audit_exhausted'
           ? 'INDEPENDENT_AUDIT_EXHAUSTED'
-          : 'NO_RECORDING',
+          : fallbackReason === 'audited_duration_unavailable'
+            ? 'AUDITED_DURATION_UNAVAILABLE'
+            : 'NO_RECORDING',
     decisionEngineName: 'kserve-verified-billing',
     decisionEngineVersion: KSERVE_BILLING_ENGINE_VERSION,
     modelProvider: 'none',

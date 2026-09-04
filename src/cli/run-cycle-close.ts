@@ -11,6 +11,9 @@ import {
 } from '../billing/acceptedAsBilled.ts'
 import { KSERVE_RULESET_SHA256 } from '../billing/kserveRules.ts'
 import {
+  buildAuditedProjectionRecords,
+} from '../billing/auditedProjectionSettlement.ts'
+import {
   persistVerifiedBillingRecords,
 } from '../adapters/mysqlVerifiedBilling.ts'
 import { parseBillingMonth } from '../reporting/billingMonth.ts'
@@ -43,10 +46,11 @@ const cohortValue =
 if (
   cohortValue !== 'all' &&
   cohortValue !== 'exhausted-recording' &&
-  cohortValue !== 'no-recording'
+  cohortValue !== 'no-recording' &&
+  cohortValue !== 'audited-projection'
 ) {
   throw new Error(
-    'KAUDIT_CYCLE_CLOSE_COHORT must be all, exhausted-recording, or no-recording',
+    'KAUDIT_CYCLE_CLOSE_COHORT must be all, exhausted-recording, no-recording, or audited-projection',
   )
 }
 const cohort: CycleCloseCohort = cohortValue
@@ -180,6 +184,8 @@ try {
   let auditExhaustedCandidates = 0
   let unresolvedValidationCandidates = 0
   let skipped = 0
+  let auditedProjectionCandidates = 0
+  let auditedNoDurationCandidates = 0
   const skippedCodes = new Map<string, number>()
   const settle = async (
     candidate: (typeof candidates)[number],
@@ -208,10 +214,55 @@ try {
      * the run exits non-zero so a partial close cannot read as a clean one.
      */
     try {
+      /**
+       * An audited call is priced from its OWN audited duration. Only when the
+       * audit established no chargeable duration is there nothing to bill from,
+       * and the vendor's claim is accepted instead — recorded as that, not as
+       * an audited amount of zero, because nobody measured zero.
+       */
+      const projected = cohort === 'audited-projection'
+        ? buildAuditedProjectionRecords({
+            callId: candidate.callId,
+            auditRunId: candidate.auditRunId,
+            category: candidate.category,
+            recordedDurationMs: candidate.recordedDurationMs,
+            speechDurationMs: candidate.speechDurationMs,
+            serviceEndMs: candidate.serviceEndMs,
+            graceMs: candidate.graceMs,
+            claimedDurationMs: candidate.claimedDurationMs,
+            connectedDurationMs: candidate.connectedDurationMs,
+            vendorBilledAmount: candidate.vendorBilledAmount,
+            sourceEvidence: {
+              kind: 'call_manifest',
+              referenceId: candidate.evidenceObjectId,
+              sha256: candidate.evidenceSha256,
+            },
+            decidedAt,
+          }, rateCard)
+        : null
+      if (projected) {
+        auditedProjectionCandidates += 1
+        acceptedAmountPaise += Math.round(
+          Number(projected.calculation?.totalAmount || 0) * 100,
+        )
+        if (mode === 'DRY-RUN') return
+        const projectedResult = await persistVerifiedBillingRecords(pool, {
+          records: projected,
+          rateCard,
+          correlationId: `cycle-close:${period.month}`,
+          firstSettlement: true,
+        })
+        if (projectedResult.outcome === 'inserted') inserted += 1
+        else duplicates += 1
+        return
+      }
+      if (cohort === 'audited-projection') auditedNoDurationCandidates += 1
       const records = buildAcceptedAsBilledRecords({
         callId: candidate.callId,
         auditRunId: candidate.auditRunId,
-        fallbackReason: candidate.fallbackReason,
+        fallbackReason: cohort === 'audited-projection'
+          ? 'audited_duration_unavailable'
+          : candidate.fallbackReason,
         claimedDurationMs: candidate.claimedDurationMs,
         connectedDurationMs: candidate.connectedDurationMs,
         vendorBilledMinutes: candidate.vendorBilledMinutes,
@@ -278,6 +329,8 @@ try {
     recordingFallbackCandidates,
     auditExhaustedCandidates,
     unresolvedValidationCandidates,
+    auditedProjectionCandidates,
+    auditedNoDurationCandidates,
     inserted,
     duplicates,
     skipped,

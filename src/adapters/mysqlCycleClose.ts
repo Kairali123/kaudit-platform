@@ -20,6 +20,74 @@ export type CycleCloseCohort =
   | 'all'
   | 'exhausted-recording'
   | 'no-recording'
+  | 'audited-projection'
+
+/**
+ * Calls this platform actually audited: a final recording, a completed media
+ * analysis and transcript, and a canonical outcome. They are priced from their
+ * own audited duration, so the candidate row carries the audit facts the
+ * projection needs rather than only the vendor's claim.
+ */
+const AUDITED_SQL = `
+  EXISTS (
+    SELECT 1
+    FROM kaudit_call_artifact audited_artifact
+    JOIN kaudit_media_analysis audited_media
+      ON audited_media.call_artifact_id = audited_artifact.id
+     AND audited_media.status = 'completed'
+     AND audited_media.classification_status = 'completed'
+    JOIN kaudit_transcript audited_transcript
+      ON audited_transcript.call_artifact_id = audited_artifact.id
+     AND audited_transcript.status = 'completed'
+    WHERE audited_artifact.call_id = c.id
+      AND audited_artifact.artifact_type = 'recording'
+      AND audited_artifact.is_final = 1
+      AND audited_artifact.source_url IS NOT NULL
+  )
+  AND c.canonical_outcome_code IS NOT NULL
+`
+
+/**
+ * The latest completed analysis for a call, and the endpoint/grace the audit
+ * recorded. Mirrors the Audit Monitor's own derivation so the settled amount is
+ * the amount the monitor already displays — the stored policy values when the
+ * audit persisted them, and the conversation end with the locked default grace
+ * when it did not.
+ */
+const AUDITED_FACTS_SQL = `
+  SELECT
+    latest_media.call_id,
+    latest_media.decoded_duration_ms,
+    latest_media.speech_ms,
+    COALESCE(
+      CAST(JSON_EXTRACT(
+        latest_media.metrics_json, '$.chargeableServiceEndMs'
+      ) AS SIGNED),
+      latest_media.conversation_end_ms
+    ) AS service_end_ms,
+    COALESCE(
+      CAST(JSON_EXTRACT(
+        latest_media.metrics_json, '$.appliedBillingGraceMs'
+      ) AS SIGNED),
+      60000
+    ) AS grace_ms
+  FROM kaudit_media_analysis latest_media
+  JOIN kaudit_call_artifact fact_artifact
+    ON fact_artifact.id = latest_media.call_artifact_id
+   AND fact_artifact.artifact_type = 'recording'
+   AND fact_artifact.is_final = 1
+  WHERE latest_media.status = 'completed'
+    AND latest_media.classification_status = 'completed'
+    AND latest_media.id = (
+      SELECT newest.id
+      FROM kaudit_media_analysis newest
+      WHERE newest.call_artifact_id = latest_media.call_artifact_id
+        AND newest.status = 'completed'
+        AND newest.classification_status = 'completed'
+      ORDER BY newest.created_at DESC, newest.id DESC
+      LIMIT 1
+    )
+`
 
 /**
  * Calls KServe supplied no recording for.
@@ -79,6 +147,11 @@ interface CandidateRow extends RowDataPacket {
   call_id: string
   audit_run_id: string | null
   fallback_reason: AcceptedAsBilledFallbackReason
+  category: string | null
+  recorded_duration_ms: number | string | null
+  speech_ms: number | string | null
+  service_end_ms: number | string | null
+  grace_ms: number | string | null
   vendor_billed_minutes: string
   vendor_billed_amount: string | null
   claimed_duration_ms: number | string | null
@@ -101,6 +174,12 @@ export interface AcceptedAsBilledCandidate {
   callId: string
   auditRunId: string | null
   fallbackReason: AcceptedAsBilledFallbackReason
+  /** Audit facts, present only for the audited-projection cohort. */
+  category: string | null
+  recordedDurationMs: number | null
+  speechDurationMs: number | null
+  serviceEndMs: number | null
+  graceMs: number | null
   vendorBilledMinutes: string
   vendorBilledAmount: string | null
   claimedDurationMs: number | null
@@ -159,6 +238,8 @@ export async function listAcceptedAsBilledCandidates(
     ? EXHAUSTED_RECORDING_SQL
     : cohort === 'no-recording'
     ? NO_RECORDING_SQL
+    : cohort === 'audited-projection'
+    ? AUDITED_SQL
     : `(
          ${NO_RECORDING_SQL}
          OR EXISTS (
@@ -202,7 +283,12 @@ export async function listAcceptedAsBilledCandidates(
        ROUND(with_ringing.quantity_decimal * 1000) AS claimed_duration_ms,
        ROUND(connected.quantity_decimal * 1000) AS connected_duration_ms,
        evidence.id AS evidence_object_id,
-       evidence.sha256 AS evidence_sha256
+       evidence.sha256 AS evidence_sha256,
+       c.canonical_outcome_code AS category,
+       audited.decoded_duration_ms AS recorded_duration_ms,
+       audited.speech_ms,
+       audited.service_end_ms,
+       audited.grace_ms
      FROM kaudit_call c
      JOIN kaudit_provider_cost minutes
        ON minutes.call_id = c.id
@@ -222,6 +308,9 @@ export async function listAcceptedAsBilledCandidates(
        ON connected.call_id = c.id
       AND connected.provider_sku = 'duration_without_ringing_sec'
       AND connected.is_final = 1
+     LEFT JOIN (
+       ${AUDITED_FACTS_SQL}
+     ) audited ON audited.call_id = c.id
      WHERE c.billing_period_date BETWEEN ? AND ?
        AND ${eligibilitySql}
        AND NOT EXISTS (
@@ -243,6 +332,11 @@ export async function listAcceptedAsBilledCandidates(
     callId: row.call_id,
     auditRunId: row.audit_run_id,
     fallbackReason: row.fallback_reason,
+    category: row.category,
+    recordedDurationMs: integerOrNull(row.recorded_duration_ms),
+    speechDurationMs: integerOrNull(row.speech_ms),
+    serviceEndMs: integerOrNull(row.service_end_ms),
+    graceMs: integerOrNull(row.grace_ms),
     vendorBilledMinutes: row.vendor_billed_minutes,
     vendorBilledAmount: row.vendor_billed_amount,
     claimedDurationMs: integerOrNull(row.claimed_duration_ms),

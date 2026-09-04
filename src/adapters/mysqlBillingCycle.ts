@@ -138,6 +138,7 @@ export async function collectLatestBillingCycle(
          AND calculation.calculation_basis IN (
            'independent_conversation_end',
            'independent_category_service_end',
+           'independent_audited_projection',
            'accepted_as_billed_unverified',
            'no_recording_zero'
          )
@@ -148,6 +149,7 @@ export async function collectLatestBillingCycle(
             )
             AND calculation.audit_run_id IS NOT NULL)
            OR calculation.calculation_basis IN (
+              'independent_audited_projection',
               'accepted_as_billed_unverified',
               'no_recording_zero'
            )

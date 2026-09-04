@@ -220,7 +220,7 @@ test('the exhausted trigger is versioned into the fallback ruleset identity', ()
   // version must move with it or an old and new decision become indistinguishable.
   assert.equal(
     ACCEPTED_AS_BILLED_RULESET_VERSION,
-    'cycle-close-fallback/1.4.0',
+    'cycle-close-fallback/1.5.0',
   )
   assert.ok(
     (ACCEPTED_AS_BILLED_RULESET.triggers as string[]).includes(

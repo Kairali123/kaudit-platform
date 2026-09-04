@@ -24,6 +24,13 @@ export interface BillingCalculationRecord {
   calculationBasis:
     | 'independent_conversation_end'
     | 'independent_category_service_end'
+    /**
+     * Priced from this platform's own audited duration, but with a single-pass
+     * classification behind it rather than a consensus cross-check. Kept apart
+     * from the two bases above so a reader can tell how much scrutiny the
+     * number received.
+     */
+    | 'independent_audited_projection'
     | 'accepted_as_billed_unverified'
     | 'no_recording_zero'
   claimedDurationMs: number | null
@@ -54,7 +61,8 @@ export interface BillingComponentRecord {
   rawUnit: 'millisecond' | 'minute' | 'INR'
   billableQuantity: string
   billingIncrement: string
-  unitRate: '9.50000000' | '1.00000000'
+  /** The locked per-minute rate, or 1.00000000 where the quantity IS the money. */
+  unitRate: string
   subtotalAmount: string
   taxAmount: '0.00000000'
   totalAmount: string
