@@ -56,7 +56,9 @@ const AUDITED_SQL = `
  */
 const AUDITED_FACTS_SQL = `
   SELECT
-    latest_media.call_id,
+    -- The analysis is keyed by artifact, not by call; the call comes from the
+    -- artifact it belongs to.
+    fact_artifact.call_id AS call_id,
     latest_media.decoded_duration_ms,
     latest_media.speech_ms,
     COALESCE(
