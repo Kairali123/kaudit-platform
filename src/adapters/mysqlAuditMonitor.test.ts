@@ -850,6 +850,7 @@ test('bill-audit coverage resolves missing recordings and accepted KServe fallba
       match: 'AS accepted_fallback_calls',
       rows: [{
         accepted_fallback_calls: 2,
+        accepted_recording_backed_calls: 2,
         accepted_failure_calls: 2,
       }],
     },
@@ -946,4 +947,70 @@ test('a settled no-recording call does count once cycle close records it', async
   // Both cycle-close bases, so the monitor agrees with the billing cycle's
   // own definition of a resolved call.
   assert.match(fallbackQuery, /'accepted_as_billed_unverified',\s*\n?\s*'no_recording_zero'/)
+})
+
+test('the pending queue nets off only recording-backed settlements', async () => {
+  // `pending_calls` counts calls that HAVE a recording and are not yet audited.
+  // Once no-recording calls became settleable, subtracting every cycle-close
+  // fallback netted a population that was never in that queue against it, and
+  // the tile reported an empty queue while thousands still awaited an audit.
+  const fake = fakePool([
+    {
+      match: 'total_calls',
+      rows: [{
+        total_calls: 27_705,
+        audited_calls: 2_311,
+        recording_available: 11_530,
+        pending_calls: 9_219,
+        no_recording_calls: 16_175,
+        processing_failures: 18,
+      }],
+    },
+    {
+      match: 'accepted_fallback_calls',
+      rows: [{
+        // Every no-recording call settled, plus a handful of recording-backed.
+        accepted_fallback_calls: 16_175,
+        accepted_recording_backed_calls: 0,
+        accepted_failure_calls: 0,
+      }],
+    },
+  ])
+
+  const data = await collectAuditMonitor(fake.pool, QUERY, 'summary-core')
+
+  assert.equal(data.summary.pendingEligibleCalls, 9_219)
+  assert.equal(data.summary.noRecordingCalls, 16_175)
+  // Bill-audited still counts every settlement, recording-backed or not.
+  assert.equal(data.summary.billAuditedCalls, 18_486)
+})
+
+test('a recording-backed settlement does leave the pending queue', async () => {
+  const fake = fakePool([
+    {
+      match: 'total_calls',
+      rows: [{
+        total_calls: 100,
+        audited_calls: 10,
+        recording_available: 40,
+        pending_calls: 30,
+        no_recording_calls: 60,
+        processing_failures: 0,
+      }],
+    },
+    {
+      match: 'accepted_fallback_calls',
+      rows: [{
+        accepted_fallback_calls: 65,
+        accepted_recording_backed_calls: 5,
+        accepted_failure_calls: 5,
+      }],
+    },
+  ])
+
+  const data = await collectAuditMonitor(fake.pool, QUERY, 'summary-core')
+
+  // 30 recording-backed unaudited, 5 of them settled by fallback.
+  assert.equal(data.summary.pendingEligibleCalls, 25)
+  assert.equal(data.summary.billAuditedCalls, 75)
 })

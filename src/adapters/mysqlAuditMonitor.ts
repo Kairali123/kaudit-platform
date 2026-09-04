@@ -229,6 +229,7 @@ interface OverallSummaryRow extends RowDataPacket {
 
 interface AcceptedFallbackSummaryRow extends RowDataPacket {
   accepted_fallback_calls: number | string
+  accepted_recording_backed_calls: number | string
   accepted_failure_calls: number | string
 }
 
@@ -802,7 +803,20 @@ export async function collectAuditMonitor(
                    ('fetch_failed','transcribe_failed',
                     'classify_failed','exhausted')
            ) THEN resolved_calculation.call_id
-         END) AS accepted_failure_calls
+         END) AS accepted_failure_calls,
+         -- Only a RECORDING-BACKED settlement can leave the recording-backed
+         -- pending queue. Subtracting every fallback would net the whole
+         -- no-recording population against a count it was never part of.
+         COUNT(DISTINCT CASE
+           WHEN EXISTS (
+             SELECT 1
+             FROM kaudit_call_artifact backed_artifact
+             WHERE backed_artifact.call_id = resolved_calculation.call_id
+               AND backed_artifact.artifact_type = 'recording'
+               AND backed_artifact.is_final = 1
+               AND backed_artifact.source_url IS NOT NULL
+           ) THEN resolved_calculation.call_id
+         END) AS accepted_recording_backed_calls
        FROM kaudit_billing_calculation resolved_calculation
        JOIN kaudit_call c ON c.id = resolved_calculation.call_id
        WHERE resolved_calculation.status = 'final'
@@ -873,9 +887,21 @@ export async function collectAuditMonitor(
     acceptedFallback?.accepted_failure_calls || 0,
   )
   const totalFilteredRows = count(filteredRows[0][0])
+  /**
+   * The recording-backed queue nets off only recording-backed settlements.
+   *
+   * `pending_calls` counts calls that HAVE a recording and are not yet audited.
+   * Subtracting every cycle-close fallback from it once no-recording calls
+   * became settleable netted 16,000 calls that were never in that queue against
+   * it, and the tile reported an empty queue while thousands still awaited an
+   * audit.
+   */
+  const acceptedRecordingBackedCalls = Number(
+    acceptedFallback?.accepted_recording_backed_calls || 0,
+  )
   const summaryPendingRows = Math.max(
     0,
-    Number(overall?.pending_calls || 0) - acceptedFallbackCalls,
+    Number(overall?.pending_calls || 0) - acceptedRecordingBackedCalls,
   )
   const summaryNoRecordingRows = Number(
     overall?.no_recording_calls || 0,
