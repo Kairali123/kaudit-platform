@@ -111,3 +111,41 @@ test('an optional cycle query cannot conceal a database statement timeout', asyn
     (error) => error === timeout,
   )
 })
+
+test('independent cycle aggregates start without waiting for one another', async () => {
+  const statements: string[] = []
+  const releases: Array<(value: [object[], object[]]) => void> = []
+  const pool = {
+    query(sql: string) {
+      statements.push(sql)
+      return new Promise<[object[], object[]]>((resolve) => {
+        releases.push(resolve)
+      })
+    },
+  } as unknown as Pool
+
+  const result = collectLatestBillingCycle(pool, {
+    month: '2026-07',
+    start: '2026-07-01',
+    end: '2026-07-31',
+    label: 'July 2026',
+  })
+
+  assert.equal(statements.length, 3)
+  releases[0]?.([[{
+    total_calls: 1,
+    recording_available_calls: 1,
+    completed_audit_calls: 1,
+    processing_failure_calls: 0,
+  }], []])
+  releases[1]?.([[{
+    accepted_as_billed_calls: 0,
+    final_calculation_calls: 1,
+    calculated_total: '9.50',
+    billable_minutes: '1',
+    currency: 'INR',
+  }], []])
+  releases[2]?.([[{ unresolved_decision_calls: 0 }], []])
+
+  assert.equal((await result).totalCalls, 1)
+})

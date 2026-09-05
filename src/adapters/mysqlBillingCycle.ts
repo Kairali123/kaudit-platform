@@ -73,7 +73,7 @@ export async function collectLatestBillingCycle(
     }
   }
   const parameters = [period.period_start, period.period_end]
-  const [baseResult] = await pool.query<BaseCountRow[]>(
+  const basePromise = pool.query<BaseCountRow[]>(
     `SELECT
        COUNT(*) AS total_calls,
        SUM(EXISTS (
@@ -114,11 +114,8 @@ export async function collectLatestBillingCycle(
   // Migration 0006 adds calculation_basis and the automated decision table.
   // Until it is applied, these values intentionally remain unavailable instead
   // of treating legacy calculations as a completed bill.
-  let finalCounts: FinalCountRow | null = null
-  let unresolvedCounts: UnresolvedCountRow | null = null
-  try {
-    const [rows] = await pool.query<FinalCountRow[]>(
-      `SELECT
+  const finalPromise = pool.query<FinalCountRow[]>(
+    `SELECT
          COUNT(DISTINCT CASE
            WHEN calculation.calculation_basis IN (
              'accepted_as_billed_unverified',
@@ -163,16 +160,13 @@ export async function collectLatestBillingCycle(
            FROM kaudit_billing_calculation newer
            WHERE newer.supersedes_calculation_id = calculation.id
          )`,
-      parameters,
-    )
-    finalCounts = rows[0] ?? null
-  } catch (error) {
+    parameters,
+  ).then(([rows]) => rows[0] ?? null).catch((error: unknown) => {
     if (isDatabaseStatementTimeout(error)) throw error
-    finalCounts = null
-  }
-  try {
-    const [rows] = await pool.query<UnresolvedCountRow[]>(
-      `SELECT COUNT(DISTINCT decision_row.call_id) AS unresolved_decision_calls
+    return null
+  })
+  const unresolvedPromise = pool.query<UnresolvedCountRow[]>(
+    `SELECT COUNT(DISTINCT decision_row.call_id) AS unresolved_decision_calls
        FROM kaudit_automated_decision decision_row
        JOIN kaudit_call call_row ON call_row.id = decision_row.call_id
        WHERE call_row.billing_period_date BETWEEN ? AND ?
@@ -182,13 +176,18 @@ export async function collectLatestBillingCycle(
            FROM kaudit_automated_decision newer
            WHERE newer.supersedes_decision_id = decision_row.id
          )`,
-      parameters,
-    )
-    unresolvedCounts = rows[0] ?? null
-  } catch (error) {
+    parameters,
+  ).then(([rows]) => rows[0] ?? null).catch((error: unknown) => {
     if (isDatabaseStatementTimeout(error)) throw error
-    unresolvedCounts = null
-  }
+    return null
+  })
+  // These aggregates are independent. Starting them together keeps a report
+  // request to the slowest read instead of paying for all three serially.
+  const [[baseResult], finalCounts, unresolvedCounts] = await Promise.all([
+    basePromise,
+    finalPromise,
+    unresolvedPromise,
+  ])
   const base = baseResult[0]
   return {
     periodStart: String(period.period_start),

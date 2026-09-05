@@ -99,6 +99,29 @@ export interface BillingView {
   cycleStatusLabel: string
 }
 
+type RawBillingReadiness = Pick<
+  RawBillingMetrics,
+  | 'cycle'
+  | 'rateCardStatus'
+  | 'rateCardApprovedBy'
+  | 'rateCardApprovedAt'
+>
+
+export function buildBillingCycleView(
+  billing: RawBillingReadiness,
+  options: { calibrationComplete?: boolean } = {},
+) {
+  const rateCardApproved =
+    billing.rateCardStatus === 'published' &&
+    Boolean(billing.rateCardApprovedBy) &&
+    Boolean(billing.rateCardApprovedAt)
+  return assessBillingCycleReadiness({
+    ...billing.cycle,
+    rateCardApproved,
+    calibrationComplete: options.calibrationComplete === true,
+  })
+}
+
 export interface RevenueSnapshotView {
   cadence: SnapshotCadence
   label: string
@@ -221,11 +244,7 @@ export function buildBillingView(
 ): BillingView {
   const rateCardApproved =
     b.rateCardStatus === 'published' && Boolean(b.rateCardApprovedBy) && Boolean(b.rateCardApprovedAt)
-  const cycle = assessBillingCycleReadiness({
-    ...b.cycle,
-    rateCardApproved,
-    calibrationComplete: options.calibrationComplete === true,
-  })
+  const cycle = buildBillingCycleView(b, options)
   const calculationsAuthoritative = cycle.billGenerated
   const authorityCoverageLabel =
     cycle.finalCalculationCalls == null

@@ -312,6 +312,47 @@ export async function collectBilling(
   }
 }
 
+export type BillingReadinessData = Pick<
+  RawBillingMetrics,
+  | 'cycle'
+  | 'rateCardStatus'
+  | 'rateCardApprovedBy'
+  | 'rateCardApprovedAt'
+>
+
+/**
+ * The small billing subset required by the Reports page.
+ *
+ * The full Billing page also needs totals, authority coverage, invoice and
+ * reconciliation. Reading those again for Reports added two 5-15 second
+ * aggregates even though the response discarded them.
+ */
+export async function collectBillingReadiness(
+  pool: Pool,
+  period: BillingMonthScope | null = null,
+): Promise<BillingReadinessData> {
+  const [rateCard, cycle] = await Promise.all([
+    one(
+      pool,
+      `SELECT status, approved_by, CAST(approved_at AS CHAR) AS approved_at
+       FROM kaudit_rate_card_version
+       ${period
+         ? `WHERE effective_from <= ?
+              AND (effective_to IS NULL OR effective_to >= ?)`
+         : ''}
+       ORDER BY created_at DESC LIMIT 1`,
+      period ? [period.end, period.start] : [],
+    ),
+    collectLatestBillingCycle(pool, period),
+  ])
+  return {
+    rateCardStatus: s(rateCard?.status),
+    rateCardApprovedBy: s(rateCard?.approved_by),
+    rateCardApprovedAt: s(rateCard?.approved_at),
+    cycle,
+  }
+}
+
 interface PeriodAmounts {
   verified: string | null
   providerClaimed: string | null

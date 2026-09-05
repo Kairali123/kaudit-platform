@@ -63,6 +63,7 @@ import { verifyGasImportSignature } from '../imports/gasImportAuth.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
 import {
   collectBilling,
+  collectBillingReadiness,
   collectQuality,
   collectRevenueSnapshots,
 } from '../adapters/mysqlFullDashboard.ts'
@@ -198,6 +199,7 @@ import { isSafeVendorUrl } from '../security/urlSafety.ts'
 import { sha256Hex } from '../lib/hash.ts'
 import {
   buildBillingView,
+  buildBillingCycleView,
   buildQualityView,
   buildRevenueSnapshots,
   type ReleaseGateView,
@@ -1642,9 +1644,9 @@ async function apiResponse(
     )
   }
   if (pathname === '/api/v1/reports') {
-    const [billing, snapshots, emailDelivery, settlement] =
+    const [billingReadiness, snapshots, emailDelivery, settlement] =
       await Promise.all([
-        collectBilling(billingReadPool(dependencies), period),
+        collectBillingReadiness(billingReadPool(dependencies), period),
         collectRevenueSnapshots(dependencies.pool, period),
         period
           ? collectReportEmailDeliveryStatus(
@@ -1659,13 +1661,13 @@ async function apiResponse(
         // than as either of those.
         collectSettlementSummary(dependencies, period),
       ])
-    const billingView = buildBillingView(billing, {
+    const billingCycle = buildBillingCycleView(billingReadiness, {
       calibrationComplete:
         dependencies.config.releaseGates.calibrationComplete ||
         dependencies.config.releaseGates
           .automatedValidationApproved,
     })
-    const billGenerated = billingView.cycle.billGenerated
+    const billGenerated = billingCycle.billGenerated
     return {
       generatedAt: new Date().toISOString(),
       authority:
@@ -1675,7 +1677,7 @@ async function apiResponse(
           : billGenerated
             ? 'provisional'
             : 'audit_pending',
-      billingCycle: billingView.cycle,
+      billingCycle,
       snapshots: buildRevenueSnapshots(snapshots, {
         releaseVerifiedValues: billGenerated,
       }),
