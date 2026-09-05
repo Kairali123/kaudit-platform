@@ -5,9 +5,11 @@ import { collectMonthlyPdfReport } from './mysqlMonthlyEmailReport.ts'
 
 test('PDF collection reads grouped month facts instead of per-call evidence', async () => {
   const queries: string[] = []
+  const params: unknown[][] = []
   const pool = {
-    async query(sql: string) {
+    async query(sql: string, values: unknown[] = []) {
       queries.push(sql)
+      params.push(values)
       if (sql.includes('GROUP BY calculation.calculation_basis')) {
         return [[
           {
@@ -55,5 +57,12 @@ test('PDF collection reads grouped month facts instead of per-call evidence', as
   assert.deepEqual(report.rows, [])
   assert.equal(queries.length, 2)
   assert.match(queries[0] ?? '', /GROUP BY calculation\.calculation_basis/)
+  assert.match(queries[0] ?? '', /FROM provider_claim vendor\s+STRAIGHT_JOIN/)
+  assert.match(
+    queries[0] ?? '',
+    /LEFT JOIN kaudit_billing_calculation newer/,
+  )
+  assert.match(queries[0] ?? '', /AND newer\.id IS NULL/)
   assert.doesNotMatch(queries[0] ?? '', /call_reference|evidence_artifact/)
+  assert.deepEqual(params[0], ['2026-06-01', '2026-06-30'])
 })

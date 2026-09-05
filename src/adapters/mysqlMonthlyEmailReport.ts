@@ -117,7 +117,7 @@ interface ReportAggregateRow extends RowDataPacket {
   currency: string
 }
 
-const CURRENT_FINAL_CALCULATION = `calculation.status = 'final'
+const FINAL_CALCULATION_EVIDENCE = `calculation.status = 'final'
       AND calculation.calculation_basis IN (
         'independent_conversation_end',
         'independent_category_service_end',
@@ -128,18 +128,7 @@ const CURRENT_FINAL_CALCULATION = `calculation.status = 'final'
       AND calculation.input_manifest_sha256 IS NOT NULL
       AND calculation.ruleset_sha256 IS NOT NULL
       AND calculation.decision_trace_sha256 IS NOT NULL
-      AND calculation.finalized_at IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1
-        FROM kaudit_billing_calculation newer
-        WHERE newer.supersedes_calculation_id = calculation.id
-      )`
-
-const SCOPED_MONTHLY_VENDOR_ASSERTIONS = vendorBilledAssertionsSql(
-  `JOIN kaudit_call scoped_call
-     ON scoped_call.id = cost.call_id
-    AND scoped_call.billing_period_date BETWEEN ? AND ?`,
-)
+      AND calculation.finalized_at IS NOT NULL`
 
 /**
  * Collects only the grouped facts rendered by the summary PDF.
@@ -156,7 +145,10 @@ export async function collectMonthlyPdfReport(
   },
 ): Promise<MonthlyEmailReport> {
   const [rows] = await pool.query<ReportAggregateRow[]>(
-    `SELECT
+    `WITH provider_claim AS (
+       ${vendorBilledAssertionsSql()}
+     )
+     SELECT
        calculation.calculation_basis,
        COUNT(*) AS calls,
        CAST(SUM(COALESCE(
@@ -165,22 +157,19 @@ export async function collectMonthlyPdfReport(
        )) AS CHAR) AS vendor_billed_amount,
        CAST(SUM(calculation.total_amount) AS CHAR) AS verified_amount,
        MAX(calculation.currency) AS currency
-     FROM kaudit_call c
-     JOIN (
-       ${SCOPED_MONTHLY_VENDOR_ASSERTIONS}
-     ) vendor ON vendor.call_id = c.id
-       AND vendor.minutes_decimal IS NOT NULL
-     JOIN kaudit_billing_calculation calculation
+     FROM provider_claim vendor
+     STRAIGHT_JOIN kaudit_call c
+       ON c.id = vendor.call_id
+     STRAIGHT_JOIN kaudit_billing_calculation calculation
        ON calculation.call_id = c.id
-      AND ${CURRENT_FINAL_CALCULATION}
+      AND ${FINAL_CALCULATION_EVIDENCE}
+     LEFT JOIN kaudit_billing_calculation newer
+       ON newer.supersedes_calculation_id = calculation.id
      WHERE c.billing_period_date BETWEEN ? AND ?
+       AND vendor.minutes_decimal IS NOT NULL
+       AND newer.id IS NULL
      GROUP BY calculation.calculation_basis`,
-    [
-      options.period.start,
-      options.period.end,
-      options.period.start,
-      options.period.end,
-    ],
+    [options.period.start, options.period.end],
   )
   const [invoiceRows] = await pool.query<InvoiceRow[]>(
     `SELECT CAST(subtotal_amount AS CHAR) AS subtotal
