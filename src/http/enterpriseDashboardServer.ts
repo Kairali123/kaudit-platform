@@ -1645,7 +1645,7 @@ async function apiResponse(
     )
   }
   if (pathname === '/api/v1/reports') {
-    const [billingReadiness, snapshotData, emailDelivery, settlement] =
+    const [billingReadiness, snapshotData, emailDelivery] =
       await Promise.all([
         collectBillingReadiness(billingReadPool(dependencies), period),
         period
@@ -1661,13 +1661,11 @@ async function apiResponse(
               period.month,
             )
           : Promise.resolve(null),
-        // Monthly only, and null ONLY when the report is not scoped to one bill
-        // month. A month with no settlement reports itself as pending rather
-        // than as a zero payment with total savings, and a month whose
-        // settlement could not be read reports itself as unavailable rather
-        // than as either of those.
-        collectSettlementSummary(dependencies, period),
       ])
+    // Run this small read after the cycle aggregates release the bounded pool.
+    // Otherwise a truthful "pending" month can degrade to "unavailable" merely
+    // because both serverless connections are occupied by the report itself.
+    const settlement = await collectSettlementSummary(dependencies, period)
     const snapshots = snapshotData.kind === 'monthly'
       ? [{
           cadence: 'monthly' as const,
