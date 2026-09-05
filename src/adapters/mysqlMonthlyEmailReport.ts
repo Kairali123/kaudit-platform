@@ -135,6 +135,7 @@ export async function collectMonthlyEmailReport(
       AND calculation.calculation_basis IN (
         'independent_conversation_end',
         'independent_category_service_end',
+        'independent_audited_projection',
         'accepted_as_billed_unverified',
         'no_recording_zero'
       )

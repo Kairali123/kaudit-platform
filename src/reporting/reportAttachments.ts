@@ -236,6 +236,34 @@ export function buildReportPdf(
       )
       .moveDown()
       .fontSize(13)
+      .text('How the month resolved')
+      .fontSize(9)
+      .fillColor('#475569')
+      .text(
+        'Every call, grouped by how its amount was established. Variance is the vendor amount less the audited amount for the same calls.',
+      )
+      .fillColor('#000000')
+      .fontSize(10)
+    for (const group of report.resolutionBreakdown) {
+      document
+        .fontSize(10)
+        .text(
+          `${group.label} — ${group.calls.toLocaleString('en-IN')} calls`,
+        )
+        .fontSize(9)
+        .fillColor('#475569')
+        .text(
+          `vendor ${formatMoney(group.vendorAmount, report.summary.currency)}` +
+            ` · audited ${formatMoney(group.verifiedAmount, report.summary.currency)}` +
+            ` · variance ${formatMoney(group.variance, report.summary.currency)}`,
+        )
+        .text(group.explanation)
+        .fillColor('#000000')
+        .moveDown(0.4)
+    }
+    document
+      .moveDown()
+      .fontSize(13)
       .text('Settlement with KServe')
       .fontSize(11)
     for (const [label, value] of settlementLines(report)) {
@@ -252,7 +280,7 @@ export function buildReportPdf(
       .moveDown()
       .fillColor('#475569')
       .text(
-        'The attached Excel workbook contains call-level backup. Positive variance means the vendor claim exceeds Kairali’s independently verified amount. This report does not itself send a vendor dispute or make payment.',
+        'The attached workbook and CSV contain call-level backup, one row per call with the reason it resolved as it did. Positive variance means the vendor claim exceeds Kairali’s independently verified amount. Calls shown as accepted or as having no recording were NOT independently verified, and are labelled as such rather than counted as audited. This report does not itself send a vendor dispute or make payment.',
       )
     document.end()
   })

@@ -69,6 +69,9 @@ import {
 import { collectMetrics } from '../adapters/mysqlMetrics.ts'
 import { collectOperations } from '../adapters/mysqlOperations.ts'
 import { collectAuditMonitor } from '../adapters/mysqlAuditMonitor.ts'
+import { collectMonthlyEmailReport } from '../adapters/mysqlMonthlyEmailReport.ts'
+import { buildReportPdf } from '../reporting/reportAttachments.ts'
+import { buildReportCsv } from '../reporting/reportCsv.ts'
 import { createMysqlAuditWorkerControl } from '../adapters/mysqlAuditWorkerControl.ts'
 import {
   parseAuditSystem,
@@ -289,6 +292,16 @@ interface Dependencies {
   auditWorkerDispatcher?: AuditWorkerDispatcher
   webDistRoot?: string
 }
+
+/**
+ * The month's audit as downloadable documents. Handled outside the JSON API
+ * because they return a file, and outside the response cache because each is
+ * an administrator taking a copy of a month's evidence.
+ */
+const MONTHLY_REPORT_DOWNLOADS = new Set([
+  '/api/v1/reports/monthly.pdf',
+  '/api/v1/reports/monthly.csv',
+])
 
 const APP_ROUTES = new Set([
   '/',
@@ -2278,6 +2291,7 @@ export function createEnterpriseDashboardServer(
       MANUAL_REAUDIT_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
+      MONTHLY_REPORT_DOWNLOADS.has(url.pathname) ||
       APP_ROUTES.has(url.pathname) ||
       OIDC_BROWSER_FLOW_ROUTES.has(url.pathname) ||
       url.pathname === '/logout' ||
@@ -3185,6 +3199,61 @@ export function createEnterpriseDashboardServer(
           'x-correlation-id': correlation,
         })
         response.end(fetched.bytes)
+        return
+      }
+      if (MONTHLY_REPORT_DOWNLOADS.has(url.pathname)) {
+        /**
+         * The month's audit as a document, for review outside this platform.
+         *
+         * Administrator-only and access-logged, because unlike the aggregate
+         * report these carry per-call references — the vendor's own task ids —
+         * and leave the building as files. They contain no transcript, no
+         * recording URL and no customer text.
+         */
+        requirePermission(context, 'audit:inspect')
+        // A download names one cycle. "All periods" would produce a document
+        // whose totals belong to no billing month anyone can reconcile.
+        const period = parseBillingMonth(url.searchParams.get('month'))
+        if (!period) {
+          throw Object.assign(
+            new Error('A specific bill month is required'),
+            { code: 'INVALID_REPORT_PERIOD', status: 400 },
+          )
+        }
+        const monthly = await collectMonthlyEmailReport(
+          billingReadPool(dependencies),
+          { period, generatedAt: new Date().toISOString() },
+        )
+        const asPdf = url.pathname.endsWith('.pdf')
+        const body = asPdf
+          ? await buildReportPdf(monthly)
+          : buildReportCsv(monthly)
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          asPdf ? 'report_pdf.download' : 'report_csv.download',
+          'billing_cycle',
+          period.month,
+          'audit_operations',
+        )
+        response.writeHead(200, {
+          ...JSON_SECURITY_HEADERS,
+          'content-type': asPdf
+            ? 'application/pdf'
+            : 'text/csv; charset=utf-8',
+          'content-length': String(body.byteLength),
+          // A monthly audit is never cached by a shared proxy.
+          'cache-control': 'private, no-store, max-age=0',
+          'content-disposition':
+            `attachment; filename="kairali-audit-${period.month}` +
+            `.${asPdf ? 'pdf' : 'csv'}"`,
+          'x-content-type-options': 'nosniff',
+          'x-correlation-id': correlation,
+        })
+        response.end(body)
         return
       }
       if (url.pathname === '/api/v1/audit-call') {

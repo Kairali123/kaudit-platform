@@ -925,6 +925,48 @@ export async function getJson<T>(path: string): Promise<T> {
   return response.json() as Promise<T>
 }
 
+/**
+ * Downloads a file the server generates for the current session.
+ *
+ * It goes through fetch rather than a plain link so a refusal is surfaced the
+ * way every other call is — an ApiError the page can render — instead of the
+ * browser replacing the app with a JSON error document. The object URL is
+ * revoked immediately; the blob is only needed long enough to click it.
+ */
+export async function downloadFile(
+  path: string,
+  filename: string,
+): Promise<void> {
+  const requestId = requestCorrelationId()
+  const response = await fetch(path, {
+    credentials: 'same-origin',
+    headers: { 'x-correlation-id': requestId },
+  })
+  const correlationId = response.headers.get('x-correlation-id') ?? requestId
+  if (!response.ok) {
+    let message = fallbackErrorMessage(response.status)
+    try {
+      const problem = (await response.json()) as { title?: string }
+      message = problem.title || message
+    } catch {
+      // The server intentionally returns a generic client-safe error.
+    }
+    throw new ApiError(message, response.status, correlationId)
+  }
+  const blob = await response.blob()
+  const href = URL.createObjectURL(blob)
+  try {
+    const link = document.createElement('a')
+    link.href = href
+    link.download = filename
+    document.body.append(link)
+    link.click()
+    link.remove()
+  } finally {
+    URL.revokeObjectURL(href)
+  }
+}
+
 export async function postJson<T>(
   path: string,
   value: unknown,

@@ -770,6 +770,98 @@ test('the audit monitor reads through the bounded billing pool', async () => {
   }
 })
 
+test('monthly downloads are admin-only, month-scoped, and logged', async () => {
+  const events: AuditEvent[] = []
+  const audit: AuditSink = {
+    async record(event) { events.push(event) },
+    async readiness() { return true },
+  }
+  const adminAccess: AccessRepository = {
+    ...access,
+    async findByEmail(email) {
+      return {
+        id: 'admin-1',
+        email,
+        status: 'active',
+        maxSensitivityTier: 'K3',
+        roles: ['admin'],
+      }
+    },
+  }
+  // A non-admin must not be able to take a month's per-call evidence as a file.
+  await withServer(audit, async (baseUrl) => {
+    const denied = await fetch(
+      `${baseUrl}/api/v1/reports/monthly.csv?month=2026-06`,
+      { headers: { cookie: localCookie() } },
+    )
+    assert.equal(denied.status, 403)
+  })
+  assert.equal(events.at(-1)?.outcome, 'denied')
+
+  const pool = {
+    async query() { return [[], []] },
+    async execute() { return [[], []] },
+  } as unknown as Pool
+  await withServer(
+    audit,
+    async (baseUrl) => {
+      // Without a specific bill month the totals belong to no cycle.
+      const allPeriods = await fetch(
+        `${baseUrl}/api/v1/reports/monthly.csv`,
+        { headers: { cookie: localCookie() } },
+      )
+      assert.equal(allPeriods.status, 400)
+      assert.equal(
+        ((await allPeriods.json()) as { code?: string }).code,
+        'INVALID_REPORT_PERIOD',
+      )
+
+      const csv = await fetch(
+        `${baseUrl}/api/v1/reports/monthly.csv?month=2026-06`,
+        { headers: { cookie: localCookie() } },
+      )
+      assert.equal(csv.status, 200)
+      assert.match(
+        csv.headers.get('content-type') ?? '',
+        /^text\/csv/,
+      )
+      assert.equal(
+        csv.headers.get('content-disposition'),
+        'attachment; filename="kairali-audit-2026-06.csv"',
+      )
+      // A month's audit is never held by a shared cache.
+      assert.match(csv.headers.get('cache-control') ?? '', /no-store/)
+      const body = await csv.text()
+      assert.match(body, /call_reference,resolution/)
+
+      const pdf = await fetch(
+        `${baseUrl}/api/v1/reports/monthly.pdf?month=2026-06`,
+        { headers: { cookie: localCookie() } },
+      )
+      assert.equal(pdf.status, 200)
+      assert.equal(pdf.headers.get('content-type'), 'application/pdf')
+      assert.equal(
+        Buffer.from(await pdf.arrayBuffer()).subarray(0, 4).toString(),
+        '%PDF',
+      )
+    },
+    undefined,
+    config,
+    null,
+    adminAccess,
+    pool,
+  )
+  // Taking a copy of a month's evidence is recorded, per format.
+  const actions = events.map((event) => event.action)
+  assert.ok(actions.includes('report_csv.download'), 'csv download logged')
+  assert.ok(actions.includes('report_pdf.download'), 'pdf download logged')
+  const download = events.find(
+    (event) => event.action === 'report_pdf.download',
+  )
+  assert.equal(download?.resourceId, '2026-06')
+  assert.equal(download?.outcome, 'success')
+})
+
 test('audit monitor Task ID search is exact and invalid input never reaches SQL', async () => {
   const adminAccess: AccessRepository = {
     ...access,

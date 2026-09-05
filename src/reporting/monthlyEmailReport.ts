@@ -5,6 +5,27 @@ import type { BillingMonthScope } from './billingMonth.ts'
 const SCALE = 100_000_000n
 const KSERVE_RATE = toScaled('9.50') as bigint
 
+import { resolutionLabel } from './resolutionLabels.ts'
+
+/**
+ * How the month's calls resolved, and what each outcome contributed.
+ *
+ * A single variance number invites the question it does not answer: where did
+ * the difference come from. This splits it by the reason each call resolved,
+ * so "we cut X" can be shown as "X of it is calls you supplied no recording
+ * for" rather than asserted.
+ */
+export interface MonthlyResolutionBreakdown {
+  basis: string
+  label: string
+  explanation: string
+  independentlyMeasured: boolean
+  calls: number
+  vendorAmount: string
+  verifiedAmount: string
+  variance: string
+}
+
 export interface MonthlyReportInputRow {
   callReference: string
   category: string
@@ -94,6 +115,7 @@ export interface MonthlyEmailReport {
     revenueVarianceVsUsage: string
     currency: string
   }
+  resolutionBreakdown: MonthlyResolutionBreakdown[]
   rows: MonthlyReportRow[]
   sourceManifestSha256: string
 }
@@ -159,6 +181,45 @@ function toReportSettlement(
   }
 }
 
+function buildResolutionBreakdown(
+  rows: MonthlyReportRow[],
+): MonthlyResolutionBreakdown[] {
+  const totals = new Map<
+    string,
+    { calls: number; vendor: bigint; verified: bigint }
+  >()
+  for (const row of rows) {
+    const running = totals.get(row.resolution) ??
+      { calls: 0, vendor: 0n, verified: 0n }
+    running.calls += 1
+    running.vendor += requiredScaled(row.vendorAmount, 'vendorAmount')
+    running.verified += requiredScaled(row.verifiedAmount, 'verifiedAmount')
+    totals.set(row.resolution, running)
+  }
+  return [...totals.entries()]
+    // Largest contribution first: the reader is looking for where the money
+    // went, not for an alphabet.
+    .sort((left, right) =>
+      right[1].vendor - right[1].verified >
+      left[1].vendor - left[1].verified
+        ? 1
+        : -1,
+    )
+    .map(([basis, running]) => {
+      const label = resolutionLabel(basis)
+      return {
+        basis,
+        label: label.label,
+        explanation: label.explanation,
+        independentlyMeasured: label.independentlyMeasured,
+        calls: running.calls,
+        vendorAmount: fromScaled(running.vendor),
+        verifiedAmount: fromScaled(running.verified),
+        variance: fromScaled(running.vendor - running.verified),
+      }
+    })
+}
+
 export function buildMonthlyEmailReport(options: {
   period: BillingMonthScope
   generatedAt: string
@@ -220,15 +281,14 @@ export function buildMonthlyEmailReport(options: {
     settlement: toReportSettlement(options.settlement ?? null),
     summary: {
       totalCalls: rows.length,
+      // Derived from the shared resolution vocabulary rather than a second
+      // list of bases, so a new basis cannot be counted as accepted-as-billed
+      // simply because nobody remembered to add it here.
       independentlyAuditedCalls: rows.filter(
-        (row) =>
-          row.resolution === 'independent_conversation_end' ||
-          row.resolution === 'independent_category_service_end',
+        (row) => resolutionLabel(row.resolution).independentlyMeasured,
       ).length,
       acceptedAsBilledCalls: rows.filter(
-        (row) =>
-          row.resolution === 'accepted_as_billed_unverified' ||
-          row.resolution === 'no_recording_zero',
+        (row) => !resolutionLabel(row.resolution).independentlyMeasured,
       ).length,
       vendorUsageAmount: fromScaled(totals.vendor),
       invoiceClaimedAmount: options.invoiceClaimedAmount,
@@ -242,6 +302,7 @@ export function buildMonthlyEmailReport(options: {
       ),
       currency: rows[0]?.currency ?? 'INR',
     },
+    resolutionBreakdown: buildResolutionBreakdown(rows),
     rows,
     sourceManifestSha256,
   }

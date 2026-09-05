@@ -1,8 +1,15 @@
-import { useQuery } from '@tanstack/react-query'
-import { ArrowDownRight, ArrowRight, ArrowUpRight, Minus } from 'lucide-react'
+import { useMutation, useQuery } from '@tanstack/react-query'
+import {
+  ArrowDownRight,
+  ArrowRight,
+  ArrowUpRight,
+  FileSpreadsheet,
+  FileText,
+  Minus,
+} from 'lucide-react'
 import { ErrorState, LoadingState, Notice } from '../components/States'
 import { PageHeader, UpdatedAt } from '../components/Metrics'
-import { getJson, type ReportsData } from '../lib/api'
+import { downloadFile, getJson, type ReportsData } from '../lib/api'
 import { useBillingPeriod } from '../lib/billingPeriod'
 import { money } from '../lib/money'
 
@@ -12,6 +19,18 @@ export function ReportsPage() {
     queryKey: ['reports', period.month],
     queryFn: () =>
       getJson<ReportsData>(period.apiPath('/api/v1/reports')),
+  })
+  /**
+   * One month, one document. The download is deliberately not offered for
+   * "All periods": a file whose totals span cadences belongs to no billing
+   * cycle the vendor could reconcile against their own invoice.
+   */
+  const download = useMutation({
+    mutationFn: (format: 'pdf' | 'csv') =>
+      downloadFile(
+        period.apiPath(`/api/v1/reports/monthly.${format}`),
+        `kairali-audit-${period.month}.${format}`,
+      ),
   })
   if (query.isLoading) return <LoadingState />
   if (query.error)
@@ -35,6 +54,45 @@ export function ReportsPage() {
           </span>
         }
       />
+      {period.month !== 'all' && (
+        <section className="content-section report-downloads">
+          <div>
+            <span className="eyebrow">Vendor review pack</span>
+            <h2>Download {period.label}</h2>
+            <p>
+              The PDF summarises how the month resolved and what the variance
+              is made of. The CSV is one row per call — the vendor's figures
+              beside ours, with the reason each call resolved as it did.
+            </p>
+          </div>
+          <div className="report-download-actions">
+            <button
+              type="button"
+              className="button-primary"
+              disabled={download.isPending}
+              onClick={() => download.mutate('pdf')}
+            >
+              <FileText size={16} aria-hidden />
+              {download.isPending ? 'Preparing…' : 'PDF summary'}
+            </button>
+            <button
+              type="button"
+              className="button-secondary"
+              disabled={download.isPending}
+              onClick={() => download.mutate('csv')}
+            >
+              <FileSpreadsheet size={16} aria-hidden />
+              {download.isPending ? 'Preparing…' : 'CSV, per call'}
+            </button>
+          </div>
+          {download.error && (
+            <ErrorState
+              error={download.error}
+              retry={() => download.reset()}
+            />
+          )}
+        </section>
+      )}
       {data.authority === 'audit_pending' && (
         <Notice tone="warning" title="Report generation waiting for audit">
           Verified revenue and variance are withheld until all{' '}

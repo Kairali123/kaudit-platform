@@ -1070,3 +1070,23 @@ dl small { color: var(--muted); font-size: .6rem; }
   .ca-breakdown li { grid-template-columns: minmax(0, 1fr) 40px 44px; }
   .ca-breakdown li .ca-bar { display: none; }
 }
+
+.report-downloads { display: flex; flex-wrap: wrap; gap: 18px; align-items: flex-start; justify-content: space-between; }
+.report-downloads > div:first-child { max-width: 560px; }
+.report-downloads p { margin: 6px 0 0; color: var(--muted); font-size: 13px; line-height: 1.5; }
+.report-download-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.report-download-actions button {
+  display: inline-flex; align-items: center; gap: 8px;
+  padding: 9px 15px; border-radius: 8px; font-size: 13px;
+  font-weight: 600; cursor: pointer;
+}
+.report-download-actions .button-primary {
+  border: 1px solid var(--green); color: #fff; background: var(--green);
+}
+.report-download-actions .button-secondary {
+  border: 1px solid var(--teal); color: var(--teal); background: var(--paper);
+}
+.report-download-actions button:disabled { opacity: .55; cursor: not-allowed; }
+@media (max-width: 900px) {
+  .report-downloads { flex-direction: column; }
+}

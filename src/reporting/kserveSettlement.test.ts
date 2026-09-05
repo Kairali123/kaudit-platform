@@ -344,8 +344,27 @@ test('a failed read prints as temporarily unavailable, never as not recorded', a
       artifact.includes('Unavailable — no settlement recorded'),
       false,
     )
-    // No zero payment and no invented total saving.
-    assert.equal(artifact.includes('INR 0.00'), false)
+    /**
+     * No zero payment and no invented total saving.
+     *
+     * Scoped to the settlement LINES rather than the whole artifact: the
+     * resolution breakdown legitimately shows an audited INR 0.00 for calls the
+     * vendor supplied no recording for, and that is a real audited amount
+     * rather than a fabricated payment.
+     */
+    for (const label of [
+      'Finally paid to KServe',
+      'KServe billed for the month',
+      'Savings vs KServe billed',
+    ]) {
+      const at = artifact.indexOf(label)
+      assert.notEqual(at, -1, label)
+      assert.equal(
+        artifact.slice(at, at + label.length + 40).includes('INR 0.00'),
+        false,
+        label,
+      )
+    }
   }
 })
 
