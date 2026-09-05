@@ -42,8 +42,11 @@ test('creates a valid XLSX zip using inline strings, not formulas', () => {
 test('creates PDF and escaped HTML report attachments', async () => {
   const pdf = await buildReportPdf(report)
   assert.equal(pdf.subarray(0, 4).toString(), '%PDF')
+  const pdfSource = pdf.toString('latin1')
+  assert.ok((pdfSource.match(/\/Type \/Page\b/g) ?? []).length >= 2)
+  assert.match(pdfSource, /Kairali April 2026 Billing Audit/)
+  assert.match(pdfSource, /Kairali Billing Audit Platform/)
   const email = buildReportEmailHtml(report)
   assert.match(email, /April 2026/)
   assert.doesNotMatch(email, /<script/)
 })
-
