@@ -6,6 +6,8 @@ on:
     - cron: '47 */6 * * *'
     # Daily sweep for calls the vendor supplied no recording for.
     - cron: '23 2 * * *'
+    # Daily close of ended months across every settleable cohort.
+    - cron: '41 3 * * *'
 
 jobs:
   billing-audit:
@@ -25,4 +27,16 @@ jobs:
     with:
       system: billing
       mode: finalize-no-recording-auto
+    secrets: inherit
+
+  # Closes ENDED months across all three settleable cohorts, so a finished
+  # month reaches a final bill without anyone dispatching a run for it. The
+  # vendor-asserted cohort inside it is bounded and refuses a month whose
+  # audit failed at scale; see src/billing/vendorAssertedBound.ts.
+  month-close:
+    if: github.event.schedule == '41 3 * * *'
+    uses: ./.github/workflows/audit-worker.yml
+    with:
+      system: billing
+      mode: finalize-month-close-auto
     secrets: inherit

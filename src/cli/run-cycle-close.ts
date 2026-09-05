@@ -1,6 +1,7 @@
 import mysql from 'mysql2/promise'
 import { loadRuntimeConfig } from '../config/runtime.ts'
 import {
+  countRecordingBackedCalls,
   listAcceptedAsBilledCandidates,
   loadPublishedRateCard,
   type CycleCloseCohort,
@@ -16,6 +17,9 @@ import {
 import {
   persistVerifiedBillingRecords,
 } from '../adapters/mysqlVerifiedBilling.ts'
+import {
+  decideVendorAssertedBound,
+} from '../billing/vendorAssertedBound.ts'
 import { parseBillingMonth } from '../reporting/billingMonth.ts'
 import { resolveDatabaseTls } from '../runtime/databaseTls.ts'
 
@@ -102,6 +106,25 @@ const concurrency = Number(process.env.KAUDIT_CYCLE_CLOSE_CONCURRENCY || 12)
 if (!Number.isInteger(concurrency) || concurrency < 1 || concurrency > 32) {
   throw new Error('KAUDIT_CYCLE_CLOSE_CONCURRENCY must be 1..32')
 }
+/**
+ * Optional per-run override of the vendor-asserted bound. Absent by default:
+ * the point of the bound is that nobody has to set anything for it to hold.
+ */
+const maxVendorAssertedShareRaw =
+  process.env.KAUDIT_CYCLE_CLOSE_MAX_VENDOR_ASSERTED_SHARE?.trim()
+const maxVendorAssertedShare =
+  maxVendorAssertedShareRaw ? Number(maxVendorAssertedShareRaw) : null
+if (
+  maxVendorAssertedShare != null &&
+  !(Number.isFinite(maxVendorAssertedShare) &&
+    maxVendorAssertedShare >= 0 &&
+    maxVendorAssertedShare <= 1)
+) {
+  throw new Error(
+    'KAUDIT_CYCLE_CLOSE_MAX_VENDOR_ASSERTED_SHARE must be a share between 0 and 1',
+  )
+}
+
 const ssl = resolveDatabaseTls(config, process.env)
 const pool = mysql.createPool({
   host: config.database.host,
@@ -175,6 +198,36 @@ try {
     batch,
     cohort,
   )
+  /**
+   * The exhausted cohort is the only one priced on the vendor's own assertion,
+   * so it is the only one that carries a bound. It is checked BEFORE any money
+   * is written, and a preview reports it without enforcing it, so an operator
+   * learns the month is abnormal from a dry run rather than from a refusal
+   * halfway through a real close.
+   */
+  const vendorAssertedBound = cohort === 'exhausted-recording'
+    ? decideVendorAssertedBound({
+      exhaustedCandidates: candidates.length,
+      recordingBackedCalls: await countRecordingBackedCalls(pool, period),
+      ...(maxVendorAssertedShare == null
+        ? {}
+        : { maxShare: maxVendorAssertedShare }),
+    })
+    : null
+  if (vendorAssertedBound && !vendorAssertedBound.permitted) {
+    process.stdout.write(`${JSON.stringify({
+      blocked: 'CYCLE_CLOSE_VENDOR_ASSERTED_BOUND_EXCEEDED',
+      cohort,
+      month: period.month,
+      ...vendorAssertedBound,
+      remedy:
+        'An audit failure this wide is a fault to investigate, not a bill to accept. Re-run once the recording or transcription failures are resolved, or raise KAUDIT_CYCLE_CLOSE_MAX_VENDOR_ASSERTED_SHARE deliberately for this month.',
+    }, null, 2)}\n`)
+    process.exitCode = 5
+    if (mode === 'EXECUTE') {
+      throw new Error('CYCLE_CLOSE_VENDOR_ASSERTED_BOUND_EXCEEDED')
+    }
+  }
   const decidedAt = `${period.end}T18:29:59.999Z`
   let inserted = 0
   let duplicates = 0
@@ -344,6 +397,7 @@ try {
     duplicates,
     skipped,
     skippedCodes: Object.fromEntries(skippedCodes),
+    vendorAssertedBound,
     acceptedAsBilledAmount: (
       acceptedAmountPaise / 100
     ).toFixed(2),

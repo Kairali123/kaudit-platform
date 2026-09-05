@@ -347,3 +347,33 @@ export async function listAcceptedAsBilledCandidates(
     evidenceSha256: row.evidence_sha256,
   }))
 }
+
+/**
+ * How many of the month's calls KServe supplied a recording for.
+ *
+ * This is the denominator the vendor-asserted bound is taken against: the
+ * population that COULD have been independently audited. Calls with no
+ * recording are excluded deliberately — they settle at zero on their own
+ * basis, and counting them would dilute the share until an audit outage
+ * inside the recording-backed population stopped looking like one.
+ */
+export async function countRecordingBackedCalls(
+  pool: Pool,
+  period: BillingMonthScope,
+): Promise<number> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT COUNT(*) AS recording_backed_calls
+     FROM kaudit_call c
+     WHERE c.billing_period_date BETWEEN ? AND ?
+       AND EXISTS (
+         SELECT 1
+         FROM kaudit_call_artifact recording
+         WHERE recording.call_id = c.id
+           AND recording.artifact_type = 'recording'
+           AND recording.is_final = 1
+           AND recording.source_url IS NOT NULL
+       )`,
+    [period.start, period.end],
+  )
+  return Number(rows[0]?.recording_backed_calls ?? 0)
+}

@@ -58,6 +58,7 @@ on:
           - diagnose-audited-projection
           - finalize-audited-projection
           - finalize-no-recording-auto
+          - finalize-month-close-auto
           - diagnose-rate-cards
           - diagnose-billing-write-schema
           - publish-rate-card
@@ -303,6 +304,39 @@ jobs:
                 KAUDIT_CYCLE_CLOSE_BATCH=50000 \
                 npm run billing:cycle-close || status=$?
                 echo "::endgroup::"
+              done
+              exit $status
+            elif [[ "$AUDIT_MODE" == "finalize-month-close-auto" ]]; then
+              # The standing close for an ENDED month, in the order evidence
+              # deserves: settle what has no recording at zero, then what the
+              # audit actually measured, and only then fall back to KServe's
+              # own figure for calls whose audit is terminally exhausted.
+              #
+              # Exhausted runs LAST on purpose. A call can still become audited
+              # between sweeps, and taking the vendor's word for it is the
+              # weakest outcome available; it should never win a race against
+              # an audit that was going to succeed.
+              #
+              # The exhausted cohort is bounded in the CLI: if an implausible
+              # share of a month's recording-backed calls landed there, the run
+              # refuses instead of paying the vendor's number for all of them.
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              status=0
+              for back in 1 2; do
+                settle_month="$(date -u -d "$(date -u +%Y-%m-01) -${back} month" +%Y-%m)"
+                for close_cohort in no-recording audited-projection exhausted-recording; do
+                  echo "::group::${close_cohort} close for ${settle_month}"
+                  KAUDIT_CYCLE_CLOSE_MODE=EXECUTE \
+                  KAUDIT_CYCLE_CLOSE_MONTH="$settle_month" \
+                  KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
+                  KAUDIT_CYCLE_CLOSE_COHORT="$close_cohort" \
+                  KAUDIT_CYCLE_CLOSE_BATCH=50000 \
+                  npm run billing:cycle-close || status=$?
+                  echo "::endgroup::"
+                done
               done
               exit $status
             elif [[ "$AUDIT_MODE" == "diagnose-billing-write-schema" ]]; then
