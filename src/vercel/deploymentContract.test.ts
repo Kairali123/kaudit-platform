@@ -32,6 +32,7 @@ const VERCEL = JSON.parse(VERCEL_JSON_TEXT) as {
   redirects?: unknown
 }
 const API_ENTRY = read('api/index.ts')
+const CSV_ENTRY = read('api/monthly-report-csv.ts')
 const FUNCTION_SOURCE = read('src/vercel/dashboardFunction.ts')
 const ADAPTER_SOURCE = read('src/vercel/serverlessAdapter.ts')
 const PACKAGE = JSON.parse(read('package.json')) as {
@@ -48,6 +49,7 @@ function code(source: string): string {
 }
 
 const API_ENTRY_CODE = code(API_ENTRY)
+const CSV_ENTRY_CODE = code(CSV_ENTRY)
 const FUNCTION_CODE = code(FUNCTION_SOURCE)
 
 function routes(): Array<{ src: string; dest?: string }> {
@@ -67,11 +69,11 @@ test('the last route is a catch-all into the authenticated function', () => {
 
 test('only Vite hashed assets are served without the function', () => {
   for (const route of routes().slice(0, -1)) {
-    assert.match(
-      route.src,
-      /^\/assets\//,
-      'a static route outside /assets/ would bypass the permission checks',
-    )
+    const isAsset = /^\/assets\//.test(route.src)
+    const isCsvExport =
+      route.src === '/api/v1/reports/monthly.csv' &&
+      route.dest === '/api/monthly-report-csv'
+    assert.ok(isAsset || isCsvExport, 'every route must reach a reviewed edge')
   }
 })
 
@@ -156,6 +158,19 @@ test('the function duration is sized for a web request, not a batch', () => {
     'a long duration would invite batch work into a web deployment',
   )
   assert.ok(maxDuration >= 5)
+})
+
+test('only the streamed monthly CSV has an extended request window', () => {
+  const fn = VERCEL.functions?.['api/monthly-report-csv.ts']
+  assert.ok(fn, 'the monthly CSV function must be configured')
+  assert.equal(fn.maxDuration, 180)
+  assert.match(String(fn.includeFiles), /apps\/web\/dist/)
+  assert.match(String(fn.includeFiles), /(^|[{,/])src([},/]|$)/)
+  assert.match(CSV_ENTRY_CODE, /createVercelDashboardHandler/)
+  assert.match(CSV_ENTRY_CODE, /\/api\/v1\/reports\/monthly\.csv/)
+  for (const forbidden of [/audit:worker/, /callaudit:worker/, /listen\(/]) {
+    assert.doesNotMatch(CSV_ENTRY_CODE, forbidden)
+  }
 })
 
 test('Node 22 is selected through the existing engine contract', () => {

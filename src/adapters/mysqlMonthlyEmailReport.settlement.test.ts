@@ -85,6 +85,27 @@ test('a month that reads cleanly with no settlement row stays pending', async ()
   assert.equal(sheet.includes('Settlement temporarily unavailable'), false)
 })
 
+test('a per-call CSV collection can skip the unused settlement reads', async () => {
+  const executes: string[] = []
+  const pool = {
+    async query() { return [[], []] },
+    async execute(sql: string) {
+      executes.push(sql)
+      return [[], []]
+    },
+  } as unknown as Pool
+  const report = await collectMonthlyEmailReport(pool, {
+    period: MONTH,
+    generatedAt: GENERATED_AT,
+    includeSettlement: false,
+  })
+  assert.equal(executes.length, 1)
+  assert.match(executes[0] ?? '', /FROM kaudit_invoice/)
+  assert.doesNotMatch(executes[0] ?? '', /kserve_monthly_settlement/)
+  assert.doesNotMatch(executes[0] ?? '', /billed_charge_inr/)
+  assert.equal(report.settlement, null)
+})
+
 for (const failOn of ['settlement', 'vendorBilled'] as const) {
   test(`a failed ${failOn} read is reported as unavailable, not as pending`, async () => {
     const report = await collectMonthlyEmailReport(

@@ -2,6 +2,7 @@ import http, {
   type IncomingMessage,
   type ServerResponse,
 } from 'node:http'
+import { once } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Pool } from 'mysql2/promise'
@@ -324,6 +325,21 @@ const MONTHLY_REPORT_DOWNLOADS = new Set([
 const RESTRICTED_EXPORT_ROUTE = '/api/v1/reports/monthly-restricted.csv'
 const RESTRICTED_EXPORT_DEFAULT_ROWS = 500
 const RESTRICTED_EXPORT_MAX_ROWS = 5_000
+const DOWNLOAD_CHUNK_BYTES = 256 * 1024
+
+async function writeChunkedDownload(
+  response: ServerResponse,
+  body: Buffer,
+): Promise<void> {
+  const closed = once(response, 'close')
+  for (let offset = 0; offset < body.byteLength; offset += DOWNLOAD_CHUNK_BYTES) {
+    if (!response.write(body.subarray(offset, offset + DOWNLOAD_CHUNK_BYTES))) {
+      await Promise.race([once(response, 'drain'), closed])
+      if (response.destroyed) return
+    }
+  }
+  response.end()
+}
 
 const APP_ROUTES = new Set([
   '/',
@@ -3341,10 +3357,14 @@ export function createEnterpriseDashboardServer(
         const collector = asPdf
           ? collectMonthlyPdfReport
           : collectMonthlyEmailReport
-        const monthly = await collector(billingReadPool(dependencies), {
-          period,
-          generatedAt: new Date().toISOString(),
-        })
+        const monthly = await collector(
+          asPdf ? billingReadPool(dependencies) : dependencies.pool,
+          {
+            period,
+            generatedAt: new Date().toISOString(),
+            ...(asPdf ? {} : { includeSettlement: false }),
+          },
+        )
         const body = asPdf
           ? await buildReportPdf(monthly)
           : buildReportCsv(monthly)
@@ -3364,7 +3384,7 @@ export function createEnterpriseDashboardServer(
           'content-type': asPdf
             ? 'application/pdf'
             : 'text/csv; charset=utf-8',
-          'content-length': String(body.byteLength),
+          ...(asPdf ? { 'content-length': String(body.byteLength) } : {}),
           // A monthly audit is never cached by a shared proxy.
           'cache-control': 'private, no-store, max-age=0',
           'content-disposition':
@@ -3373,7 +3393,8 @@ export function createEnterpriseDashboardServer(
           'x-content-type-options': 'nosniff',
           'x-correlation-id': correlation,
         })
-        response.end(body)
+        if (asPdf) response.end(body)
+        else await writeChunkedDownload(response, body)
         return
       }
       if (url.pathname === '/api/v1/audit-call') {

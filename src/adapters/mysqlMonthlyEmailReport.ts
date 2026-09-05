@@ -215,10 +215,15 @@ export async function collectMonthlyEmailReport(
   options: {
     period: BillingMonthScope
     generatedAt: string
+    /** Summary email/XLSX need settlement; the per-call CSV does not. */
+    includeSettlement?: boolean
   },
 ): Promise<MonthlyEmailReport> {
-  const [rows] = await pool.execute<ReportRow[]>(
-    `SELECT
+  const [rows] = await pool.query<ReportRow[]>(
+    `WITH provider_claim AS (
+       ${vendorBilledAssertionsSql()}
+     )
+     SELECT
        COALESCE(
          (
            SELECT external_id
@@ -240,11 +245,11 @@ export async function collectMonthlyEmailReport(
          LIMIT 1
        ) AS CHAR) AS confidence,
        calculation.calculation_basis,
-       CAST(minutes.minutes_decimal AS CHAR)
+       CAST(vendor.minutes_decimal AS CHAR)
          AS vendor_billed_minutes,
        CAST(COALESCE(
-         amount.quantity_decimal,
-         minutes.minutes_decimal * 9.5
+         vendor.amount_decimal,
+         vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
        ) AS CHAR) AS vendor_billed_amount,
        calculation.billable_duration_ms,
        CAST(calculation.total_amount AS CHAR)
@@ -276,35 +281,14 @@ export async function collectMonthlyEmailReport(
          AS evidence_verified_at,
        evidence_artifact.audio_processing_status,
        evidence_artifact.audio_attempt_count
-     FROM kaudit_call c
-     JOIN kaudit_provider_cost minutes
-       ON minutes.call_id = c.id
-      AND minutes.provider_sku =
-            'vendor_asserted_billed_minutes'
-      AND minutes.is_final = 1
-     JOIN kaudit_billing_calculation calculation
+     FROM provider_claim vendor
+     STRAIGHT_JOIN kaudit_call c
+       ON c.id = vendor.call_id
+     STRAIGHT_JOIN kaudit_billing_calculation calculation
        ON calculation.call_id = c.id
-      AND calculation.status = 'final'
-      AND calculation.calculation_basis IN (
-        'independent_conversation_end',
-        'independent_category_service_end',
-        'independent_audited_projection',
-        'accepted_as_billed_unverified',
-        'no_recording_zero'
-      )
-      AND calculation.input_manifest_sha256 IS NOT NULL
-      AND calculation.ruleset_sha256 IS NOT NULL
-      AND calculation.decision_trace_sha256 IS NOT NULL
-      AND calculation.finalized_at IS NOT NULL
-      AND NOT EXISTS (
-        SELECT 1
-        FROM kaudit_billing_calculation newer
-        WHERE newer.supersedes_calculation_id = calculation.id
-      )
-     LEFT JOIN kaudit_provider_cost amount
-       ON amount.call_id = c.id
-      AND amount.provider_sku = 'vendor_asserted_billed_amount'
-      AND amount.is_final = 1
+      AND ${FINAL_CALCULATION_EVIDENCE}
+     LEFT JOIN kaudit_billing_calculation newer
+       ON newer.supersedes_calculation_id = calculation.id
      LEFT JOIN kaudit_audit_run audit_run
        ON audit_run.id = calculation.audit_run_id
      LEFT JOIN kaudit_call_artifact evidence_artifact
@@ -312,7 +296,9 @@ export async function collectMonthlyEmailReport(
       AND evidence_artifact.artifact_type = 'recording'
       AND evidence_artifact.is_final = 1
      WHERE c.billing_period_date BETWEEN ? AND ?
-     ORDER BY call_reference`,
+       AND vendor.minutes_decimal IS NOT NULL
+       AND newer.id IS NULL
+     ORDER BY c.billing_period_date, c.id`,
     [options.period.start, options.period.end],
   )
   const [invoiceRows] = await pool.execute<InvoiceRow[]>(
@@ -327,7 +313,9 @@ export async function collectMonthlyEmailReport(
     period: options.period,
     generatedAt: options.generatedAt,
     invoiceClaimedAmount: invoiceRows[0]?.subtotal ?? null,
-    settlement: await collectSettlement(pool, options.period),
+    settlement: options.includeSettlement === false
+      ? null
+      : await collectSettlement(pool, options.period),
     rows: rows.map(
       (row): MonthlyReportInputRow => ({
         callReference: row.call_reference,

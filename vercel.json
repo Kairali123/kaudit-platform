@@ -7,10 +7,18 @@
     "api/index.ts": {
       "maxDuration": 30,
       "includeFiles": "{apps/web/dist,src}/**"
+    },
+    "api/monthly-report-csv.ts": {
+      "maxDuration": 180,
+      "includeFiles": "{apps/web/dist,src}/**"
     }
   },
   "routes": [
     { "src": "/assets/(.*)", "dest": "/assets/$1" },
+    {
+      "src": "/api/v1/reports/monthly.csv",
+      "dest": "/api/monthly-report-csv"
+    },
     { "src": "/(.*)", "dest": "/api" }
   ]
 }
