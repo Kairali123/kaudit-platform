@@ -832,7 +832,11 @@ test('monthly downloads are admin-only, month-scoped, and logged', async () => {
       // A month's audit is never held by a shared cache.
       assert.match(csv.headers.get('cache-control') ?? '', /no-store/)
       const body = await csv.text()
-      assert.match(body, /call_reference,resolution/)
+      assert.match(body, /call_reference,bill_month,resolution/)
+      // Customer content never leaves in this file.
+      for (const forbidden of ['transcript', 'source_url', 'http']) {
+        assert.equal(body.toLowerCase().includes(forbidden), false, forbidden)
+      }
 
       const pdf = await fetch(
         `${baseUrl}/api/v1/reports/monthly.pdf?month=2026-06`,

@@ -27,6 +27,28 @@ const report = buildMonthlyEmailReport({
       verifiedBillableDurationMs: 60_000,
       verifiedAmount: '9.50',
       currency: 'INR',
+      detail: {
+        billingPeriodDate: '2026-06-14',
+        claimedDurationMs: 132_000,
+        connectedDurationMs: 120_000,
+        recordedDurationMs: 118_000,
+        speechDurationMs: 40_000,
+        conversationEndMs: 47_000,
+        wrapUpGraceMs: 60_000,
+        adjustedChargeableDurationMs: 107_000,
+        oneWayTailMs: 11_000,
+        oneWayTailAlert: false,
+        billingEngineVersion: 'kserve-verified-billing/1.1.0',
+        auditEngineVersion: 'kairali-independent-reaudit/2.6.5',
+        rulesetSha256: 'a'.repeat(64),
+        inputManifestSha256: 'b'.repeat(64),
+        decisionTraceSha256: 'c'.repeat(64),
+        finalizedAt: '2026-06-30 18:29:59',
+        evidenceSha256: 'd'.repeat(64),
+        evidenceVerifiedAt: '2026-06-30 12:00:00',
+        processingStatus: 'completed',
+        attemptCount: 1,
+      },
     },
     {
       callReference: 'synthetic-no-recording',
@@ -62,12 +84,64 @@ test('one row per call, with the reason it resolved that way', () => {
   assert.match(rows[2], /,no,/)
 })
 
+test('the vendor duration is shown beside the audited one, and compared', () => {
+  // "You billed two minutes; the conversation was forty-seven seconds" has to
+  // be answerable from the row, without the reader doing arithmetic.
+  const rows = dataRows(buildReportCsv(report).toString('utf8'))
+  const header = rows[0].split(',')
+  const audited = rows[1].split(',')
+  const at = (name: string) => audited[header.indexOf(name)]
+
+  assert.equal(at('kserve_connected_duration_sec'), '120.000')
+  assert.equal(at('audited_chargeable_duration_sec'), '107.000')
+  assert.equal(at('audited_conversation_end_sec'), '47.000')
+  // 120s billed less 107s chargeable.
+  assert.equal(at('duration_variance_sec'), '13.000')
+  assert.equal(at('bill_month'), '2026-06-14')
+})
+
+test('evidence identity travels, the evidence itself does not', () => {
+  const rows = dataRows(buildReportCsv(report).toString('utf8'))
+  const header = rows[0].split(',')
+  const audited = rows[1].split(',')
+  // The hash lets the vendor check WHICH bytes were audited against the file
+  // they supplied, without the recording leaving this platform.
+  assert.equal(audited[header.indexOf('evidence_sha256')], 'd'.repeat(64))
+  assert.equal(
+    audited[header.indexOf('audit_engine_version')],
+    'kairali-independent-reaudit/2.6.5',
+  )
+  assert.equal(
+    audited[header.indexOf('input_manifest_sha256')],
+    'b'.repeat(64),
+  )
+})
+
+test('a row with no audit detail leaves cells empty, never zero', () => {
+  // An unknown duration is not a duration of zero; a zero would understate
+  // the vendor's own figure in a document they are shown.
+  const rows = dataRows(buildReportCsv(report).toString('utf8'))
+  const header = rows[0].split(',')
+  const noDetail = rows[2].split(',')
+  for (const column of [
+    'kserve_connected_duration_sec',
+    'audited_chargeable_duration_sec',
+    'duration_variance_sec',
+    'evidence_sha256',
+  ]) {
+    assert.equal(noDetail[header.indexOf(column)], '', column)
+  }
+})
+
 test('amounts stay unformatted so a spreadsheet can total them', () => {
   const rows = dataRows(buildReportCsv(report).toString('utf8'))
   // No grouping separators and no currency symbol anywhere in the values.
+  // Per cell: joining first lets one column's end and the next column's start
+  // look like a thousands separator.
   for (const line of rows.slice(1)) {
-    const cells = line.split(',')
-    assert.doesNotMatch(cells.slice(0, 12).join(','), /[₹]|\d,\d{3}/)
+    for (const value of line.split(',')) {
+      assert.doesNotMatch(value, /[₹]|\d,\d{3}/, value)
+    }
   }
   // Shortest-form decimals, exactly as the emailed workbook carries them:
   // two documents shown to the same vendor must not disagree on a figure.

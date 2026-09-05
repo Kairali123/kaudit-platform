@@ -77,10 +77,44 @@ interface ReportRow extends RowDataPacket {
   billable_duration_ms: number | string
   verified_amount: string
   currency: string
+  billing_period_date: Date | string | null
+  claimed_duration_ms: number | string | null
+  connected_duration_ms: number | string | null
+  recorded_duration_ms: number | string | null
+  speech_duration_ms: number | string | null
+  conversation_end_ms: number | string | null
+  wrap_up_grace_ms: number | string | null
+  adjusted_chargeable_duration_ms: number | string | null
+  one_way_tail_ms: number | string | null
+  one_way_tail_alert: number | string | null
+  billing_engine_version: string | null
+  ruleset_sha256: string | null
+  input_manifest_sha256: string | null
+  decision_trace_sha256: string | null
+  finalized_at: string | null
+  audit_engine_version: string | null
+  evidence_sha256: string | null
+  evidence_verified_at: string | null
+  audio_processing_status: string | null
+  audio_attempt_count: number | string | null
 }
 
 interface InvoiceRow extends RowDataPacket {
   subtotal: string | null
+}
+
+function ms(value: number | string | null): number | null {
+  if (value == null) return null
+  const parsed = Number(value)
+  return Number.isFinite(parsed) ? Math.round(parsed) : null
+}
+
+/** The bill month's date as YYYY-MM-DD, with no timezone reinterpretation. */
+function isoDay(value: Date | string | null): string | null {
+  if (value == null) return null
+  return typeof value === 'string'
+    ? value.slice(0, 10)
+    : `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}-${String(value.getDate()).padStart(2, '0')}`
 }
 
 export async function collectMonthlyEmailReport(
@@ -122,7 +156,33 @@ export async function collectMonthlyEmailReport(
        calculation.billable_duration_ms,
        CAST(calculation.total_amount AS CHAR)
          AS verified_amount,
-       calculation.currency
+       calculation.currency,
+       c.billing_period_date,
+       -- KServe's own durations, as supplied.
+       calculation.claimed_duration_ms,
+       calculation.connected_duration_ms,
+       -- What this platform measured from the recording.
+       calculation.recorded_duration_ms,
+       calculation.speech_duration_ms,
+       calculation.conversation_end_ms,
+       calculation.wrap_up_grace_ms,
+       calculation.adjusted_chargeable_duration_ms,
+       calculation.one_way_tail_ms,
+       calculation.one_way_tail_alert,
+       -- Provenance a vendor can check a disputed line against.
+       calculation.engine_version AS billing_engine_version,
+       calculation.ruleset_sha256,
+       calculation.input_manifest_sha256,
+       calculation.decision_trace_sha256,
+       CAST(calculation.finalized_at AS CHAR) AS finalized_at,
+       audit_run.engine_version AS audit_engine_version,
+       -- The evidence hash proves which bytes were audited WITHOUT shipping
+       -- them: the vendor can hash the file they supplied and compare.
+       evidence_artifact.sha256 AS evidence_sha256,
+       CAST(evidence_artifact.last_verified_at AS CHAR)
+         AS evidence_verified_at,
+       evidence_artifact.audio_processing_status,
+       evidence_artifact.audio_attempt_count
      FROM kaudit_call c
      JOIN kaudit_provider_cost minutes
        ON minutes.call_id = c.id
@@ -152,6 +212,12 @@ export async function collectMonthlyEmailReport(
        ON amount.call_id = c.id
       AND amount.provider_sku = 'vendor_asserted_billed_amount'
       AND amount.is_final = 1
+     LEFT JOIN kaudit_audit_run audit_run
+       ON audit_run.id = calculation.audit_run_id
+     LEFT JOIN kaudit_call_artifact evidence_artifact
+       ON evidence_artifact.call_id = c.id
+      AND evidence_artifact.artifact_type = 'recording'
+      AND evidence_artifact.is_final = 1
      WHERE c.billing_period_date BETWEEN ? AND ?
      ORDER BY call_reference`,
     [options.period.start, options.period.end],
@@ -182,6 +248,33 @@ export async function collectMonthlyEmailReport(
         ),
         verifiedAmount: row.verified_amount,
         currency: row.currency,
+        detail: {
+          billingPeriodDate: isoDay(row.billing_period_date),
+          claimedDurationMs: ms(row.claimed_duration_ms),
+          connectedDurationMs: ms(row.connected_duration_ms),
+          recordedDurationMs: ms(row.recorded_duration_ms),
+          speechDurationMs: ms(row.speech_duration_ms),
+          conversationEndMs: ms(row.conversation_end_ms),
+          wrapUpGraceMs: ms(row.wrap_up_grace_ms),
+          adjustedChargeableDurationMs: ms(
+            row.adjusted_chargeable_duration_ms,
+          ),
+          oneWayTailMs: ms(row.one_way_tail_ms),
+          oneWayTailAlert:
+            row.one_way_tail_alert == null
+              ? null
+              : Number(row.one_way_tail_alert) === 1,
+          billingEngineVersion: row.billing_engine_version,
+          auditEngineVersion: row.audit_engine_version,
+          rulesetSha256: row.ruleset_sha256,
+          inputManifestSha256: row.input_manifest_sha256,
+          decisionTraceSha256: row.decision_trace_sha256,
+          finalizedAt: row.finalized_at,
+          evidenceSha256: row.evidence_sha256,
+          evidenceVerifiedAt: row.evidence_verified_at,
+          processingStatus: row.audio_processing_status,
+          attemptCount: ms(row.audio_attempt_count),
+        },
       }),
     ),
   })

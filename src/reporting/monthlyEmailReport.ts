@@ -26,6 +26,43 @@ export interface MonthlyResolutionBreakdown {
   variance: string
 }
 
+/**
+ * The audit facts behind one call's amount.
+ *
+ * Optional because the emailed report does not carry it: this exists for the
+ * per-call export a vendor is walked through, where "your three minutes was
+ * forty-seven seconds of conversation" has to be answerable from the row.
+ *
+ * It carries no transcript, no recording location and no customer text. The
+ * evidence hash is here instead — it proves WHICH bytes were audited, so the
+ * vendor can hash the file they supplied and compare, without the recording
+ * itself ever leaving this platform.
+ */
+export interface MonthlyReportRowDetail {
+  billingPeriodDate: string | null
+  /** KServe's own figures, as supplied. */
+  claimedDurationMs: number | null
+  connectedDurationMs: number | null
+  /** What this platform measured from the recording. */
+  recordedDurationMs: number | null
+  speechDurationMs: number | null
+  conversationEndMs: number | null
+  wrapUpGraceMs: number | null
+  adjustedChargeableDurationMs: number | null
+  oneWayTailMs: number | null
+  oneWayTailAlert: boolean | null
+  billingEngineVersion: string | null
+  auditEngineVersion: string | null
+  rulesetSha256: string | null
+  inputManifestSha256: string | null
+  decisionTraceSha256: string | null
+  finalizedAt: string | null
+  evidenceSha256: string | null
+  evidenceVerifiedAt: string | null
+  processingStatus: string | null
+  attemptCount: number | null
+}
+
 export interface MonthlyReportInputRow {
   callReference: string
   category: string
@@ -36,6 +73,7 @@ export interface MonthlyReportInputRow {
   verifiedBillableDurationMs: number
   verifiedAmount: string
   currency: string
+  detail?: MonthlyReportRowDetail
 }
 
 export interface MonthlyReportRow extends MonthlyReportInputRow {
