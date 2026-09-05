@@ -64,6 +64,7 @@ import type { RuntimeConfig } from '../config/runtime.ts'
 import {
   collectBilling,
   collectBillingReadiness,
+  collectMonthlyRevenueClaim,
   collectQuality,
   collectRevenueSnapshots,
 } from '../adapters/mysqlFullDashboard.ts'
@@ -1644,10 +1645,16 @@ async function apiResponse(
     )
   }
   if (pathname === '/api/v1/reports') {
-    const [billingReadiness, snapshots, emailDelivery, settlement] =
+    const [billingReadiness, snapshotData, emailDelivery, settlement] =
       await Promise.all([
         collectBillingReadiness(billingReadPool(dependencies), period),
-        collectRevenueSnapshots(dependencies.pool, period),
+        period
+          ? collectMonthlyRevenueClaim(dependencies.pool, period).then(
+              (claim) => ({ kind: 'monthly' as const, claim, period }),
+            )
+          : collectRevenueSnapshots(dependencies.pool, period).then(
+              (rows) => ({ kind: 'all' as const, rows }),
+            ),
         period
           ? collectReportEmailDeliveryStatus(
               dependencies.pool,
@@ -1661,6 +1668,22 @@ async function apiResponse(
         // than as either of those.
         collectSettlementSummary(dependencies, period),
       ])
+    const snapshots = snapshotData.kind === 'monthly'
+      ? [{
+          cadence: 'monthly' as const,
+          label: snapshotData.period.label,
+          start: snapshotData.period.start,
+          end: snapshotData.period.end,
+          currency: snapshotData.claim.currency,
+          verified: billingReadiness.cycle.calculatedTotal,
+          vendorClaimed: snapshotData.claim.vendorClaimed,
+          vendorClaimedBasis: snapshotData.claim.vendorClaimedBasis,
+          // A single-month report does not block on another month's billing
+          // scan merely to decorate its card with a trend.
+          priorVerified: null,
+          priorVendorClaimed: null,
+        }]
+      : snapshotData.rows
     const billingCycle = buildBillingCycleView(billingReadiness, {
       calibrationComplete:
         dependencies.config.releaseGates.calibrationComplete ||

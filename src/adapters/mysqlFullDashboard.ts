@@ -353,6 +353,56 @@ export async function collectBillingReadiness(
   }
 }
 
+export interface MonthlyRevenueClaim {
+  vendorClaimed: string | null
+  vendorClaimedBasis: RawRevenueSnapshot['vendorClaimedBasis']
+  currency: string
+}
+
+/**
+ * The current month's vendor side of the Reports card.
+ *
+ * A selected-month report already gets its verified amount from cycle
+ * readiness. It therefore needs only the invoice claim here, not the four-read
+ * current-and-prior snapshot collector used by the all-period dashboard.
+ */
+export async function collectMonthlyRevenueClaim(
+  pool: Pool,
+  period: BillingMonthScope,
+): Promise<MonthlyRevenueClaim> {
+  const invoice = await one(
+    pool,
+    `SELECT CAST(subtotal_amount AS CHAR) AS invoice_subtotal, currency
+     FROM kaudit_invoice
+     WHERE period_start = ? AND period_end = ?
+     ORDER BY revision_no DESC, created_at DESC, id DESC
+     LIMIT 1`,
+    [period.start, period.end],
+  )
+  if (invoice?.invoice_subtotal != null) {
+    return {
+      vendorClaimed: s(invoice.invoice_subtotal),
+      vendorClaimedBasis: 'invoiced',
+      currency: s(invoice.currency) ?? 'INR',
+    }
+  }
+
+  const amounts = await collectPeriodAmounts(pool, [{
+    key: 'monthly:current',
+    start: period.start,
+    end: period.end,
+  }])
+  const current = amounts.get('monthly:current')
+  return {
+    vendorClaimed: current?.providerClaimed ?? null,
+    vendorClaimedBasis:
+      current?.providerClaimed == null
+        ? 'unavailable'
+        : 'provider_claimed_no_invoice',
+    currency: current?.currency ?? 'INR',
+  }
+}
+
 interface PeriodAmounts {
   verified: string | null
   providerClaimed: string | null

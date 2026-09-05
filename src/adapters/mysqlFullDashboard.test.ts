@@ -4,6 +4,7 @@ import type { Pool } from 'mysql2/promise'
 import {
   collectBilling,
   collectBillingReadiness,
+  collectMonthlyRevenueClaim,
 } from './mysqlFullDashboard.ts'
 
 test('billing aggregates propagate a database statement timeout', async () => {
@@ -80,4 +81,33 @@ test('report readiness skips full billing summary and authority reads', async ()
   assert.equal(statements.length, 4)
   assert.ok(statements.every((sql) => !sql.includes('COUNT(*) AS calculations')))
   assert.ok(statements.every((sql) => !sql.includes('authoritative_calculations')))
+})
+
+test('a monthly report claim reads its invoice without rescanning calculations', async () => {
+  const statements: string[] = []
+  const pool = {
+    async query(sql: string) {
+      statements.push(sql)
+      return [[{
+        invoice_subtotal: '138087.25',
+        currency: 'INR',
+      }], []]
+    },
+  } as unknown as Pool
+
+  const claim = await collectMonthlyRevenueClaim(pool, {
+    month: '2026-07',
+    start: '2026-07-01',
+    end: '2026-07-31',
+    label: 'July 2026',
+  })
+
+  assert.deepEqual(claim, {
+    vendorClaimed: '138087.25',
+    vendorClaimedBasis: 'invoiced',
+    currency: 'INR',
+  })
+  assert.equal(statements.length, 1)
+  assert.match(statements[0] ?? '', /FROM kaudit_invoice/)
+  assert.doesNotMatch(statements[0] ?? '', /kaudit_billing_calculation/)
 })
