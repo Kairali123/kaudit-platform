@@ -2,8 +2,10 @@ import type { Pool, RowDataPacket } from 'mysql2/promise'
 import type { BillingMonthScope } from '../reporting/billingMonth.ts'
 import {
   buildMonthlyEmailReport,
+  buildMonthlySummaryReport,
   UNAVAILABLE_MONTHLY_SETTLEMENT,
   type MonthlyEmailReport,
+  type MonthlyReportAggregateInput,
   type MonthlyReportInputRow,
   type MonthlyReportSettlement,
 } from '../reporting/monthlyEmailReport.ts'
@@ -12,7 +14,11 @@ import {
   toSettlementSummary,
 } from '../reporting/kserveSettlement.ts'
 import { createMysqlKserveSettlementRepository } from './mysqlKserveSettlement.ts'
-import { createMysqlKserveVendorBilledRepository } from './mysqlKserveVendorBilled.ts'
+import {
+  createMysqlKserveVendorBilledRepository,
+  KSERVE_VENDOR_RATE_PER_MINUTE,
+  vendorBilledAssertionsSql,
+} from './mysqlKserveVendorBilled.ts'
 import { DEFAULT_SETTLEMENT_HISTORY } from '../billing/kserveSettlement.ts'
 
 /**
@@ -101,6 +107,104 @@ interface ReportRow extends RowDataPacket {
 
 interface InvoiceRow extends RowDataPacket {
   subtotal: string | null
+}
+
+interface ReportAggregateRow extends RowDataPacket {
+  calculation_basis: string
+  calls: number | string
+  vendor_billed_amount: string
+  verified_amount: string
+  currency: string
+}
+
+const CURRENT_FINAL_CALCULATION = `calculation.status = 'final'
+      AND calculation.calculation_basis IN (
+        'independent_conversation_end',
+        'independent_category_service_end',
+        'independent_audited_projection',
+        'accepted_as_billed_unverified',
+        'no_recording_zero'
+      )
+      AND calculation.input_manifest_sha256 IS NOT NULL
+      AND calculation.ruleset_sha256 IS NOT NULL
+      AND calculation.decision_trace_sha256 IS NOT NULL
+      AND calculation.finalized_at IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM kaudit_billing_calculation newer
+        WHERE newer.supersedes_calculation_id = calculation.id
+      )`
+
+const SCOPED_MONTHLY_VENDOR_ASSERTIONS = vendorBilledAssertionsSql(
+  `JOIN kaudit_call scoped_call
+     ON scoped_call.id = cost.call_id
+    AND scoped_call.billing_period_date BETWEEN ? AND ?`,
+)
+
+/**
+ * Collects only the grouped facts rendered by the summary PDF.
+ *
+ * Provider assertions are scoped to the selected month before grouping, and
+ * MAX preserves their revision semantics. The result is one row per billing
+ * basis instead of one row per call with evidence metadata.
+ */
+export async function collectMonthlyPdfReport(
+  pool: Pool,
+  options: {
+    period: BillingMonthScope
+    generatedAt: string
+  },
+): Promise<MonthlyEmailReport> {
+  const [rows] = await pool.query<ReportAggregateRow[]>(
+    `SELECT
+       calculation.calculation_basis,
+       COUNT(*) AS calls,
+       CAST(SUM(COALESCE(
+         vendor.amount_decimal,
+         vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+       )) AS CHAR) AS vendor_billed_amount,
+       CAST(SUM(calculation.total_amount) AS CHAR) AS verified_amount,
+       MAX(calculation.currency) AS currency
+     FROM kaudit_call c
+     JOIN (
+       ${SCOPED_MONTHLY_VENDOR_ASSERTIONS}
+     ) vendor ON vendor.call_id = c.id
+       AND vendor.minutes_decimal IS NOT NULL
+     JOIN kaudit_billing_calculation calculation
+       ON calculation.call_id = c.id
+      AND ${CURRENT_FINAL_CALCULATION}
+     WHERE c.billing_period_date BETWEEN ? AND ?
+     GROUP BY calculation.calculation_basis`,
+    [
+      options.period.start,
+      options.period.end,
+      options.period.start,
+      options.period.end,
+    ],
+  )
+  const [invoiceRows] = await pool.query<InvoiceRow[]>(
+    `SELECT CAST(subtotal_amount AS CHAR) AS subtotal
+     FROM kaudit_invoice
+     WHERE period_start = ? AND period_end = ?
+     ORDER BY revision_no DESC, created_at DESC, id DESC
+     LIMIT 1`,
+    [options.period.start, options.period.end],
+  )
+  return buildMonthlySummaryReport({
+    period: options.period,
+    generatedAt: options.generatedAt,
+    invoiceClaimedAmount: invoiceRows[0]?.subtotal ?? null,
+    settlement: await collectSettlement(pool, options.period),
+    groups: rows.map(
+      (row): MonthlyReportAggregateInput => ({
+        resolution: row.calculation_basis,
+        calls: Number(row.calls),
+        vendorAmount: row.vendor_billed_amount,
+        verifiedAmount: row.verified_amount,
+        currency: row.currency,
+      }),
+    ),
+  })
 }
 
 function ms(value: number | string | null): number | null {

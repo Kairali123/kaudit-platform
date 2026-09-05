@@ -71,7 +71,10 @@ import {
 import { collectMetrics } from '../adapters/mysqlMetrics.ts'
 import { collectOperations } from '../adapters/mysqlOperations.ts'
 import { collectAuditMonitor } from '../adapters/mysqlAuditMonitor.ts'
-import { collectMonthlyEmailReport } from '../adapters/mysqlMonthlyEmailReport.ts'
+import {
+  collectMonthlyEmailReport,
+  collectMonthlyPdfReport,
+} from '../adapters/mysqlMonthlyEmailReport.ts'
 import { buildReportPdf } from '../reporting/reportAttachments.ts'
 import { buildReportCsv } from '../reporting/reportCsv.ts'
 import { collectRestrictedExport } from '../adapters/mysqlRestrictedExport.ts'
@@ -3319,10 +3322,10 @@ export function createEnterpriseDashboardServer(
         /**
          * The month's audit as a document, for review outside this platform.
          *
-         * Administrator-only and access-logged, because unlike the aggregate
-         * report these carry per-call references — the vendor's own task ids —
-         * and leave the building as files. They contain no transcript, no
-         * recording URL and no customer text.
+         * Administrator-only and access-logged because these files leave the
+         * building. The CSV carries per-call references; the PDF carries only
+         * aggregate totals. Neither contains transcript, recording URL or
+         * customer text.
          */
         requirePermission(context, 'audit:inspect')
         // A download names one cycle. "All periods" would produce a document
@@ -3334,11 +3337,14 @@ export function createEnterpriseDashboardServer(
             { code: 'INVALID_REPORT_PERIOD', status: 400 },
           )
         }
-        const monthly = await collectMonthlyEmailReport(
-          billingReadPool(dependencies),
-          { period, generatedAt: new Date().toISOString() },
-        )
         const asPdf = url.pathname.endsWith('.pdf')
+        const collector = asPdf
+          ? collectMonthlyPdfReport
+          : collectMonthlyEmailReport
+        const monthly = await collector(billingReadPool(dependencies), {
+          period,
+          generatedAt: new Date().toISOString(),
+        })
         const body = asPdf
           ? await buildReportPdf(monthly)
           : buildReportCsv(monthly)

@@ -76,6 +76,15 @@ export interface MonthlyReportInputRow {
   detail?: MonthlyReportRowDetail
 }
 
+/** Pre-aggregated billing facts used by summary-only artifacts such as PDF. */
+export interface MonthlyReportAggregateInput {
+  resolution: string
+  calls: number
+  vendorAmount: string
+  verifiedAmount: string
+  currency: string
+}
+
 export interface MonthlyReportRow extends MonthlyReportInputRow {
   vendorAmount: string
   verifiedBillableMinutes: string
@@ -256,6 +265,111 @@ function buildResolutionBreakdown(
         variance: fromScaled(running.vendor - running.verified),
       }
     })
+}
+
+function aggregateResolutionBreakdown(
+  groups: MonthlyReportAggregateInput[],
+): MonthlyResolutionBreakdown[] {
+  return groups
+    .map((group) => {
+      if (!Number.isSafeInteger(group.calls) || group.calls < 0) {
+        throw new RangeError('calls must be a non-negative integer')
+      }
+      const vendor = requiredScaled(group.vendorAmount, 'vendorAmount')
+      const verified = requiredScaled(group.verifiedAmount, 'verifiedAmount')
+      const label = resolutionLabel(group.resolution)
+      return {
+        basis: group.resolution,
+        label: label.label,
+        explanation: label.explanation,
+        independentlyMeasured: label.independentlyMeasured,
+        calls: group.calls,
+        vendorAmount: fromScaled(vendor),
+        verifiedAmount: fromScaled(verified),
+        variance: fromScaled(vendor - verified),
+      }
+    })
+    .sort((left, right) => {
+      const leftVariance = requiredScaled(left.variance, 'variance')
+      const rightVariance = requiredScaled(right.variance, 'variance')
+      if (rightVariance > leftVariance) return 1
+      if (rightVariance < leftVariance) return -1
+      return left.basis.localeCompare(right.basis)
+    })
+}
+
+/**
+ * Builds the same authoritative summary as the detailed report without
+ * materializing one JavaScript object per call. Summary PDFs use this path;
+ * per-call CSV/XLSX artifacts continue to use `buildMonthlyEmailReport`.
+ */
+export function buildMonthlySummaryReport(options: {
+  period: BillingMonthScope
+  generatedAt: string
+  invoiceClaimedAmount: string | null
+  groups: MonthlyReportAggregateInput[]
+  settlement?: MonthlyReportSettlement | null
+}): MonthlyEmailReport {
+  const breakdown = aggregateResolutionBreakdown(options.groups)
+  const totals = breakdown.reduce(
+    (sum, group) => ({
+      calls: sum.calls + group.calls,
+      independentlyAuditedCalls:
+        sum.independentlyAuditedCalls +
+        (group.independentlyMeasured ? group.calls : 0),
+      acceptedAsBilledCalls:
+        sum.acceptedAsBilledCalls +
+        (group.independentlyMeasured ? 0 : group.calls),
+      vendor:
+        sum.vendor + requiredScaled(group.vendorAmount, 'vendorAmount'),
+      verified:
+        sum.verified + requiredScaled(group.verifiedAmount, 'verifiedAmount'),
+    }),
+    {
+      calls: 0,
+      independentlyAuditedCalls: 0,
+      acceptedAsBilledCalls: 0,
+      vendor: 0n,
+      verified: 0n,
+    },
+  )
+  const invoice = options.invoiceClaimedAmount == null
+    ? null
+    : requiredScaled(options.invoiceClaimedAmount, 'invoiceClaimedAmount')
+  const sourceManifestSha256 = canonicalJsonSha256({
+    period: options.period,
+    invoiceClaimedAmount: options.invoiceClaimedAmount,
+    groups: breakdown.map((group) => ({
+      basis: group.basis,
+      calls: group.calls,
+      vendorAmount: group.vendorAmount,
+      verifiedAmount: group.verifiedAmount,
+    })),
+  } as unknown as JsonValue)
+
+  return {
+    schemaVersion: '1',
+    reportVersion: 'monthly-revenue/1.0.0',
+    authority: 'authoritative',
+    period: options.period,
+    generatedAt: options.generatedAt,
+    settlement: toReportSettlement(options.settlement ?? null),
+    summary: {
+      totalCalls: totals.calls,
+      independentlyAuditedCalls: totals.independentlyAuditedCalls,
+      acceptedAsBilledCalls: totals.acceptedAsBilledCalls,
+      vendorUsageAmount: fromScaled(totals.vendor),
+      invoiceClaimedAmount: options.invoiceClaimedAmount,
+      verifiedBillableRevenue: fromScaled(totals.verified),
+      revenueVarianceVsInvoice:
+        invoice == null ? null : fromScaled(invoice - totals.verified),
+      revenueVarianceVsUsage: fromScaled(totals.vendor - totals.verified),
+      currency: options.groups[0]?.currency ?? 'INR',
+    },
+    resolutionBreakdown: breakdown,
+    rows: [],
+    sourceManifestSha256,
+  }
 }
 
 export function buildMonthlyEmailReport(options: {
