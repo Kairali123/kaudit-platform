@@ -22,6 +22,8 @@ export interface Profile {
   authMode: string
   accessControlEnforced: boolean
   contentAccess: string
+  /** Whether this deployment offers the restricted per-call export. */
+  restrictedExportEnabled?: boolean
 }
 
 export interface AuthConfig {

@@ -9,7 +9,12 @@ import {
 } from 'lucide-react'
 import { ErrorState, LoadingState, Notice } from '../components/States'
 import { PageHeader, UpdatedAt } from '../components/Metrics'
-import { downloadFile, getJson, type ReportsData } from '../lib/api'
+import {
+  downloadFile,
+  getJson,
+  type Profile,
+  type ReportsData,
+} from '../lib/api'
 import { useBillingPeriod } from '../lib/billingPeriod'
 import { money } from '../lib/money'
 
@@ -25,6 +30,19 @@ export function ReportsPage() {
    * "All periods": a file whose totals span cadences belongs to no billing
    * cycle the vendor could reconcile against their own invoice.
    */
+  const profileQuery = useQuery({
+    queryKey: ['me'],
+    queryFn: () => getJson<Profile>('/api/v1/me'),
+  })
+  const restrictedEnabled =
+    profileQuery.data?.restrictedExportEnabled === true
+  const restricted = useMutation({
+    mutationFn: () =>
+      downloadFile(
+        period.apiPath('/api/v1/reports/monthly-restricted.csv'),
+        `kairali-RESTRICTED-${period.month}.csv`,
+      ),
+  })
   const download = useMutation({
     mutationFn: (format: 'pdf' | 'csv') =>
       downloadFile(
@@ -89,6 +107,35 @@ export function ReportsPage() {
             <ErrorState
               error={download.error}
               retry={() => download.reset()}
+            />
+          )}
+        </section>
+      )}
+      {period.month !== 'all' && restrictedEnabled && (
+        <section className="content-section restricted-export">
+          <Notice tone="warning" title="Restricted — internal review only">
+            This file contains call transcripts and recording locations. It is
+            not the vendor pack and must not be sent to KServe or any third
+            party. Rows you are not cleared to see are withheld and counted in
+            the file. Every download is logged against your account.
+          </Notice>
+          <div className="report-download-actions">
+            <button
+              type="button"
+              className="button-secondary"
+              disabled={restricted.isPending}
+              onClick={() => restricted.mutate()}
+            >
+              <FileSpreadsheet size={16} aria-hidden />
+              {restricted.isPending
+                ? 'Preparing…'
+                : 'Restricted CSV — transcripts'}
+            </button>
+          </div>
+          {restricted.error && (
+            <ErrorState
+              error={restricted.error}
+              retry={() => restricted.reset()}
             />
           )}
         </section>

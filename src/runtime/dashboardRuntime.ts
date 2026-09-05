@@ -81,6 +81,8 @@ export interface DashboardCapabilities {
   recordingProxy: boolean
   /** Whether this deployment runs the OIDC authorization-code browser flow. */
   oidcBrowserFlow: boolean
+  /** Whether transcripts and recording locations may be exported as a file. */
+  restrictedExport: boolean
 }
 
 export interface DashboardRuntime {
@@ -225,6 +227,18 @@ export function createDashboardRuntime(
     callAuditRuleTestEnabled && callAuditRuleTestApiKey
       ? createOpenAiCallAuditModel(callAuditRuleTestApiKey)
       : undefined
+  /**
+   * Restricted per-call export, and the only place it is decided.
+   *
+   * Deny by default. This is the one download that carries transcript text and
+   * recording locations out of the platform, so its existence is a deliberate
+   * act by whoever runs the deployment rather than something an administrator
+   * discovers in a menu. D-10 — retention, redaction and unredacted access —
+   * is the decision this flag records; turning it on without that decision
+   * having been made is exactly what the flag makes visible.
+   */
+  const restrictedExportEnabled =
+    env.KAUDIT_RESTRICTED_EXPORT_ENABLED?.trim().toLowerCase() === 'true'
   const auditWorkerDispatcher =
     createGitHubActionsAuditWorkerDispatcher(env)
   const verifier =
@@ -272,6 +286,7 @@ export function createDashboardRuntime(
     allowedRecordingHosts,
     callAuditRuleTestModel,
     auditWorkerDispatcher,
+    restrictedExportEnabled,
     verifier,
     credentials,
     loginService,
@@ -288,6 +303,7 @@ export function createDashboardRuntime(
       importAnalysis: Boolean(importAnalysis),
       callAuditRuleTest: Boolean(callAuditRuleTestModel),
       recordingProxy: Boolean(recordingFetcher),
+      restrictedExport: restrictedExportEnabled,
       oidcBrowserFlow: Boolean(oidcAuthorizationClient),
     },
   }

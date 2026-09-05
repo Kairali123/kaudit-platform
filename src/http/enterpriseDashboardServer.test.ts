@@ -770,6 +770,141 @@ test('the audit monitor reads through the bounded billing pool', async () => {
   }
 })
 
+test('the restricted export does not exist unless a deployment enables it', async () => {
+  const adminAccess: AccessRepository = {
+    ...access,
+    async findByEmail(email) {
+      return {
+        id: 'admin-1',
+        email,
+        status: 'active',
+        maxSensitivityTier: 'K3',
+        roles: ['admin'],
+      }
+    },
+  }
+  // Deny by default: an administrator must not be able to discover a
+  // transcript export in a menu on a deployment that never chose to have one.
+  await withServer(
+    { async record() {}, async readiness() { return true } },
+    async (baseUrl) => {
+      const refused = await fetch(
+        `${baseUrl}/api/v1/reports/monthly-restricted.csv?month=2026-06`,
+        { headers: { cookie: localCookie() } },
+      )
+      assert.equal(refused.status, 503)
+      assert.equal(
+        ((await refused.json()) as { code?: string }).code,
+        'RESTRICTED_EXPORT_NOT_ENABLED',
+      )
+      const profile = await fetch(`${baseUrl}/api/v1/me`, {
+        headers: { cookie: localCookie() },
+      })
+      assert.equal(
+        ((await profile.json()) as { restrictedExportEnabled?: boolean })
+          .restrictedExportEnabled,
+        false,
+      )
+    },
+    undefined,
+    config,
+    null,
+    adminAccess,
+  )
+})
+
+test('bulk transcript access cannot bypass a per-call sensitivity refusal', async () => {
+  const events: AuditEvent[] = []
+  // Two calls: one the viewer may open, one above their ceiling.
+  const pool = {
+    async query() { return [[], []] },
+    async execute(sql: string) {
+      if (sql.includes('kaudit_transcript_segment')) {
+        return [[{ start_ms: 0, end_ms: 1000, text: 'synthetic line' }], []]
+      }
+      if (sql.includes('c.sensitivity_tier')) {
+        return [[
+          {
+            call_reference: 'visible', sensitivity_tier: 'K1',
+            category: 'OK', calculation_basis: 'independent_audited_projection',
+            claimed_duration_ms: 1000, connected_duration_ms: 1000,
+            adjusted_chargeable_duration_ms: 500, recorded_duration_ms: 1000,
+            vendor_billed_minutes: '1', vendor_billed_amount: '9.50',
+            verified_amount: '4.75', currency: 'INR', language: 'ml',
+            recording_source_url: 'https://recordings.example.invalid/a.ogg',
+            evidence_sha256: 'a'.repeat(64), transcript_id: 't-1',
+          },
+          {
+            call_reference: 'too-sensitive', sensitivity_tier: 'K4',
+            category: 'OK', calculation_basis: 'independent_audited_projection',
+            claimed_duration_ms: 1000, connected_duration_ms: 1000,
+            adjusted_chargeable_duration_ms: 500, recorded_duration_ms: 1000,
+            vendor_billed_minutes: '1', vendor_billed_amount: '9.50',
+            verified_amount: '4.75', currency: 'INR', language: 'ml',
+            recording_source_url: 'https://recordings.example.invalid/b.ogg',
+            evidence_sha256: 'b'.repeat(64), transcript_id: 't-2',
+          },
+        ], []]
+      }
+      return [[], []]
+    },
+  } as unknown as Pool
+  const server = createEnterpriseDashboardServer({
+    config,
+    pool,
+    restrictedExportEnabled: true,
+    access: {
+      ...access,
+      async findByEmail(email) {
+        return {
+          id: 'admin-1',
+          email,
+          status: 'active',
+          maxSensitivityTier: 'K3',
+          roles: ['admin'],
+        }
+      },
+    },
+    audit: {
+      async record(event) { events.push(event) },
+      async readiness() { return true },
+    },
+    verifier: null,
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  const address = server.address() as AddressInfo
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${address.port}` +
+        '/api/v1/reports/monthly-restricted.csv?month=2026-06',
+      { headers: { cookie: localCookie() } },
+    )
+    assert.equal(response.status, 200)
+    assert.match(
+      response.headers.get('content-disposition') ?? '',
+      /kairali-RESTRICTED-2026-06\.csv/,
+    )
+    const body = await response.text()
+    // K4 is refused to everyone, and its content never appears.
+    assert.equal(body.includes('too-sensitive'), false)
+    assert.equal(body.includes('b.ogg'), false)
+    assert.match(body, /# withheld_for_sensitivity,1/)
+    // The permitted row does carry the content this export exists for.
+    assert.match(body, /visible/)
+    assert.match(body, /synthetic line/)
+  } finally {
+    await new Promise<void>((resolve, reject) =>
+      server.close((error) => (error ? reject(error) : resolve())),
+    )
+  }
+  const download = events.find(
+    (event) => event.action === 'restricted_export.download',
+  )
+  assert.ok(download, 'taking transcripts out is logged')
+  assert.equal(download.resourceId, '2026-06')
+  assert.equal(download.purpose, 'admin_call_review')
+})
+
 test('monthly downloads are admin-only, month-scoped, and logged', async () => {
   const events: AuditEvent[] = []
   const audit: AuditSink = {

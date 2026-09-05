@@ -72,6 +72,8 @@ import { collectAuditMonitor } from '../adapters/mysqlAuditMonitor.ts'
 import { collectMonthlyEmailReport } from '../adapters/mysqlMonthlyEmailReport.ts'
 import { buildReportPdf } from '../reporting/reportAttachments.ts'
 import { buildReportCsv } from '../reporting/reportCsv.ts'
+import { collectRestrictedExport } from '../adapters/mysqlRestrictedExport.ts'
+import { buildRestrictedExportCsv } from '../reporting/restrictedExportCsv.ts'
 import { createMysqlAuditWorkerControl } from '../adapters/mysqlAuditWorkerControl.ts'
 import {
   parseAuditSystem,
@@ -290,6 +292,11 @@ interface Dependencies {
   manualReauditRequests?: ManualReauditRequestPort
   /** Starts a bounded external worker without exposing its provider details. */
   auditWorkerDispatcher?: AuditWorkerDispatcher
+  /**
+   * Whether the restricted per-call export exists at all. Absent means the
+   * route refuses before it reads anything, not that it returns less.
+   */
+  restrictedExportEnabled?: boolean
   webDistRoot?: string
 }
 
@@ -302,6 +309,15 @@ const MONTHLY_REPORT_DOWNLOADS = new Set([
   '/api/v1/reports/monthly.pdf',
   '/api/v1/reports/monthly.csv',
 ])
+
+/**
+ * The restricted per-call export. Separate from the vendor pack above by
+ * design: one route carries customer content and one deliberately cannot, and
+ * conflating them is how the wrong file ends up attached to the wrong email.
+ */
+const RESTRICTED_EXPORT_ROUTE = '/api/v1/reports/monthly-restricted.csv'
+const RESTRICTED_EXPORT_DEFAULT_ROWS = 500
+const RESTRICTED_EXPORT_MAX_ROWS = 5_000
 
 const APP_ROUTES = new Set([
   '/',
@@ -1507,6 +1523,10 @@ async function apiResponse(
         dependencies.config.auth.mode !== 'preview',
       contentAccess:
         'Aggregate data only; raw audio and transcripts are not available in this app.',
+      // Whether this deployment offers the restricted export at all, so the
+      // page can omit the control rather than present one that always refuses.
+      restrictedExportEnabled:
+        dependencies.restrictedExportEnabled === true,
     }
   }
   if (pathname === '/api/v1/users') {
@@ -1833,6 +1853,8 @@ async function apiResponse(
  * describe itself to a browser.
  */
 const BOUNDED_UNAVAILABLE_TITLES: Readonly<Record<string, string>> = {
+  RESTRICTED_EXPORT_NOT_ENABLED:
+    'Restricted export is not enabled on this server',
   IMPORT_NOT_AVAILABLE: 'Imports are not available on this server',
   IMPORT_ANALYSIS_NOT_CONFIGURED:
     'Import analysis is not configured on this server',
@@ -2292,6 +2314,7 @@ export function createEnterpriseDashboardServer(
       IMPORT_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
       MONTHLY_REPORT_DOWNLOADS.has(url.pathname) ||
+      url.pathname === RESTRICTED_EXPORT_ROUTE ||
       APP_ROUTES.has(url.pathname) ||
       OIDC_BROWSER_FLOW_ROUTES.has(url.pathname) ||
       url.pathname === '/logout' ||
@@ -3199,6 +3222,74 @@ export function createEnterpriseDashboardServer(
           'x-correlation-id': correlation,
         })
         response.end(fetched.bytes)
+        return
+      }
+      if (url.pathname === RESTRICTED_EXPORT_ROUTE) {
+        /**
+         * Transcripts and recording locations, for internal review only.
+         *
+         * Four independent gates, because this is the one export that carries
+         * customer content: the deployment must have enabled it, the caller
+         * must hold audit inspection, a bill month must be named, and each row
+         * is filtered by the caller's OWN sensitivity ceiling using the same
+         * rule the per-call screen applies. Bulk access is never a way around
+         * a per-call refusal.
+         */
+        if (!dependencies.restrictedExportEnabled) {
+          throw Object.assign(
+            new Error('Restricted export is not enabled on this deployment'),
+            { code: 'RESTRICTED_EXPORT_NOT_ENABLED', status: 503 },
+          )
+        }
+        requirePermission(context, 'audit:inspect')
+        const period = parseBillingMonth(url.searchParams.get('month'))
+        if (!period) {
+          throw Object.assign(
+            new Error('A specific bill month is required'),
+            { code: 'INVALID_REPORT_PERIOD', status: 400 },
+          )
+        }
+        const requestedRows = Number(
+          url.searchParams.get('rows') ?? RESTRICTED_EXPORT_DEFAULT_ROWS,
+        )
+        const rowCap =
+          Number.isInteger(requestedRows) &&
+          requestedRows > 0 &&
+          requestedRows <= RESTRICTED_EXPORT_MAX_ROWS
+            ? requestedRows
+            : RESTRICTED_EXPORT_DEFAULT_ROWS
+        const restricted = await collectRestrictedExport(
+          dependencies.pool,
+          {
+            period,
+            generatedAt: new Date().toISOString(),
+            viewerMaxSensitivityTier: context.user.maxSensitivityTier,
+            rowCap,
+          },
+        )
+        const body = buildRestrictedExportCsv(restricted)
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          'restricted_export.download',
+          'billing_cycle',
+          period.month,
+          'admin_call_review',
+        )
+        response.writeHead(200, {
+          ...JSON_SECURITY_HEADERS,
+          'content-type': 'text/csv; charset=utf-8',
+          'content-length': String(body.byteLength),
+          'cache-control': 'private, no-store, max-age=0',
+          'content-disposition':
+            `attachment; filename="kairali-RESTRICTED-${period.month}.csv"`,
+          'x-content-type-options': 'nosniff',
+          'x-correlation-id': correlation,
+        })
+        response.end(body)
         return
       }
       if (MONTHLY_REPORT_DOWNLOADS.has(url.pathname)) {
