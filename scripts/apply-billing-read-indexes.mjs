@@ -138,12 +138,25 @@ try {
     result: applied === 0 ? 'already-applied' : 'applied',
     applied,
   }))
-} catch {
+} catch (error) {
+  /**
+   * Reporting the stage alone said where it stopped and never why, so a
+   * failure here could only be guessed at. The code is bounded: either one of
+   * this script's own `word:word` markers, or the driver's error code, which
+   * names a condition without quoting a value.
+   */
+  const message = error instanceof Error ? error.message : ''
+  const driverCode = typeof error?.code === 'string' ? error.code : null
   console.error(JSON.stringify({
     migration: 'billing-read-indexes',
     result: 'failed',
     stage,
     applied,
+    code: /^[a-z-]+:[a-z-]+$/.test(message)
+      ? message
+      : /^[A-Z][A-Z0-9_]{2,63}$/.test(driverCode ?? '')
+        ? driverCode
+        : 'unexpected',
   }))
   process.exitCode = 1
 } finally {
