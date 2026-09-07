@@ -11,6 +11,10 @@ import {
   withDeadline,
 } from '../lib/deadline.ts'
 import {
+  createMysqlBillingMonthSummaryStore,
+  type BillingMonthSummaryStore,
+} from '../adapters/mysqlBillingMonthSummary.ts'
+import {
   isDatabaseStatementTimeout,
 } from '../adapters/mysqlReadTimeout.ts'
 import {
@@ -211,6 +215,7 @@ import { isSafeVendorUrl } from '../security/urlSafety.ts'
 import { sha256Hex } from '../lib/hash.ts'
 import {
   buildBillingView,
+  type RawBillingMetrics,
   buildBillingCycleView,
   buildQualityView,
   buildRevenueSnapshots,
@@ -235,6 +240,8 @@ interface Dependencies {
   pool: Pool
   /** Direct billing SELECTs with a server-side execution limit. */
   billingReadPool?: Pool
+  /** Cache of per-month billing aggregates. Defaults to the MySQL store. */
+  billingMonthSummary?: BillingMonthSummaryStore
   access: AccessRepository
   audit: AuditSink
   verifier: TokenVerifier | null
@@ -1563,6 +1570,76 @@ function billingReadPool(dependencies: Dependencies): Pool {
   return dependencies.billingReadPool ?? dependencies.pool
 }
 
+function billingSummaryStore(
+  dependencies: Dependencies,
+): BillingMonthSummaryStore {
+  return (
+    dependencies.billingMonthSummary ??
+    createMysqlBillingMonthSummaryStore(dependencies.pool)
+  )
+}
+
+/**
+ * One month's billing aggregates, from cache when the month is finished.
+ *
+ * Recomputing a CLOSED month on every page load is the whole problem: five
+ * aggregates each walking every call in it, growing with the month rather than
+ * with anything the reader asked for. A finished month cannot change, so it is
+ * computed once and read back.
+ *
+ * The cache decides nothing. A miss, a stale definition, an absent table, a
+ * failed write -- every one of them falls through to the live read that was
+ * always there, so this can make the page slow but never wrong. A month that
+ * has not ended is not cached at all.
+ */
+/**
+ * Drops the cached summary of every month an import touched.
+ *
+ * An import is scoped by an explicit period, but that period may span months,
+ * so each month in the range is evicted rather than just the first. A bad or
+ * absent header evicts nothing and leaves the cache to its definition stamp
+ * and its ended-month rule; it never throws, because failing an import that
+ * already succeeded in order to tidy a cache would be the wrong trade.
+ */
+async function invalidateImportedMonths(
+  dependencies: Dependencies,
+  periodStart: string | undefined,
+  periodEnd: string | undefined,
+): Promise<void> {
+  if (!periodStart || !periodEnd) return
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(periodStart)) return
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(periodEnd)) return
+  if (periodEnd < periodStart) return
+  const store = billingSummaryStore(dependencies)
+  const months = new Set<string>()
+  // Month identities only, walked a month at a time; an import spanning years
+  // still evicts a bounded number of them.
+  const cursor = new Date(`${periodStart.slice(0, 7)}-01T00:00:00Z`)
+  const last = `${periodEnd.slice(0, 7)}`
+  for (let guard = 0; guard < 120; guard += 1) {
+    const month = cursor.toISOString().slice(0, 7)
+    months.add(month)
+    if (month >= last) break
+    cursor.setUTCMonth(cursor.getUTCMonth() + 1)
+  }
+  for (const month of months) await store.invalidate(month)
+}
+
+async function collectBillingForPeriod(
+  dependencies: Dependencies,
+  period: BillingMonthScope | null,
+): Promise<RawBillingMetrics> {
+  if (!period) return collectBilling(billingReadPool(dependencies), period)
+  const store = billingSummaryStore(dependencies)
+  const cached = await store.read(period)
+  if (cached) return cached.metrics
+  const metrics = await collectBilling(billingReadPool(dependencies), period)
+  // Best effort, and deliberately not awaited for correctness: the reader has
+  // their answer either way.
+  await store.write(period, metrics)
+  return metrics
+}
+
 async function apiResponse(
   url: URL,
   dependencies: Dependencies,
@@ -1609,7 +1686,7 @@ async function apiResponse(
   if (pathname === '/api/v1/overview') {
     const [metrics, billing] = await Promise.all([
       collectMetrics(dependencies.pool, period),
-      collectBilling(billingReadPool(dependencies), period),
+      collectBillingForPeriod(dependencies, period),
     ])
     const billingView = buildBillingView(billing, {
       calibrationComplete:
@@ -1652,7 +1729,7 @@ async function apiResponse(
     }
   }
   if (pathname === '/api/v1/billing') {
-    const billing = await collectBilling(billingReadPool(dependencies), period)
+    const billing = await collectBillingForPeriod(dependencies, period)
     const billingView = buildBillingView(billing, {
       calibrationComplete:
         dependencies.config.releaseGates.calibrationComplete ||
@@ -3207,6 +3284,18 @@ export function createEnterpriseDashboardServer(
                 totalAmount: header(request, 'x-kaudit-total-amount'),
                 correlationId: correlation,
               })
+          /**
+           * An import changes what a month's aggregates say -- the vendor
+           * claim, and with it the variance -- so any cached summary of that
+           * month is now wrong. The period comes from the request headers the
+           * import itself was scoped by, so the eviction covers exactly the
+           * month that was written.
+           */
+          await invalidateImportedMonths(
+            dependencies,
+            header(request, 'x-kaudit-period-start'),
+            header(request, 'x-kaudit-period-end'),
+          )
         }
         await auditAccess(
           dependencies,

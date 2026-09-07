@@ -18,6 +18,9 @@ import {
   persistVerifiedBillingRecords,
 } from '../adapters/mysqlVerifiedBilling.ts'
 import {
+  createMysqlBillingMonthSummaryStore,
+} from '../adapters/mysqlBillingMonthSummary.ts'
+import {
   decideVendorAssertedBound,
 } from '../billing/vendorAssertedBound.ts'
 import { parseBillingMonth } from '../reporting/billingMonth.ts'
@@ -404,6 +407,16 @@ try {
     warning:
       'Cycle-close outcomes are deterministic fallbacks, not independent AI audits',
   }, null, 2)}\n`)
+  /**
+   * This run has just changed what the month's aggregates say, so the cached
+   * summary of it is now wrong. Dropping it makes the next page load recompute
+   * and re-cache. It runs after the writes have committed and cannot undo
+   * them: a cache that failed to clear is a stale page, and rolling back a
+   * settled month to avoid that would be the far worse trade.
+   */
+  if (mode === 'EXECUTE' && inserted > 0) {
+    await createMysqlBillingMonthSummaryStore(pool).invalidate(period.month)
+  }
   // A close that left calls unsettled is not a clean close, whatever the
   // insert count says.
   if (skipped > 0) process.exitCode = 4
