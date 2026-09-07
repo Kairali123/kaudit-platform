@@ -114,6 +114,12 @@ export async function collectLatestBillingCycle(
   // Migration 0006 adds calculation_basis and the automated decision table.
   // Until it is applied, these values intentionally remain unavailable instead
   // of treating legacy calculations as a completed bill.
+  /**
+   * The call leads this join deliberately. A calculation has no date of its
+   * own, so left to choose the optimizer scanned every calculation ever
+   * written and discarded the out-of-month ones afterwards. Leading with the
+   * call makes the month a range scan and the calculation an indexed lookup.
+   */
   const finalPromise = pool.query<FinalCountRow[]>(
     `SELECT
          COUNT(DISTINCT CASE
@@ -128,8 +134,9 @@ export async function collectLatestBillingCycle(
          CAST(SUM(calculation.billable_duration_ms) / 60000 AS CHAR)
            AS billable_minutes,
          MAX(calculation.currency) AS currency
-       FROM kaudit_billing_calculation calculation
-       JOIN kaudit_call call_row ON call_row.id = calculation.call_id
+       FROM kaudit_call call_row
+       STRAIGHT_JOIN kaudit_billing_calculation calculation
+         ON calculation.call_id = call_row.id
        WHERE call_row.billing_period_date BETWEEN ? AND ?
          AND calculation.status = 'final'
          AND calculation.calculation_basis IN (

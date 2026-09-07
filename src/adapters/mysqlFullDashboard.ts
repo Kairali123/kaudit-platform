@@ -146,6 +146,28 @@ export async function collectBilling(
   const calculationWindow = period
     ? ' AND calculation_call.billing_period_date BETWEEN ? AND ?'
     : ''
+  /**
+   * Which table leads the join, and why it has to be said out loud.
+   *
+   * A calculation carries no date of its own; the billing period lives on the
+   * call. Left to choose, the optimizer read every calculation ever written
+   * and discarded the ones outside the month afterwards -- a full scan whose
+   * cost grows with the life of the dataset rather than with the month asked
+   * for. At 54,227 calculations that put three of the billing page's five
+   * aggregates at 15-30s against a 30s request limit, and the page timed out.
+   *
+   * Leading with the call makes the month a range scan on
+   * idx_call_billing_period_id and turns the calculation into an indexed
+   * lookup per call, which is the shape the two aggregates that never timed
+   * out already had.
+   *
+   * Only when a month is named. Across all periods there is no range to seek
+   * and scanning the calculations really is the cheaper plan.
+   */
+  const calculationLead = period
+    ? `kaudit_call calculation_call
+       STRAIGHT_JOIN kaudit_billing_calculation`
+    : `kaudit_billing_calculation`
   const periodParams = period ? [period.start, period.end] : []
   const [summary, authority, rateCard, invoice, reconciliation, cycle] = await Promise.all([
     one(
@@ -155,8 +177,9 @@ export async function collectBilling(
          CAST(SUM(bc.total_amount) AS CHAR) AS calculated_total,
          CAST(SUM(bc.billable_duration_ms) / 60000 AS CHAR) AS billable_minutes,
          MAX(bc.currency) AS currency
-       FROM kaudit_billing_calculation bc
-       JOIN kaudit_call calculation_call ON calculation_call.id = bc.call_id
+       FROM ${calculationLead} bc${period
+         ? ' ON bc.call_id = calculation_call.id'
+         : ' JOIN kaudit_call calculation_call ON calculation_call.id = bc.call_id'}
        WHERE NOT EXISTS (
          SELECT 1 FROM kaudit_billing_calculation newer
          WHERE newer.supersedes_calculation_id = bc.id
@@ -219,9 +242,11 @@ export async function collectBilling(
                      decision_row.id
              )${period ? ' AND decision_call.billing_period_date BETWEEN ? AND ?' : ''}
          ) AS unresolved_automated_decisions
-       FROM kaudit_billing_calculation current
+       FROM ${calculationLead} current${period
+         ? ' ON current.call_id = calculation_call.id'
+         : `
        JOIN kaudit_call calculation_call
-         ON calculation_call.id = current.call_id
+         ON calculation_call.id = current.call_id`}
        WHERE NOT EXISTS (
          SELECT 1 FROM kaudit_billing_calculation newer
          WHERE newer.supersedes_calculation_id = current.id

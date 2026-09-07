@@ -21,6 +21,9 @@ test('billing read index application requires an exact confirmation', () => {
   })
   assert.equal(result.status, 1)
   assert.equal(result.stdout, '')
+  // The failure names a bounded reason as well as a stage. Reporting the stage
+  // alone said where it stopped and never why, which made a real refusal --
+  // an index name already taken by a different shape -- unreadable.
   assert.equal(
     result.stderr.trim(),
     JSON.stringify({
@@ -28,6 +31,7 @@ test('billing read index application requires an exact confirmation', () => {
       result: 'failed',
       stage: 'confirmation',
       applied: 0,
+      code: 'confirmation:required',
     }),
   )
 })
