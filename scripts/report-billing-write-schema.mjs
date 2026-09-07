@@ -18,6 +18,10 @@ const TABLES = [
   'kaudit_billing_calculation',
   'kaudit_billing_component_result',
   'kaudit_automated_decision',
+  // Read by the settlement card on every billing page load. A migration that
+  // was never applied looks identical to a slow query from the browser: both
+  // arrive as "settlement could not be read".
+  'kaudit_kserve_monthly_settlement',
 ]
 
 function required(name) {
@@ -60,7 +64,7 @@ try {
             CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE
        FROM information_schema.COLUMNS
       WHERE TABLE_SCHEMA = DATABASE()
-        AND TABLE_NAME IN (?, ?, ?)
+        AND TABLE_NAME IN (?, ?, ?, ?)
         AND DATA_TYPE IN ('varchar', 'char')
       ORDER BY TABLE_NAME, COLUMN_NAME`,
     TABLES,
@@ -74,8 +78,24 @@ try {
       nullable: row.IS_NULLABLE === 'YES',
     }
   }
+  /**
+   * Presence is reported separately from shape. A table with no varchar column
+   * would otherwise be indistinguishable from a table that does not exist, and
+   * those two call for opposite responses.
+   */
+  const [present] = await connection.query(
+    `SELECT TABLE_NAME
+       FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME IN (?, ?, ?, ?)`,
+    TABLES,
+  )
+  const existing = new Set(present.map((row) => row.TABLE_NAME))
   process.stdout.write(`${JSON.stringify({
     event: 'billing_write_schema',
+    tablesPresent: Object.fromEntries(
+      TABLES.map((table) => [table, existing.has(table)]),
+    ),
     tables: byTable,
     note: 'Column shapes only. No row, amount, or identifier was read.',
   }, null, 2)}\n`)
