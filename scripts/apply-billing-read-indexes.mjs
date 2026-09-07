@@ -12,6 +12,15 @@ const INDEXES = [
   ['kaudit_call_external_reference', 'idx_call_reference_call_type_first', ['call_id', 'reference_type', 'id'], ['A', 'A', 'A'], 'ADD KEY `idx_call_reference_call_type_first` (`call_id`, `reference_type`, `id`)'],
   ['kaudit_audit_finding', 'idx_audit_finding_call_code_latest', ['call_id', 'finding_code', 'created_at', 'id'], ['A', 'A', 'D', 'D'], 'ADD KEY `idx_audit_finding_call_code_latest` (`call_id`, `finding_code`, `created_at` DESC, `id` DESC)'],
   ['kaudit_audit_run', 'idx_audit_run_call_engine_status', ['call_id', 'engine_version', 'status'], ['A', 'A', 'A'], 'ADD KEY `idx_audit_run_call_engine_status` (`call_id`, `engine_version`, `status`)'],
+  // Every billing-page aggregate joins a calculation or a decision back to its
+  // call and bounds the result by the call's billing period. Neither join had
+  // an index, so each of the five aggregates re-read the whole table: June's
+  // reads sat at 15-30s against a 30s request limit and the page timed out.
+  ['kaudit_billing_calculation', 'idx_billing_calc_call', ['call_id', 'id'], ['A', 'A'], 'ADD KEY `idx_billing_calc_call` (`call_id`, `id`)'],
+  ['kaudit_automated_decision', 'idx_automated_decision_call_type_status', ['call_id', 'decision_type', 'decision_status'], ['A', 'A', 'A'], 'ADD KEY `idx_automated_decision_call_type_status` (`call_id`, `decision_type`, `decision_status`)'],
+  // The supersession probe, which every "is this the current version" check
+  // runs once per row.
+  ['kaudit_automated_decision', 'idx_automated_decision_supersedes', ['supersedes_decision_id'], ['A'], 'ADD KEY `idx_automated_decision_supersedes` (`supersedes_decision_id`)'],
 ]
 
 function required(name) {
