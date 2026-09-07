@@ -91,8 +91,31 @@ try {
     TABLES,
   )
   const existing = new Set(present.map((row) => row.TABLE_NAME))
+  /**
+   * Index shapes, so a read that is slow because nothing indexes its join can
+   * be told apart from one that is slow for any other reason -- and so an
+   * index migration that refuses on a name collision can say what it collided
+   * with instead of being renamed around.
+   */
+  const [indexRows] = await connection.query(
+    `SELECT TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX, COLUMN_NAME, COLLATION
+       FROM information_schema.STATISTICS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME IN (?, ?, ?, ?)
+      ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX`,
+    TABLES,
+  )
+  const indexes = {}
+  for (const row of indexRows) {
+    const key = `${row.TABLE_NAME}.${row.INDEX_NAME}`
+    indexes[key] ??= []
+    indexes[key].push(
+      `${row.COLUMN_NAME}${row.COLLATION === 'D' ? ' DESC' : ''}`,
+    )
+  }
   process.stdout.write(`${JSON.stringify({
     event: 'billing_write_schema',
+    indexes,
     tablesPresent: Object.fromEntries(
       TABLES.map((table) => [table, existing.has(table)]),
     ),
