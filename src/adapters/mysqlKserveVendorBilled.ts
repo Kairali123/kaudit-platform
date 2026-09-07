@@ -134,6 +134,14 @@ export const KSERVE_VENDOR_RATE_PER_MINUTE = '9.5'
  * `minutes_decimal IS NOT NULL` preserves the original inner join on billed
  * minutes: a call the vendor asserted an amount for but no minutes for is not
  * evidence of billed time and was never counted.
+ *
+ * The rate fallback is cast back to scale 8 because it stands in for a per-call
+ * amount KServe did not supply, and should look like the one it replaces. Left
+ * alone, decimal(20,8) minutes times the rate carries NINE decimal places --
+ * an artifact of the engine's scale rules rather than precision anyone
+ * measured -- and the summed total is then rejected by the scale-8 money
+ * contract every other amount here obeys. Casting per call rather than over the
+ * sum keeps each substituted amount exactly as wide as a real one.
  */
 export const MONTHLY_KSERVE_BILLED_CHARGE_SQL = `SELECT
      COUNT(*) AS billed_calls,
@@ -141,7 +149,10 @@ export const MONTHLY_KSERVE_BILLED_CHARGE_SQL = `SELECT
      CAST(
        SUM(COALESCE(
          vendor.amount_decimal,
-         vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+         CAST(
+           vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
+           AS DECIMAL(20, 8)
+         )
        )) AS CHAR
      ) AS billed_charge_inr
    FROM (

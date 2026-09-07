@@ -51,10 +51,12 @@ test('the supplied billed amount takes priority with a legacy rate fallback', ()
   )
   assert.match(VENDOR_BILLED_AMOUNT_SQL, /cost\.is_final = 1/)
   // Both assertions now come from one pass, so the supplied amount and the
-  // rate fallback read off the same row rather than a separate join.
+  // rate fallback read off the same row rather than a separate join. The
+  // supplied amount comes FIRST: the fallback applies only where the vendor
+  // gave no amount of their own.
   assert.match(
     MONTHLY_KSERVE_BILLED_CHARGE_SQL,
-    /COALESCE\(\s*vendor\.amount_decimal,\s*vendor\.minutes_decimal \*/,
+    /COALESCE\(\s*vendor\.amount_decimal,\s*CAST\(\s*vendor\.minutes_decimal \*/,
   )
 })
 
@@ -210,6 +212,24 @@ test('the monthly billed charge reads one scoped pass over provider cost', () =>
   // The month is bound exactly once, so the caller's two parameters still line
   // up with the placeholders.
   assert.equal((sql.match(/\?/g) ?? []).length, 2)
+})
+
+test('the rate fallback is produced at the scale-8 money contract', () => {
+  // decimal(20,8) minutes times the rate carries nine decimal places, and the
+  // summed total was rejected by the same money contract every other amount
+  // obeys -- surfacing as "settlement could not be read" with a validation
+  // message. The cast is per call, so a substituted amount is exactly as wide
+  // as the supplied one it stands in for.
+  assert.match(
+    MONTHLY_KSERVE_BILLED_CHARGE_SQL,
+    /CAST\(\s*vendor\.minutes_decimal \* [\d.]+\s*AS DECIMAL\(20, 8\)\s*\)/,
+  )
+  // The supplied amount is never re-scaled: it is already the vendor's own
+  // figure at the stored precision, and rounding it would restate their claim.
+  assert.doesNotMatch(
+    MONTHLY_KSERVE_BILLED_CHARGE_SQL,
+    /CAST\(\s*vendor\.amount_decimal/,
+  )
 })
 
 test('a call with an asserted amount but no billed minutes is still not billed time', () => {
