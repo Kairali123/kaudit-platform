@@ -41,6 +41,7 @@ on:
           - new
           - targeted
           - requested
+          - migration-0013
           - migration-0015
           - migration-0017
           - migration-billing-read-indexes
@@ -388,6 +389,20 @@ jobs:
               KAUDIT_CYCLE_CLOSE_COHORT=exhausted-recording \
               KAUDIT_CYCLE_CLOSE_BATCH=50000 \
               npm run billing:cycle-close
+            elif [[ "$AUDIT_MODE" == "migration-0013" ]]; then
+              # Creates the monthly KServe settlement table. Expand only: one
+              # CREATE TABLE and one self-referencing foreign key, no row read
+              # and nothing altered or removed. Safe to re-run; an existing
+              # table is reported and left exactly as found.
+              if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0013" ]]; then
+                exit 2
+              fi
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_MIGRATION_CONFIRM=APPLY_0013 \
+              node scripts/apply-kserve-settlement-migration.mjs
             elif [[ "$AUDIT_MODE" == "migration-0015" ]]; then
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0015" ]]; then
                 exit 2
