@@ -2,23 +2,30 @@ import { readFileSync } from 'node:fs'
 import mysql from 'mysql2/promise'
 
 /**
- * Applies migration 0013: the append-only record of what Kairali ACTUALLY PAID
- * KServe for a bill month.
+ * Applies ONE expand-only migration, named by the environment.
  *
- * The application has read this table on every billing page load since the
- * settlement card shipped. The table was never created in production, so that
- * read has always failed, and the card has been reporting "settlement could not
- * be read" — which was true, and gave no way to learn that a migration was the
- * reason.
+ * Expand-only means exactly what this checks for: CREATE TABLE and ALTER TABLE
+ * and nothing else. A migration that would rewrite or remove data is refused
+ * here rather than trusted, so a generic runner can never become the thing
+ * that quietly reshapes a financial table.
  *
- * EXPAND ONLY. One CREATE TABLE and one self-referencing foreign key. It reads
- * no row and alters, backfills and deletes nothing, so an existing table is
- * left exactly as found rather than replaced.
+ * The statements come from the reviewed migration file. Re-running is a no-op:
+ * an existing table is reported and left exactly as found, so an operator who
+ * is unsure whether it ran can simply run it again.
  */
 
-const TABLE = 'kaudit_kserve_monthly_settlement'
+const TABLE = required('KAUDIT_MIGRATION_TABLE')
+/**
+ * A bare filename inside migrations/, never a path. The runner picks the file
+ * from an environment variable, so it must not be able to reach outside the
+ * reviewed directory whatever it is handed.
+ */
+const MIGRATION_FILE = required('KAUDIT_MIGRATION_FILE')
+if (!/^[0-9]{4}_[a-z0-9_]+\.sql$/.test(MIGRATION_FILE)) {
+  throw new Error('invalid:migration-file')
+}
 const MIGRATION = new URL(
-  '../migrations/0013_kserve_monthly_settlement.sql',
+  `../migrations/${MIGRATION_FILE}`,
   import.meta.url,
 )
 

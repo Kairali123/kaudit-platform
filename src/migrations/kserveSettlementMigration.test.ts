@@ -80,3 +80,38 @@ test('the migration declares exactly the two statements the applier expects', ()
   assert.match(statements[0] ?? '', /^CREATE TABLE/i)
   assert.match(statements[1] ?? '', /^ALTER TABLE/i)
 })
+
+const runner = read('../../scripts/apply-expand-migration.mjs')
+const summary = read('../../migrations/0018_billing_month_summary.sql')
+
+test('the generic runner only ever applies expand statements', () => {
+  // It takes its migration from an environment variable, so what it refuses
+  // matters more than what it accepts.
+  assert.match(runner, /non-expand-statement/)
+  assert.match(runner, /CREATE TABLE\|ALTER TABLE/)
+  // And it cannot be pointed outside the reviewed migrations directory.
+  assert.match(runner, /\^\[0-9\]\{4\}_\[a-z0-9_\]\+\\\.sql\$/)
+  assert.match(runner, /invalid:migration-file/)
+})
+
+test('the runner names its own table and file rather than hard-coding one', () => {
+  // A copy that kept another migration's table silently re-ran that migration
+  // instead of the requested one.
+  assert.match(runner, /required\('KAUDIT_MIGRATION_TABLE'\)/)
+  assert.match(runner, /required\('KAUDIT_MIGRATION_FILE'\)/)
+  assert.doesNotMatch(runner, /const TABLE = 'kaudit_/)
+})
+
+test('the month summary migration is expand-only and creates a cache', () => {
+  const executable = withoutStringLiterals(withoutComments(summary))
+    // `ON UPDATE current_timestamp` is a column clause, not a statement that
+    // modifies data. The cache is the one table here that may be rewritten in
+    // place, because it holds nothing worth a history.
+    .replaceAll(/ON UPDATE current_timestamp\(\d\)/gi, '')
+  assert.doesNotMatch(executable, /\b(DROP|TRUNCATE|DELETE|UPDATE|INSERT)\b/i)
+  assert.match(executable, /CREATE TABLE `kaudit_billing_month_summary`/)
+  // Amounts are stored as TEXT, so no cached money passes through a float.
+  assert.match(summary, /`payload_json` longtext/)
+  // Nothing may reference a cache: it must stay safe to truncate.
+  assert.doesNotMatch(executable, /FOREIGN KEY/i)
+})
