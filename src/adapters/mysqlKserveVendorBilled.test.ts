@@ -50,9 +50,11 @@ test('the supplied billed amount takes priority with a legacy rate fallback', ()
     /provider_sku = 'vendor_asserted_billed_amount'/,
   )
   assert.match(VENDOR_BILLED_AMOUNT_SQL, /cost\.is_final = 1/)
+  // Both assertions now come from one pass, so the supplied amount and the
+  // rate fallback read off the same row rather than a separate join.
   assert.match(
     MONTHLY_KSERVE_BILLED_CHARGE_SQL,
-    /COALESCE\(\s*amount\.amount_decimal,\s*vendor\.minutes_decimal \*/,
+    /COALESCE\(\s*vendor\.amount_decimal,\s*vendor\.minutes_decimal \*/,
   )
 })
 
@@ -70,7 +72,7 @@ test('the combined assertion read keeps both claims in one cost pass', () => {
 test('the month query covers the whole month, not only audited calls', () => {
   assert.match(
     MONTHLY_KSERVE_BILLED_CHARGE_SQL,
-    /WHERE c\.billing_period_date BETWEEN \? AND \?/,
+    /scoped_call\.billing_period_date BETWEEN \? AND \?/,
   )
   // No audited-evidence join: restricting to audited calls would make savings
   // grow as the audit fell behind.
@@ -189,24 +191,33 @@ test('the read is one bounded statement scoped to the requested month', async ()
   assert.deepEqual(calls[0].parameters, ['2026-08-01', '2026-08-31'])
 })
 
-test('the monthly billed charge scopes the month before grouping provider cost', () => {
-  // Grouping the whole provider-cost table and filtering to one month
-  // afterwards made this read slower with every cycle closed, until it passed
-  // the request deadline and the settlement card reported itself unreadable.
+test('the monthly billed charge reads one scoped pass over provider cost', () => {
+  // Two earlier shapes of this read caused outages. Grouping the whole
+  // provider-cost table and filtering afterwards scanned every month ever
+  // ingested; scoping it but keeping two derived tables still paid for two
+  // grouped scans of the same rows.
   const sql = MONTHLY_KSERVE_BILLED_CHARGE_SQL
-  assert.match(sql, /^WITH scoped_calls AS \(/)
-  // The month bound belongs to the CTE, so it is established once and both
-  // assertion passes inherit it.
+  const passes = sql.match(/FROM kaudit_provider_cost cost/g) ?? []
+  assert.equal(passes.length, 1)
+  // The month drives the query rather than filtering its result.
   assert.match(
     sql,
-    /WITH scoped_calls AS \(\s*SELECT c\.id\s*FROM kaudit_call c\s*WHERE c\.billing_period_date BETWEEN \? AND \?/,
+    /JOIN kaudit_call scoped_call\s*\n\s*ON scoped_call\.id = cost\.call_id\s*\n\s*AND scoped_call\.billing_period_date BETWEEN \? AND \?/,
   )
-  // Neither vendor-assertion pass may group the table unscoped.
-  const groupedPasses = sql.match(/FROM kaudit_provider_cost cost/g) ?? []
-  assert.equal(groupedPasses.length, 2)
-  const scopeJoins = sql.match(/JOIN scoped_calls \w+ ON \w+\.id = cost\.call_id/g) ?? []
-  assert.equal(scopeJoins.length, 2)
-  // The month is bound exactly twice-in-one-place: the CTE carries the only
-  // pair of placeholders, so the caller's two parameters still line up.
+  // Both vendor assertions come from the same rows, read together.
+  assert.match(sql, /vendor_asserted_billed_minutes/)
+  assert.match(sql, /vendor_asserted_billed_amount/)
+  // The month is bound exactly once, so the caller's two parameters still line
+  // up with the placeholders.
   assert.equal((sql.match(/\?/g) ?? []).length, 2)
+})
+
+test('a call with an asserted amount but no billed minutes is still not billed time', () => {
+  // The original inner join on billed minutes carried this rule. Folding both
+  // assertions into one pass could silently have dropped it, which would add
+  // vendor-asserted money for calls with no evidence of billed duration.
+  assert.match(
+    MONTHLY_KSERVE_BILLED_CHARGE_SQL,
+    /WHERE vendor\.minutes_decimal IS NOT NULL/,
+  )
 })

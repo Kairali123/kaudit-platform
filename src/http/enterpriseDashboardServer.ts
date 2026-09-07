@@ -7,6 +7,10 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Pool } from 'mysql2/promise'
 import {
+  isDeadlineExceeded,
+  withDeadline,
+} from '../lib/deadline.ts'
+import {
   isDatabaseStatementTimeout,
 } from '../adapters/mysqlReadTimeout.ts'
 import {
@@ -1440,7 +1444,7 @@ function settlementRepository(
 ): KserveSettlementRepository {
   return (
     dependencies.kserveSettlement ??
-    createMysqlKserveSettlementRepository(dependencies.pool)
+    createMysqlKserveSettlementRepository(billingReadPool(dependencies))
   )
 }
 
@@ -1449,7 +1453,7 @@ function vendorBilledRepository(
 ): KserveVendorBilledPort {
   return (
     dependencies.kserveVendorBilled ??
-    createMysqlKserveVendorBilledRepository(dependencies.pool)
+    createMysqlKserveVendorBilledRepository(billingReadPool(dependencies))
   )
 }
 
@@ -1485,6 +1489,14 @@ async function collectKserveSettlement(
 }
 
 /**
+ * How long the settlement card may hold the whole page open.
+ *
+ * Comfortably inside the platform's request limit, so an overrun degrades ONE
+ * card instead of costing every card on the page.
+ */
+const SETTLEMENT_READ_DEADLINE_MS = 8_000
+
+/**
  * The settlement summary a monthly report carries.
  *
  * NULL MEANS "NOT SCOPED TO ONE MONTH" AND NOTHING ELSE. The revenue report
@@ -1505,7 +1517,10 @@ async function collectSettlementSummary(
   if (!month) return null
   try {
     return toSettlementSummary(
-      await collectKserveSettlement(dependencies, month, 1),
+      await withDeadline(
+        collectKserveSettlement(dependencies, month, 1),
+        SETTLEMENT_READ_DEADLINE_MS,
+      ),
     )
   } catch (error) {
     /**
@@ -1520,9 +1535,11 @@ async function collectSettlementSummary(
       operation: 'settlement-summary',
       result: 'unavailable',
       month: month.month,
-      reason: isDatabaseStatementTimeout(error)
-        ? 'statement_timeout'
-        : 'read_failed',
+      reason: isDeadlineExceeded(error)
+        ? 'read_deadline_exceeded'
+        : isDatabaseStatementTimeout(error)
+          ? 'statement_timeout'
+          : 'read_failed',
     })}\n`)
     return unavailableSettlementSummary(month.month)
   }

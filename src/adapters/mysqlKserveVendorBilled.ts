@@ -118,39 +118,40 @@ export const KSERVE_VENDOR_RATE_PER_MINUTE = '9.5'
 /**
  * What KServe billed for ONE month.
  *
- * The month is established first, in a CTE, and both vendor-assertion passes
- * join it. Written the other way round -- grouping the whole provider-cost
- * table and then filtering to one month -- the two GROUP BYs scan every month
- * ever ingested, so the read gets slower with each cycle closed until it
- * exceeds the request deadline and the settlement card reports itself
- * unreadable. Scoping first keeps the work proportional to the month asked
- * for, not to the life of the dataset.
+ * ONE grouped pass over provider cost, driven by the month.
+ *
+ * This read has been rewritten twice and both mistakes are worth keeping
+ * visible. It first grouped the whole provider-cost table -- twice, once for
+ * minutes and once for amounts -- and narrowed to a month only afterwards, so
+ * it scanned every month ever ingested and got slower with each cycle closed.
+ * Scoping those two passes fixed the scanning but kept the two passes.
+ *
+ * Both assertions come from the same rows, so reading them together as
+ * conditional aggregates is one scan instead of two, the shape category
+ * analysis already uses. The join to the month drives the query, so the work is
+ * proportional to the month asked for.
+ *
+ * `minutes_decimal IS NOT NULL` preserves the original inner join on billed
+ * minutes: a call the vendor asserted an amount for but no minutes for is not
+ * evidence of billed time and was never counted.
  */
-export const MONTHLY_KSERVE_BILLED_CHARGE_SQL = `WITH scoped_calls AS (
-     SELECT c.id
-     FROM kaudit_call c
-     WHERE c.billing_period_date BETWEEN ? AND ?
-   )
-   SELECT
+export const MONTHLY_KSERVE_BILLED_CHARGE_SQL = `SELECT
      COUNT(*) AS billed_calls,
      CAST(SUM(vendor.minutes_decimal) AS CHAR) AS billed_minutes,
      CAST(
        SUM(COALESCE(
-         amount.amount_decimal,
+         vendor.amount_decimal,
          vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
        )) AS CHAR
      ) AS billed_charge_inr
-   FROM scoped_calls c
-   JOIN (
-     ${vendorBilledMinutesSql(
-       'JOIN scoped_calls minutes_scope ON minutes_scope.id = cost.call_id',
+   FROM (
+     ${vendorBilledAssertionsSql(
+       `JOIN kaudit_call scoped_call
+          ON scoped_call.id = cost.call_id
+         AND scoped_call.billing_period_date BETWEEN ? AND ?`,
      )}
-  ) vendor ON vendor.call_id = c.id
-   LEFT JOIN (
-     ${vendorBilledAmountSql(
-       'JOIN scoped_calls amount_scope ON amount_scope.id = cost.call_id',
-     )}
-   ) amount ON amount.call_id = c.id`
+   ) vendor
+   WHERE vendor.minutes_decimal IS NOT NULL`
 
 /**
  * What the vendor billed for one month.
