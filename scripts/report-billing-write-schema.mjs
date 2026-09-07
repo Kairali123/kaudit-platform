@@ -113,8 +113,29 @@ try {
       `${row.COLUMN_NAME}${row.COLLATION === 'D' ? ' DESC' : ''}`,
     )
   }
+  /**
+   * Full column list for the tables an audit attempt writes. Deciding whether
+   * a paid-for transcript can be re-used on retry needs to know what the
+   * transcript table can actually hold, and that schema predates this
+   * repository's migrations.
+   */
+  const [transcriptRows] = await connection.query(
+    `SELECT TABLE_NAME, COLUMN_NAME, DATA_TYPE, IS_NULLABLE
+       FROM information_schema.COLUMNS
+      WHERE TABLE_SCHEMA = DATABASE()
+        AND TABLE_NAME IN ('kaudit_transcript', 'kaudit_transcript_segment')
+      ORDER BY TABLE_NAME, ORDINAL_POSITION`,
+  )
+  const transcriptColumns = {}
+  for (const row of transcriptRows) {
+    transcriptColumns[row.TABLE_NAME] ??= []
+    transcriptColumns[row.TABLE_NAME].push(
+      `${row.COLUMN_NAME}:${row.DATA_TYPE}${row.IS_NULLABLE === 'YES' ? '?' : ''}`,
+    )
+  }
   process.stdout.write(`${JSON.stringify({
     event: 'billing_write_schema',
+    transcriptColumns,
     indexes,
     tablesPresent: Object.fromEntries(
       TABLES.map((table) => [table, existing.has(table)]),
