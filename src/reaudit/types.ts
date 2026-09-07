@@ -64,6 +64,29 @@ export interface TranscriptionResult {
   usage?: AiUsage
 }
 
+export interface TranscriptCacheKey {
+  artifactId: string
+  /** Hash of the exact audio bytes; only identical audio may be reused. */
+  evidenceSha256: string
+  provider: string
+  modelName: string
+  modelVersion: string
+}
+
+/**
+ * Somewhere a transcript can survive between an attempt and its retry.
+ *
+ * Transcription dominates the cost of an audit, and a classification failure
+ * discarded the transcript entirely, so every retry paid for the same audio
+ * again. Every method is best-effort by contract: a miss, an error, or no
+ * cache at all must transcribe exactly as before.
+ */
+export interface TranscriptCachePort {
+  read(key: TranscriptCacheKey): Promise<TranscriptionResult | null>
+  write(key: TranscriptCacheKey, transcript: TranscriptionResult): Promise<void>
+  purgeExpired(): Promise<number>
+}
+
 export interface NaturalSpeechBlock {
   number: number
   startMs: number
@@ -218,6 +241,18 @@ export interface ReauditItemResult {
 }
 
 export interface ReauditAi {
+  /**
+   * Which model this port transcribes with, declared up front.
+   *
+   * The transcript cache is keyed on it, and that key has to exist BEFORE the
+   * call is made -- otherwise the only way to learn the model is to pay for a
+   * transcription, which is exactly what the cache is avoiding.
+   */
+  transcriptionModel: {
+    provider: string
+    name: string
+    version: string
+  }
   transcribe(
     bytes: Buffer,
     options: { contentType: string },

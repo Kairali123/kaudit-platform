@@ -43,6 +43,7 @@ on:
           - requested
           - migration-0013
           - migration-0018
+          - migration-0019
           - migration-0015
           - migration-0017
           - migration-billing-read-indexes
@@ -431,6 +432,23 @@ jobs:
               KAUDIT_MIGRATION_CONFIRM_EXPECTED=APPLY_0018 \
               KAUDIT_MIGRATION_TABLE=kaudit_billing_month_summary \
               KAUDIT_MIGRATION_FILE=0018_billing_month_summary.sql \
+              node scripts/apply-expand-migration.mjs
+            elif [[ "$AUDIT_MODE" == "migration-0019" ]]; then
+              # Creates the expiring transcription cache, so a retry never
+              # re-pays to transcribe audio already transcribed. Expand only:
+              # one CREATE TABLE, nothing altered or removed. The table holds
+              # no fact of its own and is safe to truncate.
+              if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0019" ]]; then
+                exit 2
+              fi
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_MIGRATION_CONFIRM=APPLY_0019 \
+              KAUDIT_MIGRATION_CONFIRM_EXPECTED=APPLY_0019 \
+              KAUDIT_MIGRATION_TABLE=kaudit_transcription_cache \
+              KAUDIT_MIGRATION_FILE=0019_transcription_cache.sql \
               node scripts/apply-expand-migration.mjs
             elif [[ "$AUDIT_MODE" == "migration-0015" ]]; then
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0015" ]]; then

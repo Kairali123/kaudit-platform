@@ -374,6 +374,13 @@ export function createOpenAiReaudit(apiKey: string): ReauditAi {
     timeout: 120_000,
   })
   return {
+    // Declared, not inferred: the transcript cache keys on this before any
+    // call is made, and the same constant names the model in the evidence.
+    transcriptionModel: {
+      provider: 'openai',
+      name: REAUDIT_TRANSCRIPTION_MODEL,
+      version: REAUDIT_TRANSCRIPTION_MODEL,
+    },
     async transcribe(bytes, options) {
       const extension = options.contentType.includes('mpeg')
         ? 'mp3'

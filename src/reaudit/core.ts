@@ -15,6 +15,9 @@ import type {
   ReauditCandidate,
   ReauditItemResult,
   ReauditProjection,
+  TranscriptionResult,
+  TranscriptCacheKey,
+  TranscriptCachePort,
   TranscriptSegment,
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
@@ -780,8 +783,10 @@ export async function auditOneCall(options: {
   fetcher: UrlFetcher
   ai: ReauditAi
   allowedHosts: string[]
+  /** Optional. Absent, every attempt transcribes, exactly as before. */
+  transcriptCache?: TranscriptCachePort
 }): Promise<ReauditItemResult> {
-  const { candidate, fetcher, ai, allowedHosts } = options
+  const { candidate, fetcher, ai, allowedHosts, transcriptCache } = options
   const safety = isSafeVendorUrl(candidate.sourceUrl, allowedHosts)
   if (!safety.safe) {
     return {
@@ -813,18 +818,62 @@ export async function auditOneCall(options: {
     }
   }
 
-  let transcript
+  /**
+   * Transcribe, unless these exact bytes were already transcribed.
+   *
+   * Transcription is the overwhelming majority of what an audit costs, and
+   * until now a classification failure threw the transcript away -- the
+   * failure path persists only a failed audit run -- so every retry paid for
+   * the same audio again.
+   *
+   * The key is the hash of the audio itself, the same hash used just above to
+   * detect altered evidence. A recording that changed cannot be matched to the
+   * transcript of the recording it replaced.
+   */
+  const cacheKey: TranscriptCacheKey = {
+    artifactId: candidate.artifactId,
+    evidenceSha256,
+    provider: ai.transcriptionModel.provider,
+    modelName: ai.transcriptionModel.name,
+    modelVersion: ai.transcriptionModel.version,
+  }
+  /**
+   * Defensive on both sides. A cache exists to save money; it must never be
+   * able to cost an audit, so a port that misbehaves is treated as a miss
+   * rather than allowed to propagate. The real adapter already swallows its
+   * own errors -- this makes that a property of the audit, not a promise the
+   * audit is relying on someone else to keep.
+   */
+  let transcript: TranscriptionResult | null = null
   try {
-    transcript = await ai.transcribe(fetched.bytes, {
-      contentType: fetched.contentType || 'audio/ogg',
-    })
-  } catch (error) {
-    return {
-      callId: candidate.callId,
-      artifactId: candidate.artifactId,
-      outcome: 'transcription_failed',
-      errorCode: providerFailureCode('TRANSCRIPTION', error) ??
-        'TRANSCRIPTION_FAILED',
+    transcript = (await transcriptCache?.read(cacheKey)) ?? null
+  } catch {
+    transcript = null
+  }
+  if (!transcript) {
+    try {
+      transcript = await ai.transcribe(fetched.bytes, {
+        contentType: fetched.contentType || 'audio/ogg',
+      })
+    } catch (error) {
+      return {
+        callId: candidate.callId,
+        artifactId: candidate.artifactId,
+        outcome: 'transcription_failed',
+        errorCode: providerFailureCode('TRANSCRIPTION', error) ??
+          'TRANSCRIPTION_FAILED',
+      }
+    }
+    /**
+     * Cached BEFORE classification, which is the entire point. Classification
+     * is what fails and retries; caching after it would preserve only the
+     * transcripts that never needed preserving.
+     */
+    try {
+      await transcriptCache?.write(cacheKey, transcript)
+    } catch {
+      // Failing to cache costs money next time. Failing the audit costs the
+      // audit.
     }
   }
   const durationMismatch =

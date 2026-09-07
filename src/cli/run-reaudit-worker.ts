@@ -19,6 +19,9 @@ import {
 } from '../auditWorkers/drainContinuation.ts'
 import { auditOneCall } from '../reaudit/core.ts'
 import {
+  createMysqlTranscriptionCache,
+} from '../adapters/mysqlTranscriptionCache.ts'
+import {
   runReauditBatch,
   type ReauditCandidateRepository,
 } from '../reaudit/worker.ts'
@@ -205,6 +208,22 @@ async function main(): Promise<void> {
     }),
   )
   const control = createMysqlAuditWorkerControl(controlPool)
+  /**
+   * Transcription is the overwhelming majority of what an audit costs, and a
+   * classification failure used to discard the transcript, so every retry paid
+   * for the same audio again. This keeps it between an attempt and its retry.
+   *
+   * Expired rows are removed at the start of every run: the payload is
+   * customer speech and lives only as long as a retry could still need it.
+   */
+  const transcriptCache = createMysqlTranscriptionCache(pool)
+  const purgedTranscripts = await transcriptCache.purgeExpired()
+  if (purgedTranscripts > 0) {
+    process.stdout.write(`${JSON.stringify({
+      operation: 'transcription-cache-purge',
+      removed: purgedTranscripts,
+    })}\n`)
+  }
   let lockConnection
   try {
     lockConnection = await pool.getConnection()
@@ -393,6 +412,7 @@ async function main(): Promise<void> {
                 fetcher,
                 ai,
                 allowedHosts,
+                transcriptCache,
               }),
           },
           onProgress: async (progress) => {

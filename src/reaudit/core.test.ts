@@ -704,6 +704,7 @@ test('reviewed counterparty signals must agree with identified customer speech',
 
 test('classification failure stores a bounded code instead of thrown prose', async () => {
   const ai: ReauditAi = {
+    transcriptionModel: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
     async transcribe() {
       return {
         model: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
@@ -756,6 +757,7 @@ test('transcription quota exhaustion returns a bounded diagnostic code', async (
       },
     },
     ai: {
+      transcriptionModel: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
       async transcribe() {
         throw throttled
       },
@@ -771,6 +773,7 @@ test('transcription quota exhaustion returns a bounded diagnostic code', async (
 
 test('classification validation contradictions preserve identified customer speech', async () => {
   const ai: ReauditAi = {
+    transcriptionModel: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
     async transcribe() {
       return {
         model: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
@@ -870,6 +873,7 @@ test('classification repair promotes affirmative junk evidence to junk call', ()
 
 test('unrepairable classifier output retains a bounded terminal code', async () => {
   const ai: ReauditAi = {
+    transcriptionModel: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
     async transcribe() {
       return {
         model: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
@@ -948,6 +952,7 @@ test('projection adds 60-second wrap-up grace and remains uncalibrated', () => {
 
 test('read-only audit hashes audio, classifies, and projects without a repository', async () => {
   const ai: ReauditAi = {
+    transcriptionModel: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
     async transcribe() {
       return {
         model: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
@@ -1002,6 +1007,7 @@ test('read-only audit hashes audio, classifies, and projects without a repositor
 test('baseline mismatch stops before OpenAI processing', async () => {
   let calls = 0
   const ai: ReauditAi = {
+    transcriptionModel: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
     async transcribe() {
       calls++
       throw new Error('must not run')
