@@ -188,3 +188,25 @@ test('the read is one bounded statement scoped to the requested month', async ()
   assert.equal(calls.length, 1)
   assert.deepEqual(calls[0].parameters, ['2026-08-01', '2026-08-31'])
 })
+
+test('the monthly billed charge scopes the month before grouping provider cost', () => {
+  // Grouping the whole provider-cost table and filtering to one month
+  // afterwards made this read slower with every cycle closed, until it passed
+  // the request deadline and the settlement card reported itself unreadable.
+  const sql = MONTHLY_KSERVE_BILLED_CHARGE_SQL
+  assert.match(sql, /^WITH scoped_calls AS \(/)
+  // The month bound belongs to the CTE, so it is established once and both
+  // assertion passes inherit it.
+  assert.match(
+    sql,
+    /WITH scoped_calls AS \(\s*SELECT c\.id\s*FROM kaudit_call c\s*WHERE c\.billing_period_date BETWEEN \? AND \?/,
+  )
+  // Neither vendor-assertion pass may group the table unscoped.
+  const groupedPasses = sql.match(/FROM kaudit_provider_cost cost/g) ?? []
+  assert.equal(groupedPasses.length, 2)
+  const scopeJoins = sql.match(/JOIN scoped_calls \w+ ON \w+\.id = cost\.call_id/g) ?? []
+  assert.equal(scopeJoins.length, 2)
+  // The month is bound exactly twice-in-one-place: the CTE carries the only
+  // pair of placeholders, so the caller's two parameters still line up.
+  assert.equal((sql.match(/\?/g) ?? []).length, 2)
+})

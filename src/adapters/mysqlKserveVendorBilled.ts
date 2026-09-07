@@ -115,7 +115,23 @@ export const KSERVE_VENDOR_RATE_PER_MINUTE = '9.5'
  * `billing_period_date`. There is no per-call correlated subquery, so a month
  * costs one pass regardless of how many calls it holds.
  */
-export const MONTHLY_KSERVE_BILLED_CHARGE_SQL = `SELECT
+/**
+ * What KServe billed for ONE month.
+ *
+ * The month is established first, in a CTE, and both vendor-assertion passes
+ * join it. Written the other way round -- grouping the whole provider-cost
+ * table and then filtering to one month -- the two GROUP BYs scan every month
+ * ever ingested, so the read gets slower with each cycle closed until it
+ * exceeds the request deadline and the settlement card reports itself
+ * unreadable. Scoping first keeps the work proportional to the month asked
+ * for, not to the life of the dataset.
+ */
+export const MONTHLY_KSERVE_BILLED_CHARGE_SQL = `WITH scoped_calls AS (
+     SELECT c.id
+     FROM kaudit_call c
+     WHERE c.billing_period_date BETWEEN ? AND ?
+   )
+   SELECT
      COUNT(*) AS billed_calls,
      CAST(SUM(vendor.minutes_decimal) AS CHAR) AS billed_minutes,
      CAST(
@@ -124,14 +140,17 @@ export const MONTHLY_KSERVE_BILLED_CHARGE_SQL = `SELECT
          vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
        )) AS CHAR
      ) AS billed_charge_inr
-   FROM kaudit_call c
+   FROM scoped_calls c
    JOIN (
-     ${VENDOR_BILLED_MINUTES_SQL}
+     ${vendorBilledMinutesSql(
+       'JOIN scoped_calls minutes_scope ON minutes_scope.id = cost.call_id',
+     )}
   ) vendor ON vendor.call_id = c.id
    LEFT JOIN (
-     ${VENDOR_BILLED_AMOUNT_SQL}
-   ) amount ON amount.call_id = c.id
-   WHERE c.billing_period_date BETWEEN ? AND ?`
+     ${vendorBilledAmountSql(
+       'JOIN scoped_calls amount_scope ON amount_scope.id = cost.call_id',
+     )}
+   ) amount ON amount.call_id = c.id`
 
 /**
  * What the vendor billed for one month.

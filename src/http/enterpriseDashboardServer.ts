@@ -7,6 +7,9 @@ import { readFile } from 'node:fs/promises'
 import path from 'node:path'
 import type { Pool } from 'mysql2/promise'
 import {
+  isDatabaseStatementTimeout,
+} from '../adapters/mysqlReadTimeout.ts'
+import {
   AuthFailure,
   authenticateLocal,
   authenticateOidc,
@@ -1504,7 +1507,23 @@ async function collectSettlementSummary(
     return toSettlementSummary(
       await collectKserveSettlement(dependencies, month, 1),
     )
-  } catch {
+  } catch (error) {
+    /**
+     * The response says only "unavailable", which is right: no driver text or
+     * table name belongs in it. But swallowing the cause ENTIRELY left the one
+     * card on the page that could report a fault with no way to find out what
+     * the fault was, so the reason is written to the server log instead --
+     * coarse enough to carry nothing sensitive, specific enough to tell a
+     * timeout apart from a genuinely broken read.
+     */
+    process.stderr.write(`${JSON.stringify({
+      operation: 'settlement-summary',
+      result: 'unavailable',
+      month: month.month,
+      reason: isDatabaseStatementTimeout(error)
+        ? 'statement_timeout'
+        : 'read_failed',
+    })}\n`)
     return unavailableSettlementSummary(month.month)
   }
 }
