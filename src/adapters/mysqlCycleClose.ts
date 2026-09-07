@@ -377,3 +377,57 @@ export async function countRecordingBackedCalls(
   )
   return Number(rows[0]?.recording_backed_calls ?? 0)
 }
+
+export interface MonthCloseState {
+  totalCalls: number
+  recordingBackedAwaitingAudit: number
+  millisecondsSinceNewestCall: number | null
+}
+
+/**
+ * What a month's data looks like right now, for deciding whether an unattended
+ * close may touch it.
+ *
+ * "Awaiting audit" is recording-backed, not audited, and not terminally
+ * exhausted -- an exhausted call is finished with the audit and settles on the
+ * vendor's figure, so waiting for it would hold the month open forever.
+ *
+ * The ingest age is measured by the database rather than by comparing a stored
+ * timestamp against the runner's clock, so a skewed worker cannot decide a
+ * month has been quiet for two days when it has not.
+ */
+export async function readMonthCloseState(
+  pool: Pool,
+  period: BillingMonthScope,
+): Promise<MonthCloseState> {
+  const [rows] = await pool.query<RowDataPacket[]>(
+    `SELECT
+       COUNT(*) AS total_calls,
+       SUM(
+         CASE WHEN EXISTS (
+           SELECT 1
+           FROM kaudit_call_artifact backed
+           WHERE backed.call_id = c.id
+             AND backed.artifact_type = 'recording'
+             AND backed.is_final = 1
+             AND backed.source_url IS NOT NULL
+         )
+         AND NOT (${AUDITED_SQL})
+         AND NOT (${EXHAUSTED_RECORDING_SQL})
+         THEN 1 ELSE 0 END
+       ) AS awaiting_audit,
+       TIMESTAMPDIFF(MICROSECOND, MAX(c.created_at), current_timestamp(6))
+         AS since_newest_call_us
+     FROM kaudit_call c
+     WHERE c.billing_period_date BETWEEN ? AND ?`,
+    [period.start, period.end],
+  )
+  const row = rows[0]
+  const sinceUs = row?.since_newest_call_us
+  return {
+    totalCalls: Number(row?.total_calls ?? 0),
+    recordingBackedAwaitingAudit: Number(row?.awaiting_audit ?? 0),
+    millisecondsSinceNewestCall:
+      sinceUs == null ? null : Math.floor(Number(sinceUs) / 1000),
+  }
+}

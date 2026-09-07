@@ -2,6 +2,7 @@ import mysql from 'mysql2/promise'
 import { loadRuntimeConfig } from '../config/runtime.ts'
 import {
   countRecordingBackedCalls,
+  readMonthCloseState,
   listAcceptedAsBilledCandidates,
   loadPublishedRateCard,
   type CycleCloseCohort,
@@ -20,6 +21,9 @@ import {
 import {
   createMysqlBillingMonthSummaryStore,
 } from '../adapters/mysqlBillingMonthSummary.ts'
+import {
+  decideMonthCloseReadiness,
+} from '../billing/monthCloseReadiness.ts'
 import {
   decideVendorAssertedBound,
 } from '../billing/vendorAssertedBound.ts'
@@ -128,6 +132,17 @@ if (
   )
 }
 
+/**
+ * Set only by the unattended standing close.
+ *
+ * An operator naming a month is looking at it and may have a reason to settle
+ * something incomplete. The scheduled job is not looking at anything, so it
+ * checks that the month's data has actually arrived and been audited before it
+ * prices a single call.
+ */
+const requireMonthReady =
+  process.env.KAUDIT_CYCLE_CLOSE_REQUIRE_READY === 'true'
+
 const ssl = resolveDatabaseTls(config, process.env)
 const pool = mysql.createPool({
   host: config.database.host,
@@ -193,6 +208,29 @@ try {
      */
     if (mode === 'EXECUTE') {
       throw new Error('CYCLE_CLOSE_RATE_CARD_RULESET_BINDING_INVALID')
+    }
+  }
+  if (requireMonthReady) {
+    const readiness = decideMonthCloseReadiness(
+      await readMonthCloseState(pool, period),
+    )
+    if (!readiness.ready) {
+      /**
+       * Not an error. A month whose calls have not been uploaded, or whose
+       * audit has not finished, is simply not ready to be priced, and the
+       * standing job's whole job is to notice that instead of settling it at
+       * whatever the incomplete data happens to say.
+       */
+      process.stdout.write(`${JSON.stringify({
+        skipped: 'CYCLE_CLOSE_MONTH_NOT_READY',
+        cohort,
+        month: period.month,
+        ...readiness,
+        remedy:
+          'Upload the month and let the audit finish, or name the month explicitly to settle it deliberately.',
+      }, null, 2)}\n`)
+      await pool.end()
+      process.exit(0)
     }
   }
   const candidates = await listAcceptedAsBilledCandidates(

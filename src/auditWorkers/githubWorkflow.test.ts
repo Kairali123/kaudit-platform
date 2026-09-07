@@ -424,15 +424,22 @@ test('the no-recording close runs automatically, on ended months only', () => {
   assert.match(workflow, /- finalize-no-recording-auto/)
   assert.match(scheduledWorkflow, /mode: finalize-no-recording-auto/)
   assert.match(scheduledWorkflow, /cron: '23 2 \* \* \*'/)
-  // A month still receiving calls could settle one minutes before its
-  // recording arrives, so the sweep starts one month back and never touches
-  // the current month.
+  // The sweep starts one month back and never touches the current month.
   assert.match(workflow, /for back in 1 2; do/)
   assert.match(workflow, /date -u \+%Y-%m-01\) -\$\{back\} month/)
+  // But an ended month is NOT necessarily a loaded one. Calls are uploaded
+  // well after the month finishes and the audit runs later still, so a
+  // freshly-uploaded month reads as entirely no-recording and would settle at
+  // zero. Every unattended close must therefore check readiness first.
+  assert.equal(
+    workflow.match(/KAUDIT_CYCLE_CLOSE_REQUIRE_READY=true/g)?.length,
+    2,
+    'both standing closes must require a ready month',
+  )
   // Model-free, like every other cycle-close mode.
   assert.match(
     workflow,
-    /finalize-no-recording-auto"[\s\S]{0,900}unset OPENAI_API_KEY/,
+    /finalize-no-recording-auto"[\s\S]{0,1400}unset OPENAI_API_KEY/,
   )
   // A failing month must not be swallowed by the loop.
   assert.match(workflow, /npm run billing:cycle-close \|\| status=\$\?/)

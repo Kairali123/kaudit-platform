@@ -286,11 +286,15 @@ jobs:
               # supplied no recording for has no evidence to support a charge,
               # so it settles at INR 0.00.
               #
-              # ENDED months only. A month still receiving calls could settle a
-              # call minutes before its recording arrives; once the month is
-              # closed there is nothing further to wait for. Two months are
-              # swept rather than one so a late import is still picked up, and
-              # an already-settled call is simply not a candidate.
+              # ENDED months only, and only once their data has actually
+              # arrived. A month ending is NOT the same as a month being
+              # loaded: calls are uploaded well after the month finishes,
+              # sometimes a month or more later, and the audit runs later
+              # still. REQUIRE_READY makes each run check that before pricing
+              # anything -- without it a freshly-uploaded month reads as
+              # entirely no-recording and settles at zero. Two months are swept
+              # rather than one so a late import is still picked up, and an
+              # already-settled call is simply not a candidate.
               unset OPENAI_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
@@ -304,6 +308,7 @@ jobs:
                 KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
                 KAUDIT_CYCLE_CLOSE_COHORT=no-recording \
                 KAUDIT_CYCLE_CLOSE_BATCH=50000 \
+                KAUDIT_CYCLE_CLOSE_REQUIRE_READY=true \
                 npm run billing:cycle-close || status=$?
                 echo "::endgroup::"
               done
@@ -322,6 +327,11 @@ jobs:
               # The exhausted cohort is bounded in the CLI: if an implausible
               # share of a month's recording-backed calls landed there, the run
               # refuses instead of paying the vendor's number for all of them.
+              #
+              # REQUIRE_READY additionally holds the whole sweep off a month
+              # whose calls have not been uploaded or whose audit has not
+              # finished, because an ended month can be empty, half-loaded, or
+              # unaudited and a calendar cannot tell those apart.
               unset OPENAI_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
@@ -336,6 +346,7 @@ jobs:
                   KAUDIT_CYCLE_CLOSE_RATE_CARD_ID=rcv-2026-02-28-v1 \
                   KAUDIT_CYCLE_CLOSE_COHORT="$close_cohort" \
                   KAUDIT_CYCLE_CLOSE_BATCH=50000 \
+                  KAUDIT_CYCLE_CLOSE_REQUIRE_READY=true \
                   npm run billing:cycle-close || status=$?
                   echo "::endgroup::"
                 done
