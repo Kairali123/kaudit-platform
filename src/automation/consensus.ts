@@ -55,6 +55,12 @@ function projectedCharge(
       classification.lastBusinessRelevantCustomerExchangeMs ?? null,
     lastVerifiedInteractionMs:
       classification.lastVerifiedInteractionMs ?? null,
+    // Engine-validated facts only; without them every AGENT_FAILURE would
+    // price at zero regardless of the service actually delivered.
+    agentFailureMode: classification.agentFailureMode ?? null,
+    meaningfulServiceBeforeFailure:
+      classification.meaningfulServiceBeforeFailure === true,
+    failureStartMs: classification.failureStartMs ?? null,
   })
   return {
     decision,

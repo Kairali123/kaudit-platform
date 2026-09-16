@@ -20,6 +20,7 @@ function reviewedClassification(options: {
   proposed: ModelClassification['category']
   signals: ClassificationDecisionSignals
   customerSpoke?: boolean
+  agentBlockNumbers?: number[]
 }): ModelClassification {
   return {
     model: {
@@ -31,6 +32,7 @@ function reviewedClassification(options: {
     confidence: '0.90000000',
     customerBlockNumbers: options.customerSpoke ? [2] : [],
     unclearBlockNumbers: [],
+    agentBlockNumbers: options.agentBlockNumbers ?? [1],
     customerSpoke: options.customerSpoke ?? false,
     lastMeaningfulCustomerExchangeMs: options.customerSpoke ? 2_000 : null,
     remarks: 'Synthetic evidence-based rationale.',
@@ -51,7 +53,7 @@ const candidate: ReauditCandidate = {
 }
 
 test('engine version identifies the classification repair', () => {
-  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.6.5')
+  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.7.0')
 })
 
 test('merges fragments using the approved pause, duration, and character limits', () => {
@@ -394,6 +396,7 @@ test('voicemail remains voicemail when an evidence block is identified', () => {
       durationOutcome: 'appropriate',
       voicemailEvidence: 'leave_message_request',
     },
+    agentBlockNumbers: [],
   })
   raw.voicemailEvidenceBlockNumbers = [1]
 
@@ -424,6 +427,7 @@ test('a fixed recording-complete notice is affirmative voicemail evidence', () =
       durationOutcome: 'appropriate',
       voicemailEvidence: 'recording_notice',
     },
+    agentBlockNumbers: [],
   })
   raw.voicemailEvidenceBlockNumbers = [1]
 
@@ -471,6 +475,7 @@ test('post-stop behavior separates agent failure, excess duration, and a normal 
       reviewedClassification({
         proposed: 'CONNECT_NOT_FRUITFUL',
         customerSpoke: true,
+        agentBlockNumbers: [1, 3],
         signals: { ...base, postStopBehavior: item.behavior },
       }),
       blocks,
@@ -485,6 +490,7 @@ test('an appropriate close outranks an erroneous generic duration signal', () =>
     reviewedClassification({
       proposed: 'TIME_DURATION',
       customerSpoke: true,
+      agentBlockNumbers: [1, 3],
       signals: {
         counterpartyType: 'human',
         agentHandling: 'normal',
@@ -541,6 +547,7 @@ test('a standalone language preference is human speech, not AI to AI', () => {
       durationOutcome: 'appropriate',
       automationEvidence: 'screening_prompt',
     },
+    agentBlockNumbers: [1, 3],
   })
   raw.customerBlockNumbers = []
   raw.automationEvidenceBlockNumbers = [2]
@@ -1028,4 +1035,494 @@ test('baseline mismatch stops before OpenAI processing', async () => {
   })
   assert.equal(result.outcome, 'evidence_altered')
   assert.equal(calls, 0)
+})
+
+// ---------------------------------------------------------------------------
+// USER_SILENCE versus INACTIVE_CALL. Every transcript below is synthetic.
+// ---------------------------------------------------------------------------
+
+const SILENCE_SIGNALS: ClassificationDecisionSignals = {
+  counterpartyType: 'unclear',
+  agentHandling: 'unclear',
+  conversationOutcome: 'unclear',
+  durationOutcome: 'unclear',
+  stopIntent: 'none',
+  postStopBehavior: 'not_applicable',
+  successfulOutcome: 'none',
+  voicemailEvidence: 'none',
+  automationEvidence: 'none',
+  junkEvidence: 'none',
+  agentFailureMode: 'none',
+  meaningfulServiceBeforeFailure: false,
+}
+
+function classification(
+  overrides: Partial<ModelClassification> = {},
+): ModelClassification {
+  return {
+    model: {
+      provider: 'openai',
+      name: 'synthetic-classifier',
+      version: 'synthetic-v1',
+    },
+    category: 'INACTIVE_CALL',
+    confidence: '0.80000000',
+    customerBlockNumbers: [],
+    unclearBlockNumbers: [],
+    customerSpoke: false,
+    lastMeaningfulCustomerExchangeMs: null,
+    remarks: 'Synthetic evidence-based rationale.',
+    disputeRecommended: false,
+    decisionSignals: SILENCE_SIGNALS,
+    ...overrides,
+  }
+}
+
+test('unattributable background audio beside agent speech is user silence', () => {
+  // ASR junk, background noise and media-like text are the ABSENCE of a
+  // customer reply. They must never turn a call Saanvi actually worked into a
+  // zero-rated inactive call.
+  const result = validateClassification(
+    classification({ unclearBlockNumbers: [2, 3], agentBlockNumbers: [1] }),
+    [
+      {
+        number: 1,
+        startMs: 0,
+        endMs: 4_000,
+        text: 'Namaste, this is Saanvi calling from Kairali.',
+      },
+      { number: 2, startMs: 5_000, endMs: 9_000, text: '[music playing]' },
+      { number: 3, startMs: 10_000, endMs: 14_000, text: 'mm hmm tsk' },
+    ],
+    20_000,
+  )
+  assert.equal(result.category, 'USER_SILENCE')
+  assert.deepEqual(result.agentBlockNumbers, [1])
+  assert.deepEqual(result.unclearBlockNumbers, [2, 3])
+})
+
+test('inactive call needs no customer speech and no agent speech at all', () => {
+  const result = validateClassification(
+    classification({ unclearBlockNumbers: [1, 2] }),
+    [
+      { number: 1, startMs: 0, endMs: 2_000, text: '[static]' },
+      { number: 2, startMs: 3_000, endMs: 5_000, text: '...' },
+    ],
+    9_000,
+  )
+  assert.equal(result.category, 'INACTIVE_CALL')
+  assert.deepEqual(result.agentBlockNumbers, [])
+})
+
+test('stronger evidence still outranks the silence fallbacks', () => {
+  const voicemail = validateClassification(
+    classification({
+      category: 'INACTIVE_CALL',
+      agentBlockNumbers: [1],
+      voicemailEvidenceBlockNumbers: [2],
+      decisionSignals: {
+        ...SILENCE_SIGNALS,
+        counterpartyType: 'voicemail',
+        voicemailEvidence: 'leave_message_request',
+      },
+    }),
+    [
+      { number: 1, startMs: 0, endMs: 3_000, text: 'This is Saanvi from Kairali.' },
+      {
+        number: 2,
+        startMs: 4_000,
+        endMs: 8_000,
+        text: 'Please leave a message after the beep.',
+      },
+    ],
+    12_000,
+  )
+  assert.equal(voicemail.category, 'VOICEMAIL')
+
+  const automation = validateClassification(
+    classification({
+      category: 'INACTIVE_CALL',
+      agentBlockNumbers: [1],
+      automationEvidenceBlockNumbers: [2],
+      decisionSignals: {
+        ...SILENCE_SIGNALS,
+        counterpartyType: 'interactive_automation',
+        automationEvidence: 'menu_prompt',
+      },
+    }),
+    [
+      { number: 1, startMs: 0, endMs: 3_000, text: 'This is Saanvi from Kairali.' },
+      { number: 2, startMs: 4_000, endMs: 8_000, text: 'Press one for sales.' },
+    ],
+    12_000,
+  )
+  assert.equal(automation.category, 'AI_TO_AI')
+})
+
+test('a customer reply keeps the silence fallbacks out of the decision', () => {
+  const result = validateClassification(
+    classification({
+      category: 'CONNECT_NOT_FRUITFUL',
+      customerBlockNumbers: [2],
+      agentBlockNumbers: [1],
+      decisionSignals: {
+        ...SILENCE_SIGNALS,
+        counterpartyType: 'human',
+        agentHandling: 'normal',
+        conversationOutcome: 'no_outcome',
+      },
+    }),
+    [
+      { number: 1, startMs: 0, endMs: 3_000, text: 'This is Saanvi from Kairali.' },
+      { number: 2, startMs: 4_000, endMs: 6_000, text: 'Not interested, thanks.' },
+    ],
+    10_000,
+  )
+  assert.equal(result.category, 'CONNECT_NOT_FRUITFUL')
+})
+
+test('user silence charges the agent exchange, inactive charges nothing', () => {
+  const blocks = [
+    { number: 1, startMs: 0, endMs: 4_000, text: 'This is Saanvi from Kairali.' },
+    { number: 2, startMs: 6_000, endMs: 9_000, text: '[background noise]' },
+  ]
+  const silent = validateClassification(
+    classification({ unclearBlockNumbers: [2], agentBlockNumbers: [1] }),
+    blocks,
+    120_000,
+  )
+  assert.equal(silent.category, 'USER_SILENCE')
+  assert.equal(silent.lastMeaningfulAgentExchangeMs, 4_000)
+})
+
+// ---------------------------------------------------------------------------
+// AGENT_FAILURE: failure from the start versus failure mid-conversation.
+// ---------------------------------------------------------------------------
+
+const SERVED_BLOCKS = [
+  { number: 1, startMs: 0, endMs: 4_000, text: 'This is Saanvi from Kairali.' },
+  { number: 2, startMs: 5_000, endMs: 9_000, text: 'I want a treatment package.' },
+  {
+    number: 3,
+    startMs: 10_000,
+    endMs: 20_000,
+    text: 'Our panchakarma package runs for seven days.',
+  },
+  { number: 4, startMs: 30_000, endMs: 34_000, text: 'Hello? Are you there?' },
+  { number: 5, startMs: 40_000, endMs: 44_000, text: 'Hello? Hello?' },
+]
+
+function agentFailureClassification(
+  overrides: Partial<ModelClassification> = {},
+): ModelClassification {
+  return classification({
+    category: 'AGENT_FAILURE',
+    customerBlockNumbers: [2, 4, 5],
+    agentBlockNumbers: [1, 3],
+    decisionSignals: {
+      ...SILENCE_SIGNALS,
+      counterpartyType: 'human',
+      agentHandling: 'failed',
+      agentFailureMode: 'mid_conversation',
+      meaningfulServiceBeforeFailure: true,
+    },
+    agentFailureStartBlockNumber: 4,
+    ...overrides,
+  })
+}
+
+test('a mid-conversation failure keeps its validated boundary', () => {
+  const result = validateClassification(
+    agentFailureClassification(),
+    SERVED_BLOCKS,
+    60_000,
+  )
+  assert.equal(result.category, 'AGENT_FAILURE')
+  assert.equal(result.agentFailureMode, 'mid_conversation')
+  assert.equal(result.meaningfulServiceBeforeFailure, true)
+  assert.equal(result.failureStartMs, 30_000)
+  assert.equal(result.agentFailureStartBlockNumber, 4)
+  assert.deepEqual(result.agentBlockNumbers, [1, 3])
+})
+
+test('a failure with no service before the boundary collapses to start', () => {
+  // The customer speaks first and Saanvi never answers: nothing was served, so
+  // there is no chargeable period however the model labelled the failure.
+  const result = validateClassification(
+    classification({
+      category: 'AGENT_FAILURE',
+      customerBlockNumbers: [1, 2],
+      decisionSignals: {
+        ...SILENCE_SIGNALS,
+        counterpartyType: 'human',
+        agentHandling: 'failed',
+        agentFailureMode: 'mid_conversation',
+        meaningfulServiceBeforeFailure: true,
+      },
+      agentFailureStartBlockNumber: 2,
+    }),
+    [
+      { number: 1, startMs: 0, endMs: 3_000, text: 'Hello? Hello?' },
+      { number: 2, startMs: 4_000, endMs: 8_000, text: 'Can anyone hear me?' },
+    ],
+    30_000,
+  )
+  assert.equal(result.agentFailureMode, 'start')
+  assert.equal(result.meaningfulServiceBeforeFailure, false)
+  assert.equal(result.failureStartMs, null)
+})
+
+test('an unknown or absent failure block collapses to start', () => {
+  for (const agentFailureStartBlockNumber of [null, 0, 99, 1]) {
+    const result = validateClassification(
+      agentFailureClassification({ agentFailureStartBlockNumber }),
+      SERVED_BLOCKS,
+      60_000,
+    )
+    if (agentFailureStartBlockNumber === 1) {
+      // Block 1 begins at 0ms: there is no served period before it.
+      assert.equal(result.agentFailureMode, 'start')
+      continue
+    }
+    assert.equal(result.agentFailureMode, 'start')
+    assert.equal(result.failureStartMs, null)
+  }
+})
+
+test('a non-failure category carries no failure evidence at all', () => {
+  const result = validateClassification(
+    classification({
+      category: 'OK',
+      customerBlockNumbers: [2],
+      agentBlockNumbers: [1, 3],
+      agentFailureStartBlockNumber: 4,
+      decisionSignals: {
+        ...SILENCE_SIGNALS,
+        counterpartyType: 'human',
+        agentHandling: 'normal',
+        conversationOutcome: 'successful',
+        successfulOutcome: 'qualified',
+        agentFailureMode: 'mid_conversation',
+        meaningfulServiceBeforeFailure: true,
+      },
+    }),
+    SERVED_BLOCKS,
+    60_000,
+  )
+  assert.equal(result.category, 'OK')
+  assert.equal(result.agentFailureMode, null)
+  assert.equal(result.failureStartMs, null)
+  assert.equal(result.meaningfulServiceBeforeFailure, false)
+})
+
+test('an unsupported failure-mode signal is refused', () => {
+  assert.throws(
+    () =>
+      validateClassification(
+        agentFailureClassification({
+          decisionSignals: {
+            ...SILENCE_SIGNALS,
+            counterpartyType: 'human',
+            agentHandling: 'failed',
+            agentFailureMode: 'halfway' as never,
+          },
+        }),
+        SERVED_BLOCKS,
+        60_000,
+      ),
+    /unsupported agentFailureMode signal/,
+  )
+})
+
+test('the failure boundary is bounded by the decoded recording duration', () => {
+  const result = validateClassification(
+    agentFailureClassification(),
+    SERVED_BLOCKS,
+    12_000,
+  )
+  // The named block begins after the recording ends, so the bounded boundary
+  // leaves no served period and the failure is priced from the start.
+  assert.equal(result.agentFailureMode, 'mid_conversation')
+  assert.equal(result.failureStartMs, 12_000)
+})
+
+// ---------------------------------------------------------------------------
+// USER_SILENCE versus INACTIVE_CALL: positive Saanvi attribution only.
+// ---------------------------------------------------------------------------
+
+const INTRO_AND_NOISE = [
+  { number: 1, startMs: 0, endMs: 4_000, text: 'Namaste, this is Saanvi from Kairali.' },
+  { number: 2, startMs: 6_000, endMs: 9_000, text: '[music playing]' },
+  { number: 3, startMs: 10_000, endMs: 12_000, text: 'la la la' },
+]
+
+test('a Saanvi introduction with no reply is user silence', () => {
+  const result = validateClassification(
+    classification({ category: 'INACTIVE_CALL', agentBlockNumbers: [1] }),
+    INTRO_AND_NOISE.slice(0, 1),
+    20_000,
+  )
+  assert.equal(result.category, 'USER_SILENCE')
+  assert.deepEqual(result.agentBlockNumbers, [1])
+})
+
+test('only background, music, or ASR junk is an inactive call', () => {
+  // Nobody is attributed: the model proposed silence, but there is no
+  // positive Saanvi block, so it cannot be USER_SILENCE.
+  for (const unclearBlockNumbers of [[1, 2, 3], []]) {
+    const result = validateClassification(
+      classification({
+        category: 'USER_SILENCE',
+        unclearBlockNumbers,
+        agentBlockNumbers: [],
+      }),
+      [
+        { number: 1, startMs: 0, endMs: 2_000, text: '[background chatter]' },
+        { number: 2, startMs: 3_000, endMs: 5_000, text: '[music]' },
+        { number: 3, startMs: 6_000, endMs: 7_000, text: 'uhh mmm tk' },
+      ],
+      9_000,
+    )
+    assert.equal(result.category, 'INACTIVE_CALL')
+    assert.deepEqual(result.agentBlockNumbers, [])
+    assert.equal(result.lastMeaningfulAgentExchangeMs, null)
+  }
+})
+
+test('an unassigned block is never counted as Saanvi speech', () => {
+  // Block 3 is in no list at all. Before, the complement rule made it agent
+  // speech; now only block 1 counts.
+  const result = validateClassification(
+    classification({ unclearBlockNumbers: [2], agentBlockNumbers: [1] }),
+    INTRO_AND_NOISE,
+    20_000,
+  )
+  assert.deepEqual(result.agentBlockNumbers, [1])
+  assert.equal(result.lastMeaningfulAgentExchangeMs, 4_000)
+
+  const legacy = validateClassification(
+    classification({ unclearBlockNumbers: [2] }),
+    INTRO_AND_NOISE,
+    20_000,
+  )
+  assert.equal(legacy.category, 'INACTIVE_CALL')
+  assert.deepEqual(legacy.agentBlockNumbers, [])
+})
+
+test('agent blocks must be in range and disjoint from other evidence', () => {
+  const blocks = [
+    ...INTRO_AND_NOISE,
+    { number: 4, startMs: 13_000, endMs: 16_000, text: 'Please leave a message after the beep.' },
+    { number: 5, startMs: 17_000, endMs: 19_000, text: 'Press one for sales.' },
+  ]
+  const cases: Array<[Partial<ModelClassification>, RegExp]> = [
+    [{ agentBlockNumbers: [9] }, /supplied transcript blocks/],
+    [{ agentBlockNumbers: [0] }, /supplied transcript blocks/],
+    [{ agentBlockNumbers: [1.5] }, /supplied transcript blocks/],
+    [
+      {
+        category: 'CONNECT_NOT_FRUITFUL',
+        customerBlockNumbers: [2],
+        agentBlockNumbers: [1, 2],
+        decisionSignals: {
+          ...SILENCE_SIGNALS,
+          counterpartyType: 'human',
+          agentHandling: 'normal',
+          conversationOutcome: 'no_outcome',
+        },
+      },
+      /separate from customer/,
+    ],
+    [{ unclearBlockNumbers: [2], agentBlockNumbers: [1, 2] }, /separate from customer/],
+    [
+      {
+        agentBlockNumbers: [1, 4],
+        voicemailEvidenceBlockNumbers: [4],
+        decisionSignals: {
+          ...SILENCE_SIGNALS,
+          counterpartyType: 'voicemail',
+          voicemailEvidence: 'leave_message_request',
+        },
+      },
+      /separate from customer/,
+    ],
+    [
+      {
+        agentBlockNumbers: [1, 5],
+        automationEvidenceBlockNumbers: [5],
+        decisionSignals: {
+          ...SILENCE_SIGNALS,
+          counterpartyType: 'interactive_automation',
+          automationEvidence: 'menu_prompt',
+        },
+      },
+      /separate from customer/,
+    ],
+  ]
+  for (const [overrides, pattern] of cases) {
+    assert.throws(
+      () => validateClassification(classification(overrides), blocks, 30_000),
+      pattern,
+    )
+  }
+})
+
+test('repair drops contested agent labels instead of inventing Saanvi speech', () => {
+  const raw = classification({
+    category: 'USER_SILENCE',
+    unclearBlockNumbers: [2, 3],
+    agentBlockNumbers: [2, 3, 42],
+  })
+  assert.throws(() => validateClassification(raw, INTRO_AND_NOISE, 20_000))
+  const repaired = repairClassification(raw, INTRO_AND_NOISE)
+  assert.deepEqual(repaired.agentBlockNumbers, [])
+  const result = validateClassification(repaired, INTRO_AND_NOISE, 20_000)
+  assert.equal(result.category, 'INACTIVE_CALL')
+})
+
+test('a live audit of Saanvi plus unattributed noise charges agent speech only', async () => {
+  const segments = INTRO_AND_NOISE.map(({ startMs, endMs, text }) => ({
+    startMs,
+    endMs,
+    text,
+  }))
+  const run = async (agentBlockNumbers: number[]) =>
+    auditOneCall({
+      candidate,
+      allowedHosts: ['cdr-storage-recs.s3.ap-south-1.amazonaws.com'],
+      fetcher: {
+        async fetch() {
+          return {
+            ok: true,
+            status: 200,
+            bytes: Buffer.from('synthetic-audio'),
+            contentType: 'audio/ogg',
+          }
+        },
+      },
+      ai: {
+        transcriptionModel: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
+        async transcribe() {
+          return {
+            model: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
+            language: 'english',
+            durationMs: 20_000,
+            speechMs: 9_000,
+            text: segments.map((segment) => segment.text).join(' '),
+            segments,
+          }
+        },
+        async classify() {
+          return classification({ category: 'USER_SILENCE', agentBlockNumbers })
+        },
+      },
+    })
+  const silent = await run([1])
+  assert.equal(silent.analysis?.category, 'USER_SILENCE')
+  assert.equal(silent.analysis?.agentSpeechMs, 4_000)
+  assert.deepEqual(silent.classification?.agentBlockNumbers, [1])
+
+  const inactive = await run([])
+  assert.equal(inactive.analysis?.category, 'INACTIVE_CALL')
+  assert.equal(inactive.analysis?.agentSpeechMs, 0)
 })

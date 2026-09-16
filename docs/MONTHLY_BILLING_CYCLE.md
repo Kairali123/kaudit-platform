@@ -193,3 +193,4 @@ system-wide page and clearly states that the month selector does not scope it.
 | Persisted D-12 snapshot generator | Not implemented |
 | Authoritative monthly PDF/Excel email notification | Implemented; disabled until SMTP + reporting approval are configured |
 | Exact AI usage capture | Implemented for future calls after migration 0007; legacy usage unavailable |
+| Recurring late-recording correction | Implemented; an administrator uploads Task ID + Recording URL for calls KServe supplied without one, and only those tasks are audited and re-priced. See `docs/runbooks/LATE_RECORDING_CORRECTION.md` |

@@ -8,6 +8,8 @@ on:
     - cron: '23 2 * * *'
     # Daily close of ended months across every settleable cohort.
     - cron: '41 3 * * *'
+    # Hourly recovery for late-recording corrections whose dispatch was lost.
+    - cron: '17 * * * *'
 
 jobs:
   billing-audit:
@@ -39,4 +41,16 @@ jobs:
     with:
       system: billing
       mode: finalize-month-close-auto
+    secrets: inherit
+
+  # Finishes any late-recording correction batch that was accepted and never
+  # drained: a dispatch that failed, a host that died, a worker that lost its
+  # advisory lock. It discovers its own work from durable state and takes no
+  # batch handle, so an administrator never has to re-upload a correction.
+  late-recording-recover:
+    if: github.event.schedule == '17 * * * *'
+    uses: ./.github/workflows/audit-worker.yml
+    with:
+      system: billing
+      mode: late-recording-recover
     secrets: inherit

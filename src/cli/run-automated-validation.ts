@@ -5,35 +5,11 @@ import {
   collectAutomatedValidationCandidates,
   finalizeAutomatedFindingStates,
   loadPublishedRateCard,
-  persistAutomatedValidation,
 } from '../adapters/mysqlAutomatedValidation.ts'
 import { createOpenAiConsensusReviewer } from '../adapters/openaiConsensus.ts'
-import {
-  evaluateAutomatedConsensus,
-  AUTOMATED_VALIDATION_VERSION,
-} from '../automation/consensus.ts'
-import {
-  mergeTranscriptSegments,
-  validateClassification,
-} from '../reaudit/core.ts'
-import {
-  createOpenAiReaudit,
-  REAUDIT_CLASSIFIER_RULESET_SHA256,
-} from '../adapters/openaiReaudit.ts'
-import {
-  REAUDIT_CLASSIFIER_RULESET_VERSION,
-} from '../reaudit/core.ts'
-import {
-  canonicalJsonSha256,
-  type JsonValue,
-} from '../messaging/canonicalJson.ts'
-import { calculateVerifiedKServeCharge } from '../billing/calculateVerifiedCharge.ts'
-import { persistVerifiedBillingDecision } from '../adapters/mysqlVerifiedBilling.ts'
+import { runAutomatedValidation } from '../automation/validationRun.ts'
+import { createOpenAiReaudit } from '../adapters/openaiReaudit.ts'
 import { parseBillingMonth } from '../reporting/billingMonth.ts'
-import {
-  CATEGORY_CHARGE_POLICY_SHA256,
-  CATEGORY_CHARGE_POLICY_VERSION,
-} from '../billing/categoryChargePolicy.ts'
 
 function required(name: string): string {
   const value = process.env[name]?.trim()
@@ -112,179 +88,33 @@ async function main(): Promise<void> {
       selected: candidates.length,
       accepted: 0,
       unresolved: 0,
+      // In DRY-RUN these count what EXECUTE would write; nothing is written.
       finalBillingWritten: 0,
       unresolvedBillingWritten: 0,
       unresolvedReasons: {} as Record<string, number>,
     }
     for (const candidate of candidates) {
-      const blocks = mergeTranscriptSegments(candidate.segments)
-      const durationMismatch =
-        candidate.connectedDurationMs != null &&
-        Math.abs(
-          candidate.connectedDurationMs - candidate.recordedDurationMs,
-        ) > 5_000
-      const secondary = validateClassification(
-        await reviewer.classify({
-          blocks,
-          language: candidate.language,
-          recordedDurationMs: candidate.recordedDurationMs,
-          speechDurationMs: candidate.speechDurationMs,
-          connectedDurationMs: candidate.connectedDurationMs,
-          durationMismatch,
-        }),
-        blocks,
-        candidate.recordedDurationMs,
-        { durationMismatch },
-      )
-      let consensus = evaluateAutomatedConsensus({
-        primary: candidate.primary,
-        secondary,
-        recordedDurationMs: candidate.recordedDurationMs,
+      const outcome = await runAutomatedValidation(pool, {
+        candidate,
+        reviewer,
+        adjudicator,
+        rateCard,
+        correlationId: null,
+        decidedAt: new Date().toISOString(),
+        // DRY-RUN pays for the same second (and, for a lone category
+        // disagreement, third) opinion and computes the same outcome; it
+        // simply writes none of it.
+        dryRun: mode === 'DRY-RUN',
       })
-      let adjudication = null
-      if (
-        consensus.status === 'unresolved' &&
-        consensus.reasons.length === 1 &&
-        consensus.reasons[0] === 'CATEGORY_DISAGREEMENT'
-      ) {
-        adjudication = validateClassification(
-          await adjudicator.classify({
-            blocks,
-            language: candidate.language,
-            recordedDurationMs: candidate.recordedDurationMs,
-            speechDurationMs: candidate.speechDurationMs,
-            connectedDurationMs: candidate.connectedDurationMs,
-            durationMismatch,
-          }),
-          blocks,
-          candidate.recordedDurationMs,
-          { durationMismatch },
-        )
-        consensus = evaluateAutomatedConsensus({
-          primary: candidate.primary,
-          secondary,
-          adjudicator: adjudication,
-          recordedDurationMs: candidate.recordedDurationMs,
-        })
-      }
-      if (consensus.status === 'accepted') summary.accepted += 1
+      if (outcome.status === 'accepted') summary.accepted += 1
       else {
         summary.unresolved += 1
-        for (const reason of consensus.reasons) {
+        for (const reason of outcome.reasons) {
           summary.unresolvedReasons[reason] =
             (summary.unresolvedReasons[reason] || 0) + 1
         }
       }
-      if (mode === 'DRY-RUN') continue
-
-      const decidedAt = new Date().toISOString()
-      await persistAutomatedValidation(pool, {
-        candidate,
-        secondary,
-        adjudicator: adjudication,
-        consensus,
-        decidedAt,
-      })
-      const validationTraceSha256 = canonicalJsonSha256({
-        version: consensus.version,
-        threshold: consensus.threshold,
-        primary: {
-          model: candidate.primary.model,
-          category: candidate.primary.category,
-          confidence: candidate.primary.confidence,
-          customerSpoke: candidate.primary.customerSpoke,
-          lastMeaningfulCustomerExchangeMs:
-            candidate.primary.lastMeaningfulCustomerExchangeMs,
-          billableDurationMs: consensus.primaryBillableDurationMs,
-        },
-        secondary: {
-          model: secondary.model,
-          category: secondary.category,
-          confidence: secondary.confidence,
-          customerSpoke: secondary.customerSpoke,
-          lastMeaningfulCustomerExchangeMs:
-            secondary.lastMeaningfulCustomerExchangeMs,
-          billableDurationMs: consensus.secondaryBillableDurationMs,
-        },
-        adjudicator: adjudication
-          ? {
-              model: adjudication.model,
-              category: adjudication.category,
-              confidence: adjudication.confidence,
-              customerSpoke: adjudication.customerSpoke,
-              lastMeaningfulCustomerExchangeMs:
-                adjudication.lastMeaningfulCustomerExchangeMs,
-              billableDurationMs:
-                consensus.adjudicatorBillableDurationMs,
-            }
-          : null,
-        outcome: {
-          status: consensus.status,
-          reasons: consensus.reasons,
-        },
-      } as unknown as JsonValue)
-      const input = {
-        callId: candidate.callId,
-        auditRunId: candidate.auditRunId,
-        claimedDurationMs: candidate.claimedDurationMs,
-        connectedDurationMs: candidate.connectedDurationMs,
-        recordedDurationMs: candidate.recordedDurationMs,
-        speechDurationMs: candidate.speechDurationMs,
-        conversationAssessment:
-          consensus.selectedClassification?.customerSpoke
-          ? ('established' as const)
-          : ('no_meaningful_exchange' as const),
-        lastMeaningfulCustomerExchangeMs:
-          consensus.selectedClassification
-            ?.lastMeaningfulCustomerExchangeMs ?? null,
-        ...(consensus.selectedClassification &&
-        consensus.selectedChargeDecision
-          ? {
-              categoryCharge: {
-                category: consensus.selectedClassification.category,
-                serviceEndMs:
-                  consensus.selectedChargeDecision.serviceEndMs,
-                graceMs: consensus.selectedChargeDecision.graceMs,
-                policyCode:
-                  consensus.selectedChargeDecision.policyCode,
-                policyVersion: CATEGORY_CHARGE_POLICY_VERSION,
-                policySha256: CATEGORY_CHARGE_POLICY_SHA256,
-              },
-            }
-          : {}),
-        model:
-          consensus.selectedClassification?.model ??
-          candidate.primary.model,
-        classifierRulesetVersion:
-          REAUDIT_CLASSIFIER_RULESET_VERSION,
-        classifierRulesetSha256:
-          REAUDIT_CLASSIFIER_RULESET_SHA256,
-        evidence: candidate.evidence,
-        authority: {
-          calibrationVersion: AUTOMATED_VALIDATION_VERSION,
-          calibrationComplete: consensus.status === 'accepted',
-          validationMethod: 'automated_consensus' as const,
-          validationTraceSha256,
-          confidence: consensus.effectiveConfidence,
-          threshold: consensus.threshold,
-          language: candidate.language,
-          findingType:
-            consensus.selectedClassification?.category ??
-            candidate.primary.category,
-          sensitivityTier: 'K0' as const,
-          recheckAttempt: 1,
-          maximumRechecks: 3,
-        },
-        calculatedAt: decidedAt,
-      }
-      const billing = calculateVerifiedKServeCharge(input, rateCard)
-      await persistVerifiedBillingDecision(pool, {
-        input,
-        rateCard,
-        result: billing,
-        correlationId: null,
-      })
-      if (billing.status === 'final') {
+      if (outcome.billingStatus === 'final') {
         summary.finalBillingWritten += 1
       } else {
         summary.unresolvedBillingWritten += 1

@@ -23,6 +23,13 @@ on:
         required: false
         default: ''
         type: string
+      late_recording_batch_id:
+        description: >-
+          Opaque late-recording batch handle (lrb_...). The ONLY scope a
+          late-recording run receives; never a Task ID and never a URL.
+        required: false
+        default: ''
+        type: string
   workflow_dispatch:
     inputs:
       system:
@@ -41,9 +48,12 @@ on:
           - new
           - targeted
           - requested
+          - late-recording
+          - late-recording-recover
           - migration-0013
           - migration-0018
           - migration-0019
+          - migration-0020
           - migration-0015
           - migration-0017
           - migration-billing-read-indexes
@@ -75,6 +85,13 @@ on:
       diagnostic_month:
         description: YYYY-MM period for a read-only dashboard diagnostic
         required: false
+        type: string
+      late_recording_batch_id:
+        description: >-
+          Opaque late-recording batch handle (lrb_...). The ONLY scope a
+          late-recording run receives; never a Task ID and never a URL.
+        required: false
+        default: ''
         type: string
       rate_card_id:
         description: Rate card version id for publish-rate-card
@@ -135,6 +152,7 @@ jobs:
           AUDIT_MODE: ${{ inputs.mode }}
           DIAGNOSTIC_MONTH_INPUT: ${{ inputs.diagnostic_month }}
           MIGRATION_CONFIRMATION_INPUT: ${{ inputs.migration_confirmation }}
+          LATE_RECORDING_BATCH_ID_INPUT: ${{ inputs.late_recording_batch_id }}
           RATE_CARD_ID_INPUT: ${{ inputs.rate_card_id }}
           RATE_CARD_APPROVER_INPUT: ${{ inputs.rate_card_approver }}
         run: |
@@ -450,6 +468,22 @@ jobs:
               KAUDIT_MIGRATION_TABLE=kaudit_transcription_cache \
               KAUDIT_MIGRATION_FILE=0019_transcription_cache.sql \
               node scripts/apply-expand-migration.mjs
+            elif [[ "$AUDIT_MODE" == "migration-0020" ]]; then
+              # Creates the three late-recording correction control tables.
+              # Expand only: three CREATE TABLEs, nothing altered or removed,
+              # and no row of any existing table is read or written.
+              if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0020" ]]; then
+                exit 2
+              fi
+              unset OPENAI_API_KEY
+              unset KAUDIT_ALLOWED_RECORDING_HOSTS
+              unset KAUDIT_UNPOD_PROXY_BASE
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_MIGRATION_CONFIRM=APPLY_0020 \
+              KAUDIT_MIGRATION_CONFIRM_EXPECTED=APPLY_0020 \
+              KAUDIT_MIGRATION_TABLE=kaudit_late_recording_batch \
+              KAUDIT_MIGRATION_FILE=0020_late_recording_corrections.sql \
+              node scripts/apply-expand-migration.mjs
             elif [[ "$AUDIT_MODE" == "migration-0015" ]]; then
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0015" ]]; then
                 exit 2
@@ -491,6 +525,33 @@ jobs:
               KAUDIT_AUDIT_CONCURRENCY=1 \
               KAUDIT_AUDIT_WATCH=false \
               npm run audit:worker
+            elif [[ "$AUDIT_MODE" == "late-recording" ]]; then
+              # Recurring late-recording correction for ONE batch.
+              #
+              # The only scope this run receives is the opaque batch handle. A
+              # Task ID and a recording URL are never inputs here, never in the
+              # environment, and never in the log: the worker resolves the
+              # batch's items from the database itself.
+              if [[ ! "$LATE_RECORDING_BATCH_ID_INPUT" =~ ^lrb_[0-9a-f-]{36}$ ]]; then
+                exit 2
+              fi
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_LATE_RECORDING_MODE=EXECUTE \
+              KAUDIT_LATE_RECORDING_BATCH_ID="$LATE_RECORDING_BATCH_ID_INPUT" \
+              KAUDIT_LATE_RECORDING_BATCH=5 \
+              npm run latereco:worker
+            elif [[ "$AUDIT_MODE" == "late-recording-recover" ]]; then
+              # Scheduled recovery. Finds every batch that was accepted and
+              # never drained -- a failed dispatch, a dead host, a lost lock --
+              # and finishes it. No batch id is supplied because the run
+              # discovers its own work from durable state.
+              if [[ -n "$LATE_RECORDING_BATCH_ID_INPUT" ]]; then
+                exit 2
+              fi
+              unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
+              KAUDIT_LATE_RECORDING_MODE=EXECUTE \
+              KAUDIT_LATE_RECORDING_BATCH=5 \
+              npm run latereco:worker
             elif [[ "$AUDIT_MODE" == "recover-june-canary" ]]; then
               KAUDIT_AUDIT_MODE=EXECUTE \
               KAUDIT_AUDIT_BATCH=2 \

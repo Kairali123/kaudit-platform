@@ -108,8 +108,14 @@ export function parseAuditSystem(value: unknown): AuditSystem {
  * current caller changes shape. `requested` is the administrator-selected
  * Billing Audit re-audit: an exact, bounded, one-shot drain of the durable
  * request queue, allowed while the general billing queue is paused.
+ * `late-recording` is the recurring correction: an exact, bounded drain of one
+ * late-recording batch, scoped by an opaque batch handle and nothing else.
  */
-export const AUDIT_DISPATCH_MODES = ['ordinary', 'requested'] as const
+export const AUDIT_DISPATCH_MODES = [
+  'ordinary',
+  'requested',
+  'late-recording',
+] as const
 export type AuditDispatchMode = (typeof AUDIT_DISPATCH_MODES)[number]
 
 /**
@@ -129,7 +135,7 @@ export function parseAuditDispatch(
     throw new AuditWorkerControlError('audit dispatch mode is invalid')
   }
   const parsedMode = mode as AuditDispatchMode
-  if (parsedMode === 'requested' && parsedSystem !== 'billing') {
+  if (parsedMode !== 'ordinary' && parsedSystem !== 'billing') {
     throw new AuditWorkerControlError(
       'requested dispatch mode is Billing Audit only',
     )

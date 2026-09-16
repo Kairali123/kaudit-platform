@@ -71,6 +71,24 @@ import {
 import type { CycleImportService } from '../imports/types.ts'
 import { UsageImportValidationError } from '../imports/types.ts'
 import type { ImportAnalysisService } from '../imports/analysis.ts'
+import {
+  canonicalizeLateRecordingUrl,
+  LateRecordingError,
+  LATE_RECORDING_COMMIT_ROUTE,
+  LATE_RECORDING_PREVIEW_ROUTE,
+  LATE_RECORDING_STATUS_ROUTE,
+  MAX_LATE_RECORDING_FILE_BYTES,
+  parseLateRecordingCsv,
+  parseLateRecordingSubmission,
+  sourceFileSha256,
+  type LateRecordingCsvRow,
+  type LateRecordingRowDecision,
+} from '../lateRecording/corrections.ts'
+import {
+  commitLateRecordingBatch,
+  previewLateRecordingBatch,
+  readLateRecordingBatchProgress,
+} from '../adapters/mysqlLateRecordingCorrections.ts'
 import { verifyGasImportSignature } from '../imports/gasImportAuth.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
 import {
@@ -390,6 +408,7 @@ const API_ROUTES = new Set([
   '/api/v1/audit-call',
   '/api/v1/audit-audio',
   '/api/v1/imports',
+  LATE_RECORDING_STATUS_ROUTE,
   '/api/v1/users',
   CALL_AUDIT_REPORT_ROUTE,
   CALL_AUDIT_SETTINGS_ROUTE,
@@ -488,6 +507,20 @@ const IMPORT_WRITE_ROUTES = new Set([
 const IMPORT_ANALYSIS_ROUTES = new Set([
   '/api/v1/imports/analyze-usage',
   '/api/v1/imports/analyze-invoice',
+])
+
+/**
+ * The recurring late-recording correction upload. POST only, and deliberately
+ * NOT part of `IMPORT_WRITE_ROUTES`: those accept a signed Apps Script identity
+ * for the automated usage feed, and attaching evidence to an already-settled
+ * month is an authenticated ADMINISTRATOR action, never a machine one.
+ *
+ * Preview and commit are separate routes rather than one route with a flag, so
+ * "show me what this would do" cannot become "do it" through a mistyped body.
+ */
+const LATE_RECORDING_WRITE_ROUTES = new Set([
+  LATE_RECORDING_PREVIEW_ROUTE,
+  LATE_RECORDING_COMMIT_ROUTE,
 ])
 
 function userAgent(request: IncomingMessage): string | null {
@@ -1977,6 +2010,32 @@ async function apiResponse(
       parseCallAuditSettingsQuery(url.searchParams),
     )
   }
+  if (pathname === LATE_RECORDING_STATUS_ROUTE) {
+    /**
+     * The administrator's progress read.
+     *
+     * Scoped to ONE batch by its opaque handle. There is deliberately no
+     * "list every batch" read and no month-wide read: a page that could
+     * enumerate corrections would be a page that could enumerate which calls
+     * had evidence attached, and that is not something a browser needs.
+     */
+    const batchId = url.searchParams.get('batch')?.trim() || ''
+    if (!/^lrb_[0-9a-f-]{36}$/.test(batchId)) {
+      throw new LateRecordingError()
+    }
+    const progress = await readLateRecordingBatchProgress(
+      dependencies.pool,
+      batchId,
+    )
+    if (!progress) {
+      throw new LateRecordingError(
+        'LATE_RECORDING_BATCH_NOT_FOUND',
+        404,
+        'Late recording batch was not found',
+      )
+    }
+    return progress
+  }
   if (pathname === '/api/v1/imports') {
     if (!dependencies.imports) {
       // A runtime with no durable storage never advertises imports as enabled;
@@ -2039,6 +2098,12 @@ const BOUNDED_UNAVAILABLE_TITLES: Readonly<Record<string, string>> = {
   // column, a constraint, an amount — can reach a browser through this route.
   KSERVE_SETTLEMENT_UNAVAILABLE:
     'Monthly settlement is temporarily unavailable',
+  // One bounded title for every late-recording storage failure. The adapter
+  // has already dropped the driver's own message, so nothing about the cause —
+  // a column, a constraint, a call id, and above all a recording URL — can
+  // reach a browser through this route.
+  LATE_RECORDING_UNAVAILABLE:
+    'Late recording correction is temporarily unavailable',
 }
 
 /**
@@ -2104,6 +2169,17 @@ function apiAction(pathname: string): string {
   if (pathname === MANUAL_REAUDIT_RESUME_ROUTE) {
     return 'billing_reaudit.resume'
   }
+  // Named explicitly: the trailing-segment default would record attaching
+  // evidence to a settled month as the shapeless 'commit.read'.
+  if (pathname === LATE_RECORDING_PREVIEW_ROUTE) {
+    return 'late_recording.preview'
+  }
+  if (pathname === LATE_RECORDING_COMMIT_ROUTE) {
+    return 'late_recording.commit'
+  }
+  if (pathname === LATE_RECORDING_STATUS_ROUTE) {
+    return 'late_recording.status'
+  }
   return `${pathname.split('/').at(-1)}.read`
 }
 
@@ -2128,6 +2204,17 @@ function apiPermission(pathname: string): string {
   // decision, so it takes the admin-only money gate rather than the aggregate
   // metrics permission an ordinary operational user holds.
   if (pathname === KSERVE_SETTLEMENT_ROUTE) return 'billing:approve'
+  /**
+   * The late-recording correction supersedes a SETTLED month's calculations
+   * and spends on a model to do it. That is the money gate plus worker
+   * control, not the import permission an operator uploading usage holds; the
+   * commit handler additionally requires `audit:control` before it queues.
+   */
+  if (
+    pathname === LATE_RECORDING_PREVIEW_ROUTE ||
+    pathname === LATE_RECORDING_COMMIT_ROUTE ||
+    pathname === LATE_RECORDING_STATUS_ROUTE
+  ) return 'billing:approve'
   // Audit inspection, including the sanitized Call Audit report: administrator
   // only. Call Audit reporting shares the gate with the Billing Audit monitor
   // but stays a separate module with its own route, DTO and page.
@@ -2169,6 +2256,7 @@ function timingOperation(pathname: string): string {
     MANUAL_REAUDIT_WRITE_ROUTES.has(pathname) ||
     IMPORT_WRITE_ROUTES.has(pathname) ||
     IMPORT_ANALYSIS_ROUTES.has(pathname) ||
+    LATE_RECORDING_WRITE_ROUTES.has(pathname) ||
     KSERVE_SETTLEMENT_WRITE_ROUTES.has(pathname) ||
     CALL_AUDIT_SETTINGS_WRITE_ROUTES.has(pathname) ||
     CALL_AUDIT_RULE_TEST_ROUTES.has(pathname)
@@ -2223,6 +2311,9 @@ function cacheTtlMs(url: URL): number {
   // administrator save a correction and another keep seeing the superseded
   // amount as "finally paid" for the rest of the window.
   if (pathname === KSERVE_SETTLEMENT_ROUTE) return 0
+  // A batch in flight changes second by second, and an administrator watching
+  // it must never be shown a cached earlier state.
+  if (pathname === LATE_RECORDING_STATUS_ROUTE) return 0
   // The month catalog changes only when a new billing period is imported.
   // A one-minute bound removes repeat scans during navigation without allowing
   // an old default month to survive an operator workflow for long.
@@ -2353,10 +2444,14 @@ export function createEnterpriseDashboardServer(
     const isSettlementPost =
       request.method === 'POST' &&
       KSERVE_SETTLEMENT_WRITE_ROUTES.has(url.pathname)
+    const isLateRecordingPost =
+      request.method === 'POST' &&
+      LATE_RECORDING_WRITE_ROUTES.has(url.pathname)
     if (
       request.method === 'GET' &&
       (IMPORT_WRITE_ROUTES.has(url.pathname) ||
         IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
+        LATE_RECORDING_WRITE_ROUTES.has(url.pathname) ||
         CALL_AUDIT_RULE_TEST_ROUTES.has(url.pathname) ||
         MANUAL_REAUDIT_WRITE_ROUTES.has(url.pathname) ||
         url.pathname === CALL_AUDIT_RULE_ACTIVATE_ROUTE)
@@ -2379,7 +2474,8 @@ export function createEnterpriseDashboardServer(
       !isUserAdminPost &&
       !isAuditWorkerPost &&
       !isManualReauditPost &&
-      !isSettlementPost
+      !isSettlementPost &&
+      !isLateRecordingPost
     ) {
       problem(
         response,
@@ -2468,6 +2564,7 @@ export function createEnterpriseDashboardServer(
       MANUAL_REAUDIT_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
+      LATE_RECORDING_WRITE_ROUTES.has(url.pathname) ||
       MONTHLY_REPORT_DOWNLOADS.has(url.pathname) ||
       url.pathname === RESTRICTED_EXPORT_ROUTE ||
       APP_ROUTES.has(url.pathname) ||
@@ -3189,6 +3286,152 @@ export function createEnterpriseDashboardServer(
         sendJson(response, correlation, tested)
         return
       }
+      if (isLateRecordingPost) {
+        /**
+         * The recurring late-recording correction.
+         *
+         * Order matters and is structural:
+         *
+         *   1. `billing:approve` BEFORE a byte of the body is read. This
+         *      workflow attaches evidence to a SETTLED month and supersedes
+         *      its calculations; an operator who may upload usage must never
+         *      reach it.
+         *   2. A commit additionally requires `audit:control` and a working
+         *      dispatcher, checked BEFORE anything is written, so a deployment
+         *      that cannot start a worker refuses rather than attaching
+         *      evidence nothing will audit. A preview needs neither: it writes
+         *      nothing and starts nothing.
+         *   3. The month and the retry key come from headers and are validated
+         *      exactly; the CSV is bounded and parsed per row.
+         *   4. Every URL is canonicalized here and never returned. The receipt
+         *      carries row numbers, bounded codes, counts, and an opaque batch
+         *      handle.
+         *
+         * CSRF needs no token of its own: the session cookie is
+         * `SameSite=Strict`, so a cross-site form post arrives with no session
+         * at all and is refused as unauthenticated.
+         */
+        requirePermission(context, 'billing:approve')
+        const committing = url.pathname === LATE_RECORDING_COMMIT_ROUTE
+        if (committing) {
+          requirePermission(context, 'audit:control')
+          if (
+            !dependencies.auditWorkerDispatcher ||
+            dependencies.auditWorkerDispatcher.canDispatch?.(
+              'billing',
+              'late-recording',
+            ) === false
+          ) {
+            throw Object.assign(
+              new Error('Audit worker start is not configured'),
+              { code: 'AUDIT_WORKER_DISPATCH_NOT_CONFIGURED', status: 503 },
+            )
+          }
+        }
+        const submitted = parseLateRecordingSubmission({
+          month: request.headers['x-kaudit-month'],
+          idempotencyKey: request.headers['x-kaudit-idempotency-key'],
+        })
+        const period = parseBillingMonth(submitted.billMonth)
+        if (!period) throw new LateRecordingError()
+        const bytes = await readRequestBody(
+          request,
+          MAX_LATE_RECORDING_FILE_BYTES,
+        )
+        const parsed = parseLateRecordingCsv(bytes)
+        /**
+         * Canonicalization happens once, here, and the canonical URL travels
+         * only as far as the adapter. A row whose URL is not an allowlisted
+         * HTTPS S3 object becomes a bounded rejection carrying its row number
+         * and a code -- never the value that failed.
+         */
+        const carried: LateRecordingRowDecision[] = parsed.rejections.map(
+          (rejection) => ({
+            rowNumber: rejection.rowNumber,
+            outcome: 'rejected' as const,
+            code: rejection.code,
+          }),
+        )
+        const rows: Array<LateRecordingCsvRow & { canonicalUrl: string }> = []
+        for (const row of parsed.rows) {
+          const canonical = canonicalizeLateRecordingUrl(
+            row.submittedUrl,
+            dependencies.allowedRecordingHosts ?? [],
+          )
+          if ('code' in canonical) {
+            carried.push({
+              rowNumber: row.rowNumber,
+              outcome: 'rejected',
+              code: canonical.code,
+            })
+            continue
+          }
+          rows.push({ ...row, canonicalUrl: canonical.canonicalUrl })
+        }
+        const receipt = committing
+          ? await commitLateRecordingBatch(dependencies.pool, {
+              period,
+              rows,
+              carriedRejections: carried,
+              sourceFileSha256: sourceFileSha256(bytes),
+              idempotencyKey: submitted.idempotencyKey,
+              // Provenance comes from the authenticated session, never from
+              // the request, and neither value is echoed back.
+              requestedByUserId: context.user.id,
+              correlationId: correlation,
+              requestedAt: new Date(),
+            })
+          : await previewLateRecordingBatch(dependencies.pool, {
+              period,
+              rows,
+              carriedRejections: carried,
+            })
+        const batchId =
+          'batchId' in receipt ? (receipt.batchId as string | null) : null
+        if (
+          committing &&
+          batchId &&
+          ('outcome' in receipt ? receipt.outcome : null) !== 'nothing_to_do'
+        ) {
+          /**
+           * Dispatch carries the OPAQUE batch handle and nothing else. No Task
+           * ID and no URL ever reaches a workflow input, a dispatch payload,
+           * or a runner's environment.
+           */
+          try {
+            await dependencies.auditWorkerDispatcher?.dispatch(
+              'billing',
+              'late-recording',
+              // The OPAQUE batch handle, and the only scope the run receives.
+              { batchId },
+            )
+          } catch {
+            // The batch is durable and the scheduled recovery run finds it, so
+            // a failed dispatch delays the correction rather than losing it.
+            process.stdout.write(
+              `${JSON.stringify({
+                event: 'late_recording_dispatch_deferred',
+              })}\n`,
+            )
+          }
+        }
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          committing ? 'late_recording.commit' : 'late_recording.preview',
+          'late_recording_batch',
+          // The batch's own handle, or nothing. Never a call, artifact, or
+          // audit-run id, and never a Task ID or a URL.
+          batchId,
+          'audit_operations',
+        )
+        if (committing) apiCache.clear()
+        sendJson(response, correlation, receipt)
+        return
+      }
       if (isImportPost) {
         requirePermission(context, 'import:write')
         const isAnalysis = IMPORT_ANALYSIS_ROUTES.has(url.pathname)
@@ -3663,6 +3906,14 @@ export function createEnterpriseDashboardServer(
        * driver message exists on the error to leak.
        */
       const reauditFailure = error instanceof ManualReauditError
+      /**
+       * A refused late-recording correction logs its own bounded code. Every
+       * one of them names a rule, never a value: no task reference, retry key,
+       * internal id, driver message, and above all no recording URL exists on
+       * the error to leak. Without this it would be logged as INTERNAL_ERROR,
+       * which would bury a routine administrator mistake among real faults.
+       */
+      const lateRecordingFailure = error instanceof LateRecordingError
       const shaped = error as {
         status?: number
         code?: string
@@ -3686,7 +3937,7 @@ export function createEnterpriseDashboardServer(
           : statementTimeout
             ? 'QUERY_TIMEOUT'
             : userAdminFailure || settlementFailure || reauditFailure ||
-              boundedUnavailableFailure
+              lateRecordingFailure || boundedUnavailableFailure
             ? shaped.code
             : 'INTERNAL_ERROR',
         driverCode:

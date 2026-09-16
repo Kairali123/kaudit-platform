@@ -22,7 +22,7 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.6.5'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.7.0'
 
 /**
  * The engine FAMILY, for readers asking "was this call audited by our
@@ -40,7 +40,7 @@ export const REAUDIT_ENGINE_FAMILY = 'kairali-independent-reaudit/'
 if (!REAUDIT_ENGINE_VERSION.startsWith(REAUDIT_ENGINE_FAMILY)) {
   throw new Error('Reaudit engine version must belong to its engine family')
 }
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.8.5'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.9.0'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
@@ -158,6 +158,7 @@ const DECISION_SIGNAL_VALUES = {
     'prank_or_illegitimate_purpose',
     'none',
   ],
+  agentFailureMode: ['none', 'start', 'mid_conversation'],
 } as const
 
 function validateDecisionSignals(
@@ -172,13 +173,22 @@ function validateDecisionSignals(
         name === 'junkEvidence' ||
         name === 'stopIntent' ||
         name === 'postStopBehavior' ||
-        name === 'successfulOutcome'
+        name === 'successfulOutcome' ||
+        name === 'agentFailureMode'
       ) continue
       throw new Error(`Classifier returned an unsupported ${name} signal`)
     }
-    if (!(allowed as readonly string[]).includes(value)) {
+    if (!(allowed as readonly string[]).includes(value as string)) {
       throw new Error(`Classifier returned an unsupported ${name} signal`)
     }
+  }
+  if (
+    signals.meaningfulServiceBeforeFailure !== undefined &&
+    typeof signals.meaningfulServiceBeforeFailure !== 'boolean'
+  ) {
+    throw new Error(
+      'Classifier returned an unsupported meaningfulServiceBeforeFailure signal',
+    )
   }
 }
 
@@ -284,6 +294,32 @@ export function resolveReviewedCategory(options: {
   ) {
     throw new Error('Junk evidence requires the junk-call category')
   }
+  /**
+   * No meaningful customer speech: Saanvi spoke, or nobody did.
+   *
+   * Everything with stronger evidence has already returned above -- affirmative
+   * voicemail, affirmative interactive automation, and every branch that needs
+   * a human counterparty, which cannot reach here because a human signal with
+   * no customer block is refused outright. What is left is exactly two facts,
+   * and they are told apart by ONE question: did Saanvi produce at least one
+   * valid speech block?
+   *
+   * If she did, a person was called, the agent talked, and nobody answered:
+   * that is USER_SILENCE, and it stays USER_SILENCE whatever the model
+   * proposed. Background audio, blocks the model could not attribute,
+   * media-like transcription, and ASR junk are all absence of a customer reply
+   * -- never evidence that the call itself was inactive.
+   *
+   * INACTIVE_CALL is reserved for the genuinely empty case: no meaningful
+   * customer speech AND no valid Saanvi speech either.
+   *
+   * A durable legacy result that carries no agent-block count cannot answer the
+   * question, so it is left with the category it was stored with rather than
+   * being reclassified on a guess.
+   */
+  if (options.customerBlockCount === 0 && options.agentBlockCount !== undefined) {
+    return options.agentBlockCount > 0 ? 'USER_SILENCE' : 'INACTIVE_CALL'
+  }
   if (
     signals.counterpartyType === 'human' &&
     signals.successfulOutcome !== undefined &&
@@ -378,6 +414,77 @@ export function mergeTranscriptSegments(
   }
   if (current) result.push({ number: result.length + 1, ...current })
   return result
+}
+
+/**
+ * Where an AGENT_FAILURE begins, and whether anything was actually served
+ * before it.
+ *
+ * The model may point at the boundary; it never decides chargeability. This
+ * function re-derives the two facts money depends on from the ATTRIBUTED
+ * blocks, and fails closed: anything missing, out of range, or contradicted by
+ * the transcript collapses to `start`, which the charge policy prices at zero
+ * seconds and INR 0.
+ *
+ * `mid_conversation` survives only when all of these hold together:
+ *   * the model proposed it,
+ *   * the named block exists and begins after the recording starts, and
+ *   * BOTH a customer block and a Saanvi block end at or before that boundary,
+ *     which is what "meaningful service before the failure" means as a fact
+ *     rather than as an assertion.
+ */
+export function resolveAgentFailureEvidence(options: {
+  category: ModelClassification['category']
+  blocks: NaturalSpeechBlock[]
+  customerBlockNumbers: readonly number[]
+  agentBlockNumbers: readonly number[]
+  proposedMode: ClassificationDecisionSignals['agentFailureMode']
+  proposedBlockNumber: number | null | undefined
+  recordedDurationMs: number
+}): {
+  mode: 'start' | 'mid_conversation' | null
+  failureStartMs: number | null
+  meaningfulServiceBeforeFailure: boolean
+  blockNumber: number | null
+} {
+  const none = {
+    mode: null,
+    failureStartMs: null,
+    meaningfulServiceBeforeFailure: false,
+    blockNumber: null,
+  } as const
+  if (options.category !== 'AGENT_FAILURE') return none
+  const failedFromStart = {
+    mode: 'start',
+    failureStartMs: null,
+    meaningfulServiceBeforeFailure: false,
+    blockNumber: null,
+  } as const
+  if (options.proposedMode !== 'mid_conversation') return failedFromStart
+  const block = options.blocks.find(
+    (candidate) => candidate.number === options.proposedBlockNumber,
+  )
+  if (!block) return failedFromStart
+  const failureStartMs = Math.min(block.startMs, options.recordedDurationMs)
+  if (!Number.isSafeInteger(failureStartMs) || failureStartMs <= 0) {
+    return failedFromStart
+  }
+  const endsBefore = (numbers: readonly number[]): boolean =>
+    options.blocks.some(
+      (candidate) =>
+        numbers.includes(candidate.number) &&
+        candidate.endMs <= failureStartMs,
+    )
+  const meaningfulServiceBeforeFailure =
+    endsBefore(options.customerBlockNumbers) &&
+    endsBefore(options.agentBlockNumbers)
+  if (!meaningfulServiceBeforeFailure) return failedFromStart
+  return {
+    mode: 'mid_conversation',
+    failureStartMs,
+    meaningfulServiceBeforeFailure: true,
+    blockNumber: block.number,
+  }
 }
 
 export function validateClassification(
@@ -480,6 +587,40 @@ export function validateClassification(
       'Voicemail evidence blocks must be separate from customer and unclear speech',
     )
   }
+  /**
+   * Saanvi's blocks are POSITIVE attribution only: the classifier must name
+   * them. A block nobody claimed -- background audio, music, ASR noise -- is
+   * not agent speech, so it can never turn an empty call into USER_SILENCE.
+   * An absent list (a result that predates the field) attributes nothing.
+   */
+  const rawAgentBlockNumbers = [...new Set(raw.agentBlockNumbers ?? [])]
+  if (
+    rawAgentBlockNumbers.some(
+      (value) => !Number.isInteger(value) || value < 1 || value > maxBlock,
+    )
+  ) {
+    throw new Error('Agent speech blocks must be supplied transcript blocks')
+  }
+  if (
+    rawAgentBlockNumbers.some(
+      (number) =>
+        rawCustomerBlockNumbers.includes(number) ||
+        unclearBlocks.has(number) ||
+        voicemailEvidenceBlocks.has(number) ||
+        automationEvidenceBlocks.has(number) ||
+        junkEvidenceBlockNumbers.includes(number),
+    )
+  ) {
+    throw new Error(
+      'Agent speech blocks must be separate from customer, unclear, and system evidence',
+    )
+  }
+  // A deterministic customer cue outranks the model's role guess, exactly as
+  // it outranks an unclear label above.
+  const agentBlockNumbers = normalizeBlocks(rawAgentBlockNumbers).filter(
+    (number) => !customerBlocks.has(number),
+  )
+  const agentBlockSet = new Set(agentBlockNumbers)
   // The model identifies roles; the engine owns the resulting time fact. This
   // avoids rejecting a valid role assignment because a model repeated a
   // displayed, rounded timestamp that differed from the source block by a few
@@ -489,14 +630,10 @@ export function validateClassification(
     .map((block) => Math.min(block.endMs, recordedDurationMs))
   const customerSpoke = customerEnds.length > 0
   const last = customerEnds.length > 0 ? Math.max(...customerEnds) : null
+  // The same positive list answers the charge endpoint and the
+  // silence-versus-inactive split, and is persisted for re-checking.
   const agentEnds = blocks
-    .filter(
-      (block) =>
-        !customerBlocks.has(block.number) &&
-        !unclearBlocks.has(block.number) &&
-        !voicemailEvidenceBlocks.has(block.number) &&
-        !automationEvidenceBlocks.has(block.number),
-    )
+    .filter((block) => agentBlockSet.has(block.number))
     .map((block) => Math.min(block.endMs, recordedDurationMs))
   const voicemailEnds = blocks
     .filter((block) => voicemailEvidenceBlocks.has(block.number))
@@ -530,19 +667,28 @@ export function validateClassification(
     if (customerBlockNumbers.length > 0) {
       throw new Error('User-silence result cannot contain customer speech')
     }
-    const agentBlockCount = blocks.filter(
-      (block) =>
-        !customerBlocks.has(block.number) &&
-        !unclearBlocks.has(block.number) &&
-        !voicemailEvidenceBlocks.has(block.number) &&
-        !automationEvidenceBlocks.has(block.number),
-    ).length
-    if (agentBlockCount === 0) {
+    if (agentBlockNumbers.length === 0) {
       throw new Error(
         'User-silence result requires positively identified agent speech',
       )
     }
   }
+  if (category === 'INACTIVE_CALL' && agentBlockNumbers.length > 0) {
+    // The split is the whole point of the reviewed rule above: valid Saanvi
+    // speech with no customer reply is silence, never an inactive call.
+    throw new Error(
+      'Inactive-call result cannot contain positively identified agent speech',
+    )
+  }
+  const agentFailure = resolveAgentFailureEvidence({
+    category,
+    blocks,
+    customerBlockNumbers,
+    agentBlockNumbers,
+    proposedMode: decisionSignals?.agentFailureMode,
+    proposedBlockNumber: raw.agentFailureStartBlockNumber ?? null,
+    recordedDurationMs,
+  })
   return {
     ...raw,
     category,
@@ -563,6 +709,12 @@ export function validateClassification(
       businessEnds.length > 0 ? Math.max(...businessEnds) : null,
     lastVerifiedInteractionMs:
       verifiedEnds.length > 0 ? Math.max(...verifiedEnds) : null,
+    agentBlockNumbers,
+    agentFailureMode: agentFailure.mode,
+    agentFailureStartBlockNumber: agentFailure.blockNumber,
+    failureStartMs: agentFailure.failureStartMs,
+    meaningfulServiceBeforeFailure:
+      agentFailure.meaningfulServiceBeforeFailure,
     remarks:
       decisionSignals?.counterpartyType === 'voicemail' &&
       category === 'USER_SILENCE'
@@ -615,12 +767,16 @@ export function repairClassification(
   const voicemailEvidenceText = evidenceText(voicemailEvidenceBlockNumbers)
   const automationEvidenceText = evidenceText(automationEvidenceBlockNumbers)
   const junkEvidenceText = evidenceText(junkEvidenceBlockNumbers)
-  const agentBlockCount = blocks.filter(
-    (block) =>
-      !customer.has(block.number) &&
-      !unclear.has(block.number) &&
-      !systemEvidence.has(block.number),
-  ).length
+  // Contested blocks lose their agent label: only uncontradicted, positive
+  // attribution survives repair.
+  const agentBlockNumbers = numbers(raw.agentBlockNumbers).filter(
+    (number) =>
+      !customer.has(number) &&
+      !unclear.has(number) &&
+      !systemEvidence.has(number) &&
+      !junkEvidenceBlockNumbers.includes(number),
+  )
+  const agentBlockCount = agentBlockNumbers.length
 
   const counterpartyType = voicemailEvidenceBlockNumbers.length > 0
     ? 'voicemail' as const
@@ -719,6 +875,7 @@ export function repairClassification(
     voicemailEvidenceBlockNumbers,
     automationEvidenceBlockNumbers,
     junkEvidenceBlockNumbers,
+    agentBlockNumbers,
     businessRelevantCustomerBlockNumbers: numbers(
       raw.businessRelevantCustomerBlockNumbers,
     ).filter((number) => customer.has(number)),
@@ -731,25 +888,13 @@ function speechByRole(
   classification: ModelClassification,
 ): { customerSpeechMs: number; agentSpeechMs: number } {
   const customer = new Set(classification.customerBlockNumbers)
-  const unclear = new Set(classification.unclearBlockNumbers)
-  const voicemailEvidence = new Set(
-    classification.voicemailEvidenceBlockNumbers ?? [],
-  )
-  const automationEvidence = new Set(
-    classification.automationEvidenceBlockNumbers ?? [],
-  )
+  const agent = new Set(classification.agentBlockNumbers ?? [])
   let customerSpeechMs = 0
   let agentSpeechMs = 0
   for (const block of blocks) {
     const duration = Math.max(0, block.endMs - block.startMs)
     if (customer.has(block.number)) customerSpeechMs += duration
-    else if (
-      !unclear.has(block.number) &&
-      !voicemailEvidence.has(block.number) &&
-      !automationEvidence.has(block.number)
-    ) {
-      agentSpeechMs += duration
-    }
+    else if (agent.has(block.number)) agentSpeechMs += duration
   }
   return { customerSpeechMs, agentSpeechMs }
 }
@@ -975,6 +1120,12 @@ export async function auditOneCall(options: {
         classification.lastBusinessRelevantCustomerExchangeMs ?? null,
       lastVerifiedInteractionMs:
         classification.lastVerifiedInteractionMs ?? null,
+      // Engine-decided, never the model's claim. The policy still fails closed
+      // on its own if any of the three contradict each other.
+      agentFailureMode: classification.agentFailureMode ?? null,
+      meaningfulServiceBeforeFailure:
+        classification.meaningfulServiceBeforeFailure === true,
+      failureStartMs: classification.failureStartMs ?? null,
     })
     analysis = {
       category: classification.category,
@@ -1016,6 +1167,7 @@ export async function auditOneCall(options: {
             confidence: '1.00000000',
             customerBlockNumbers: [],
             unclearBlockNumbers: [],
+            agentBlockNumbers: [],
             customerSpoke: false,
             lastMeaningfulCustomerExchangeMs: null,
             remarks: analysis.remarks,

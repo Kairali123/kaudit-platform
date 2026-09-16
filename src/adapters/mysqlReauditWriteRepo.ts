@@ -61,6 +61,9 @@ function decisionSignalsJson(
     voicemailEvidence: signals.voicemailEvidence ?? null,
     automationEvidence: signals.automationEvidence ?? null,
     junkEvidence: signals.junkEvidence ?? null,
+    agentFailureMode: signals.agentFailureMode ?? null,
+    meaningfulServiceBeforeFailure:
+      signals.meaningfulServiceBeforeFailure ?? null,
   }
 }
 
@@ -574,6 +577,16 @@ export function createMysqlReauditWriteRepo(
                 analysis.chargeableServiceEndMs,
               appliedBillingGraceMs:
                 analysis.appliedBillingGraceMs,
+              // The silence/inactive split and the agent-failure boundary are
+              // the two decisions that move money without moving a duration,
+              // so the evidence behind them is stored, not re-derived later.
+              agentBlockNumbers: classification.agentBlockNumbers ?? [],
+              agentFailureMode: classification.agentFailureMode ?? null,
+              meaningfulServiceBeforeFailure:
+                classification.meaningfulServiceBeforeFailure === true,
+              failureStartMs: classification.failureStartMs ?? null,
+              agentFailureStartBlockNumber:
+                classification.agentFailureStartBlockNumber ?? null,
             }),
           ],
         )
@@ -644,6 +657,13 @@ export function createMysqlReauditWriteRepo(
                 classification.automationEvidenceBlockNumbers ?? [],
               junkEvidenceBlockNumbers:
                 classification.junkEvidenceBlockNumbers ?? [],
+              agentBlockNumbers: classification.agentBlockNumbers ?? [],
+              agentFailureMode: classification.agentFailureMode ?? null,
+              meaningfulServiceBeforeFailure:
+                classification.meaningfulServiceBeforeFailure === true,
+              failureStartMs: classification.failureStartMs ?? null,
+              agentFailureStartBlockNumber:
+                classification.agentFailureStartBlockNumber ?? null,
               recordedDurationMs: analysis.recordedDurationMs,
               speechDurationMs: analysis.speechDurationMs,
               conversationEndMs:

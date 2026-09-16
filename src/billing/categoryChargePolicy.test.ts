@@ -1,8 +1,10 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  AGENT_FAILURE_MID_CONVERSATION_GRACE_MS,
   resolveCategoryCharge,
   VOICEMAIL_GRACE_MS,
+  type CategoryChargeEvidence,
 } from './categoryChargePolicy.ts'
 import type { ReauditCategory } from '../reaudit/types.ts'
 
@@ -75,4 +77,90 @@ test('incorrect duration uses the last independently verified interaction', () =
     charge('INCORRECT_CALL_DURATION').adjustedChargeableDurationMs,
     110_000,
   )
+})
+
+// ---------------------------------------------------------------------------
+// AGENT_FAILURE: zero everywhere except one exactly-specified shape.
+// Every fixture below is synthetic.
+// ---------------------------------------------------------------------------
+
+function agentFailure(
+  overrides: Partial<CategoryChargeEvidence> = {},
+): ReturnType<typeof resolveCategoryCharge> {
+  return resolveCategoryCharge({
+    category: 'AGENT_FAILURE',
+    recordedDurationMs: 180_000,
+    lastCustomerExchangeMs: 40_000,
+    lastAgentExchangeMs: 50_000,
+    lastVoicemailExchangeMs: null,
+    lastBusinessRelevantCustomerExchangeMs: null,
+    lastVerifiedInteractionMs: 50_000,
+    agentFailureMode: 'mid_conversation',
+    meaningfulServiceBeforeFailure: true,
+    failureStartMs: 60_000,
+    ...overrides,
+  })
+}
+
+test('a mid-conversation agent failure charges the served period plus 30s', () => {
+  const result = agentFailure()
+  assert.equal(result.policyCode, 'AGENT_FAILURE_MID_CONVERSATION_PLUS_30S')
+  assert.equal(result.serviceEndMs, 60_000)
+  assert.equal(result.graceMs, AGENT_FAILURE_MID_CONVERSATION_GRACE_MS)
+  assert.equal(result.graceMs, 30_000)
+  assert.equal(result.adjustedChargeableDurationMs, 90_000)
+})
+
+test('a failure from the start is zero seconds and zero money', () => {
+  for (const overrides of [
+    { agentFailureMode: 'start' as const },
+    { agentFailureMode: null },
+    {},
+  ]) {
+    const result = resolveCategoryCharge({
+      category: 'AGENT_FAILURE',
+      recordedDurationMs: 180_000,
+      lastCustomerExchangeMs: 40_000,
+      lastAgentExchangeMs: 50_000,
+      lastVoicemailExchangeMs: null,
+      lastBusinessRelevantCustomerExchangeMs: null,
+      lastVerifiedInteractionMs: 50_000,
+      ...overrides,
+    })
+    assert.equal(result.policyCode, 'MANAGEMENT_ZERO_CATEGORY')
+    assert.equal(result.graceMs, 0)
+    assert.equal(result.adjustedChargeableDurationMs, 0)
+  }
+})
+
+test('a mid-conversation claim without meaningful service fails closed to zero', () => {
+  const result = agentFailure({ meaningfulServiceBeforeFailure: false })
+  assert.equal(result.policyCode, 'MANAGEMENT_ZERO_CATEGORY')
+  assert.equal(result.adjustedChargeableDurationMs, 0)
+})
+
+test('a missing, zero, or out-of-range boundary fails closed to zero', () => {
+  for (const failureStartMs of [null, 0, -1, 180_001, 1.5]) {
+    const result = agentFailure({ failureStartMs })
+    assert.equal(result.policyCode, 'MANAGEMENT_ZERO_CATEGORY')
+    assert.equal(result.adjustedChargeableDurationMs, 0)
+  }
+})
+
+test('the mid-conversation charge is still capped by the recording', () => {
+  const result = agentFailure({
+    recordedDurationMs: 70_000,
+    failureStartMs: 60_000,
+  })
+  assert.equal(result.adjustedChargeableDurationMs, 70_000)
+})
+
+test('no second grace is ever added after the failure boundary', () => {
+  // The served period through the boundary plus exactly one 30s grace, never
+  // the last agent exchange, the last customer exchange, or both.
+  const result = agentFailure({
+    lastAgentExchangeMs: 170_000,
+    lastCustomerExchangeMs: 165_000,
+  })
+  assert.equal(result.adjustedChargeableDurationMs, 90_000)
 })

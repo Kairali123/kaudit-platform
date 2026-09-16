@@ -43,3 +43,22 @@ test('the page exposes the stored endpoint, grace, and adjusted duration', async
   assert.match(page, /durations\.appliedBillingGraceMs/)
   assert.match(page, /durations\.adjustedChargeableMs/)
 })
+
+test('an agent failure explains why a zero-rated category carried a charge', async () => {
+  const [api, page] = await Promise.all([
+    readFile(path.join(root, 'apps/web/src/lib/api.ts'), 'utf8'),
+    readFile(
+      path.join(root, 'apps/web/src/pages/AuditCallDetailPage.tsx'),
+      'utf8',
+    ),
+  ])
+
+  // AGENT_FAILURE is the one zero-rated category whose charge can be non-zero,
+  // so the evidence behind that is shown rather than left to be inferred.
+  assert.match(api, /mode: 'start' \| 'mid_conversation'/)
+  assert.match(api, /meaningfulServiceBeforeFailure: boolean/)
+  assert.match(api, /failureStartMs: number \| null/)
+  assert.match(page, /data\.agentFailure\.mode === 'mid_conversation'/)
+  assert.match(page, /data\.agentFailure\.meaningfulServiceBeforeFailure/)
+  assert.match(page, /seconds\(data\.agentFailure\.failureStartMs\)/)
+})

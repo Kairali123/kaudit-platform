@@ -301,7 +301,18 @@ test('re-audit evidence persists the category charge policy decision', async () 
     assert.match(document.categoryChargePolicyVersion, /^management-category-charge\//)
     assert.match(document.categoryChargePolicySha256, /^[a-f0-9]{64}$/)
   }
-  assert.deepEqual(findingSignals.decisionSignals, SUCCESS.classification?.decisionSignals)
+  // The durable record normalizes every absent signal to null, including the
+  // agent-failure pair, so a reader never has to tell "not reported" apart
+  // from "field did not exist when this row was written".
+  assert.deepEqual(findingSignals.decisionSignals, {
+    ...SUCCESS.classification?.decisionSignals,
+    agentFailureMode: null,
+    meaningfulServiceBeforeFailure: null,
+  })
+  assert.deepEqual(findingSignals.agentBlockNumbers, [])
+  assert.equal(findingSignals.agentFailureMode, null)
+  assert.equal(findingSignals.failureStartMs, null)
+  assert.equal(findingSignals.meaningfulServiceBeforeFailure, false)
   assert.deepEqual(findingSignals.customerBlockNumbers, [1])
   assert.deepEqual(findingSignals.automationEvidenceBlockNumbers, [])
   assert.deepEqual(findingSignals.junkEvidenceBlockNumbers, [])

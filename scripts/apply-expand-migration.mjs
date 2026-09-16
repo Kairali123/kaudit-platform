@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs'
 import mysql from 'mysql2/promise'
+import { planCreateTables } from './expand-migration-plan.mjs'
 
 /**
  * Applies ONE expand-only migration, named by the environment.
@@ -151,12 +152,12 @@ function statementsFrom(sql) {
   return applicable
 }
 
-async function tableExists(connection) {
+async function tableExists(connection, table = TABLE) {
   const [rows] = await connection.query(
     `SELECT COUNT(*) AS present
        FROM information_schema.TABLES
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
-    [TABLE],
+    [table],
   )
   return Number(rows[0]?.present ?? 0) > 0
 }
@@ -176,8 +177,27 @@ try {
   stage = 'connect'
   connection = await mysql.createConnection(connectionOptions())
   stage = 'inspect'
+  const createTables = statements
+    .map((statement) => statement.match(
+      /^CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`([a-z0-9_]+)`/i,
+    )?.[1] ?? null)
+    .filter(Boolean)
+  const existingTables = []
+  for (const table of createTables) {
+    if (await tableExists(connection, table)) existingTables.push(table)
+  }
+  const createPlan = planCreateTables(statements, existingTables)
   const existed = await tableExists(connection)
-  if (!existed) {
+  if (createPlan) {
+    if (createPlan.tables[0] !== TABLE) {
+      throw new Error('unexpected:primary-table-mismatch')
+    }
+    for (const { statement } of createPlan.missing) {
+      stage = 'apply'
+      await connection.query(statement)
+      applied += 1
+    }
+  } else if (!existed) {
     for (const statement of statements) {
       stage = 'apply'
       await connection.query(statement)
@@ -185,17 +205,23 @@ try {
     }
   }
   stage = 'verify'
-  const present = await tableExists(connection)
+  const verifiedTables = createPlan?.tables ?? [TABLE]
+  const verification = []
+  for (const table of verifiedTables) {
+    if (await tableExists(connection, table)) verification.push(table)
+  }
+  const present = verification.length === verifiedTables.length
   if (!present) throw new Error('verify:table-absent')
   process.stdout.write(`${JSON.stringify({
     event: 'expand_migration',
     table: TABLE,
+    tables: verifiedTables,
     existedBefore: existed,
     statementsApplied: applied,
     present,
     // Applying it twice must be a no-op, not an error: an operator who is
     // unsure whether it ran can simply run it again.
-    outcome: existed ? 'already-present' : 'created',
+    outcome: applied === 0 ? 'already-present' : 'created',
   }, null, 2)}\n`)
 } catch (error) {
   const code = error instanceof Error ? error.message : 'unknown'

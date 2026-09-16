@@ -25,6 +25,10 @@ import {
   CONSENSUS_REVIEWER_VERSION,
 } from './openaiConsensus.ts'
 import { insertAiUsageEvent } from './mysqlAiUsage.ts'
+import {
+  mergeTranscriptSegments,
+  resolveAgentFailureEvidence,
+} from '../reaudit/core.ts'
 
 interface CandidateRow extends RowDataPacket {
   call_id: string
@@ -46,6 +50,7 @@ interface CandidateRow extends RowDataPacket {
   connected_duration_ms: number | string | null
   claimed_duration_ms: number | string | null
   metrics_json: unknown
+  signal_values_json: unknown
 }
 
 interface SegmentRow extends RowDataPacket {
@@ -83,6 +88,88 @@ function metricsRecord(value: unknown): Record<string, unknown> {
 function optionalMs(value: unknown): number | null {
   const parsed = Number(value)
   return Number.isSafeInteger(parsed) && parsed >= 0 ? parsed : null
+}
+
+function blockNumbers(value: unknown): number[] {
+  return Array.isArray(value)
+    ? value.filter((item): item is number => Number.isSafeInteger(item))
+    : []
+}
+
+/**
+ * The persisted primary's AGENT_FAILURE facts, re-derived rather than trusted.
+ *
+ * The stored mode and boundary block are fed back through the same engine
+ * rule the live audit used, against the stored transcript and role
+ * attributions. The result survives only if it reproduces the persisted
+ * boundary AND the persisted charge decision; anything missing, legacy, or
+ * contradictory collapses to `start`, which prices at zero.
+ */
+export function persistedAgentFailureFacts(options: {
+  category: ModelClassification['category']
+  metrics: Record<string, unknown>
+  signals: Record<string, unknown>
+  segments: TranscriptSegment[]
+  recordedDurationMs: number
+}): Pick<
+  ModelClassification,
+  | 'agentFailureMode'
+  | 'meaningfulServiceBeforeFailure'
+  | 'failureStartMs'
+  | 'agentFailureStartBlockNumber'
+> {
+  const { metrics } = options
+  if (options.category !== 'AGENT_FAILURE') {
+    return {
+      agentFailureMode: null,
+      meaningfulServiceBeforeFailure: false,
+      failureStartMs: null,
+      agentFailureStartBlockNumber: null,
+    }
+  }
+  const start = {
+    agentFailureMode: 'start' as const,
+    meaningfulServiceBeforeFailure: false,
+    failureStartMs: null,
+    agentFailureStartBlockNumber: null,
+  }
+  if (
+    metrics.agentFailureMode !== 'mid_conversation' ||
+    metrics.meaningfulServiceBeforeFailure !== true ||
+    metrics.categoryChargePolicyCode !==
+      'AGENT_FAILURE_MID_CONVERSATION_PLUS_30S'
+  ) {
+    return start
+  }
+  let derived: ReturnType<typeof resolveAgentFailureEvidence>
+  try {
+    derived = resolveAgentFailureEvidence({
+      category: 'AGENT_FAILURE',
+      blocks: mergeTranscriptSegments(options.segments),
+      customerBlockNumbers: blockNumbers(options.signals.customerBlockNumbers),
+      agentBlockNumbers: blockNumbers(metrics.agentBlockNumbers),
+      proposedMode: 'mid_conversation',
+      proposedBlockNumber: optionalMs(metrics.agentFailureStartBlockNumber),
+      recordedDurationMs: options.recordedDurationMs,
+    })
+  } catch {
+    return start
+  }
+  const persistedStartMs = optionalMs(metrics.failureStartMs)
+  if (
+    derived.mode !== 'mid_conversation' ||
+    derived.failureStartMs == null ||
+    derived.failureStartMs !== persistedStartMs ||
+    derived.failureStartMs !== optionalMs(metrics.chargeableServiceEndMs)
+  ) {
+    return start
+  }
+  return {
+    agentFailureMode: 'mid_conversation',
+    meaningfulServiceBeforeFailure: true,
+    failureStartMs: derived.failureStartMs,
+    agentFailureStartBlockNumber: derived.blockNumber,
+  }
 }
 
 export interface AutomatedValidationCandidate {
@@ -132,8 +219,22 @@ export async function collectAutomatedValidationCandidates(
     start: string
     end: string
     limit: number
+    /**
+     * Optional EXACT scope: validate only these internal calls.
+     *
+     * Absent, the month is the scope and nothing changes for the ordinary
+     * run. Present, the month predicate still applies and this narrows it
+     * further, so a caller that validates a named set -- a late-recording
+     * correction batch -- cannot reach a call it was not given. An empty
+     * array selects nothing rather than everything.
+     */
+    callIds?: readonly string[]
   },
 ): Promise<AutomatedValidationCandidate[]> {
+  if (options.callIds?.length === 0) return []
+  const callScope = options.callIds
+    ? ` AND c.id IN (${options.callIds.map(() => '?').join(',')})`
+    : ''
   const [rows] = await pool.execute<CandidateRow[]>(
     `SELECT
        c.id AS call_id,
@@ -153,6 +254,7 @@ export async function collectAutomatedValidationCandidates(
        ma.decoded_duration_ms AS recorded_duration_ms,
        ma.speech_ms AS speech_duration_ms,
        ma.metrics_json,
+       finding.signal_values_json,
        ROUND(connected.quantity_decimal * 1000)
          AS connected_duration_ms,
        ROUND(vendor_minutes.minutes_decimal * 60000)
@@ -183,7 +285,7 @@ export async function collectAutomatedValidationCandidates(
       AND vendor_minutes.provider_sku =
             'vendor_asserted_billed_minutes'
       AND vendor_minutes.is_final = 1
-     WHERE c.billing_period_date BETWEEN ? AND ?
+     WHERE c.billing_period_date BETWEEN ? AND ?${callScope}
        AND c.latest_audit_run_id IS NOT NULL
        AND NOT EXISTS (
          SELECT 1
@@ -220,7 +322,12 @@ export async function collectAutomatedValidationCandidates(
        )
      ORDER BY ref.external_id
      LIMIT ?`,
-    [options.start, options.end, options.limit],
+    [
+      options.start,
+      options.end,
+      ...(options.callIds ?? []),
+      options.limit,
+    ],
   )
   const result: AutomatedValidationCandidate[] = []
   for (const row of rows) {
@@ -241,6 +348,7 @@ export async function collectAutomatedValidationCandidates(
     const transcriptSha256 = canonicalJsonSha256(
       segments as unknown as JsonValue,
     )
+    const recordedDurationMs = Number(row.recorded_duration_ms)
     result.push({
       callId: row.call_id,
       callReference: row.call_reference,
@@ -248,7 +356,7 @@ export async function collectAutomatedValidationCandidates(
       artifactId: row.artifact_id,
       transcriptId: row.transcript_id,
       language: row.language,
-      recordedDurationMs: Number(row.recorded_duration_ms),
+      recordedDurationMs,
       speechDurationMs: Number(row.speech_duration_ms),
       connectedDurationMs:
         row.connected_duration_ms == null
@@ -283,6 +391,14 @@ export async function collectAutomatedValidationCandidates(
           row.category === 'INCORRECT_CALL_DURATION'
             ? serviceEndMs
             : null,
+        agentBlockNumbers: blockNumbers(metrics.agentBlockNumbers),
+        ...persistedAgentFailureFacts({
+          category: row.category,
+          metrics,
+          signals: metricsRecord(row.signal_values_json),
+          segments,
+          recordedDurationMs,
+        }),
         remarks: '',
         disputeRecommended: false,
       },
@@ -302,6 +418,27 @@ export async function collectAutomatedValidationCandidates(
     })
   }
   return result
+}
+
+/** The engine-validated failure facts one consensus output was priced on. */
+/** Omitted entirely for other categories so their trace bytes are unchanged. */
+export function agentFailureTrace(classification: ModelClassification): {
+  agentFailure?: {
+    mode: 'start' | 'mid_conversation' | null
+    meaningfulServiceBeforeFailure: boolean
+    failureStartMs: number | null
+  }
+} {
+  return classification.category === 'AGENT_FAILURE'
+    ? {
+        agentFailure: {
+          mode: classification.agentFailureMode ?? null,
+          meaningfulServiceBeforeFailure:
+            classification.meaningfulServiceBeforeFailure === true,
+          failureStartMs: classification.failureStartMs ?? null,
+        },
+      }
+    : {}
 }
 
 export async function persistAutomatedValidation(
@@ -330,6 +467,7 @@ export async function persistAutomatedValidation(
       customerSpoke: candidate.primary.customerSpoke,
       lastMeaningfulCustomerExchangeMs:
         candidate.primary.lastMeaningfulCustomerExchangeMs,
+      ...agentFailureTrace(candidate.primary),
       billableDurationMs: consensus.primaryBillableDurationMs,
     },
     secondary: {
@@ -341,6 +479,7 @@ export async function persistAutomatedValidation(
       customerSpoke: secondary.customerSpoke,
       lastMeaningfulCustomerExchangeMs:
         secondary.lastMeaningfulCustomerExchangeMs,
+      ...agentFailureTrace(secondary),
       billableDurationMs: consensus.secondaryBillableDurationMs,
     },
     adjudicator: adjudicator
@@ -351,6 +490,7 @@ export async function persistAutomatedValidation(
           customerSpoke: adjudicator.customerSpoke,
           lastMeaningfulCustomerExchangeMs:
             adjudicator.lastMeaningfulCustomerExchangeMs,
+          ...agentFailureTrace(adjudicator),
           billableDurationMs:
             consensus.adjudicatorBillableDurationMs,
         }

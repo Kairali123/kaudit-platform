@@ -23,6 +23,7 @@ import type {
   VerifiedBillingResult,
 } from './types.ts'
 import {
+  AGENT_FAILURE_MID_CONVERSATION_GRACE_MS,
   CATEGORY_CHARGE_POLICY_CODES,
   CATEGORY_CHARGE_POLICY_SHA256,
   CATEGORY_CHARGE_POLICY_VERSION,
@@ -168,14 +169,29 @@ function validateInput(input: VerifiedBillingInput): void {
     }
     const zeroCategory = [
       'INACTIVE_CALL',
-      'AGENT_FAILURE',
       'AI_CONVERSATION_HANDLING',
       'NETWORK_FAILURE_TELECOM',
     ].includes(categoryCharge.category)
+    const zeroShape =
+      categoryCharge.policyCode === 'MANAGEMENT_ZERO_CATEGORY' &&
+      categoryCharge.serviceEndMs === 0 &&
+      categoryCharge.graceMs === 0
+    const failure = categoryCharge.agentFailure
     const structurallyValid = zeroCategory
-      ? categoryCharge.policyCode === 'MANAGEMENT_ZERO_CATEGORY' &&
-        categoryCharge.serviceEndMs === 0 &&
-        categoryCharge.graceMs === 0
+      ? zeroShape
+      : categoryCharge.category === 'AGENT_FAILURE'
+        ? // Exactly two shapes: from the start (or unsupported) is zero; a
+          // validated mid-conversation failure charges its service period
+          // through the failure boundary plus exactly 30 seconds.
+          (zeroShape && failure?.mode !== 'mid_conversation') ||
+          (categoryCharge.policyCode ===
+            'AGENT_FAILURE_MID_CONVERSATION_PLUS_30S' &&
+            failure?.mode === 'mid_conversation' &&
+            failure.meaningfulServiceBeforeFailure === true &&
+            categoryCharge.serviceEndMs > 0 &&
+            failure.failureStartMs === categoryCharge.serviceEndMs &&
+            categoryCharge.graceMs ===
+              AGENT_FAILURE_MID_CONVERSATION_GRACE_MS)
       : categoryCharge.category === 'AI_TO_AI'
         ? categoryCharge.policyCode === 'AI_TO_AI_GRACE_ONLY' &&
           categoryCharge.serviceEndMs === 0 &&

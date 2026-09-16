@@ -17,11 +17,11 @@ const CATEGORY_RULEBOOK: Record<ReauditCategory, string> = {
   TIME_DURATION:
     'Call duration is inappropriate for the conversation outcome: it ends too early or continues without customer value.',
   AGENT_FAILURE:
-    'The AI misunderstands, stops, repeats, gives incorrect information, misses required questions, or calls after a do-not-call request.',
+    'The AI misunderstands, stops, repeats, gives incorrect information, misses required questions, or calls after a do-not-call request. Report separately whether the failure was present from the start or began part-way through a real conversation.',
   CONNECT_NOT_FRUITFUL:
     'A person answered but there was no meaningful outcome: busy, not interested, callback request, early hang-up, or badly handled language mismatch.',
   INACTIVE_CALL:
-    'There is little or no meaningful interaction after connection, including long silence or background noise.',
+    'Neither the called person nor Saanvi produced any valid speech: no meaningful customer speech AND no identifiable Saanvi speech.',
   INCORRECT_CALL_DURATION:
     'Vendor-reported duration materially differs from independently decoded recording duration.',
   AI_CONVERSATION_HANDLING:
@@ -32,7 +32,7 @@ const CATEGORY_RULEBOOK: Record<ReauditCategory, string> = {
   NETWORK_FAILURE_TELECOM:
     'Telecom/network audio problems caused distortion, one-way audio, or a dropped conversation.',
   USER_SILENCE:
-    'A person picked up but never responded while the AI agent spoke.',
+    'Saanvi produced at least one valid speech block and there was no meaningful customer speech at all.',
   JUNK_CALL:
     'A test, spam, or clearly illegitimate interaction with no genuine customer purpose.',
   OK: 'Normal, legitimate and properly handled two-way customer conversation.',
@@ -58,9 +58,15 @@ category when a more specific rule below matches:
    assistant disclosure, or screening prompt in a non-Saanvi block. A language
    choice, short human reply, accent, unclear audio, or synthetic-sounding voice
    is never enough. A one-way voicemail greeting is VOICEMAIL.
-3. When Saanvi speaks and the called person gives no response at all, choose
-   USER_SILENCE. Any human reply, including hello, wrong number, busy, callback,
-   or not interested, means USER_SILENCE is not allowed.
+3. When Saanvi speaks and the called person gives no meaningful response at
+   all, choose USER_SILENCE. Any human reply, including hello, wrong number,
+   busy, callback, or not interested, means USER_SILENCE is not allowed.
+   Background audio, music, ringing, an unclear block, media-like or
+   song-like transcription, and ASR noise are NOT a customer response and NOT
+   evidence that the call was inactive. INACTIVE_CALL is only for a transcript
+   with no meaningful customer speech AND no identifiable Saanvi speech at all.
+   If even one block is Saanvi's, the answer is USER_SILENCE, never
+   INACTIVE_CALL.
 4. When a human says they are busy, asks for a callback, declines, or asks to
    end, distinguish what happens next. Continued qualification or sales
    questions are AGENT_FAILURE. Acknowledging the stop but extending the call
@@ -84,6 +90,15 @@ category when a more specific rule below matches:
 9. A human stop, defer, wrong-number, busy, or decline response followed by an
    appropriate Saanvi close is CONNECT_NOT_FRUITFUL when no successful outcome
    occurred. A vendor-duration difference never changes that quality category.
+10. For AGENT_FAILURE, report WHERE the failure begins. Use start when Saanvi
+   never connected, never introduced herself, failed before delivering any
+   meaningful service, or connected and provided no introduction or service at
+   all. Use mid_conversation ONLY when a genuine two-way conversation with real
+   service was already under way and the failure begins part-way through it;
+   name the first failing transcript block in agent_failure_start_block_number.
+   The deterministic engine re-derives whether service really preceded that
+   block and decides every rupee; an unsupported mid_conversation claim is
+   simply discarded.
 
 REFERENCE DECISIONS (SYNTHETIC)
 - Saanvi introduces herself and receives no human response: USER_SILENCE.
@@ -99,7 +114,14 @@ REFERENCE DECISIONS (SYNTHETIC)
 - Qualification or handoff completes before a later deferral: OK.
 - A normal completed two-way exchange with no independent defect: OK.
 - A customer repeatedly says hello while Saanvi never meaningfully responds:
-  AGENT_FAILURE.
+  AGENT_FAILURE, mode start, because no service was ever delivered.
+- Saanvi answers questions normally for a while and then stops responding or
+  repeats endlessly: AGENT_FAILURE, mode mid_conversation, with the first
+  failing block named.
+- Saanvi introduces herself and only background audio, music, or unintelligible
+  noise follows: USER_SILENCE, not INACTIVE_CALL.
+- Neither Saanvi nor the called person produces identifiable speech:
+  INACTIVE_CALL.
 - A customer gives a language preference and no successful outcome follows:
   CONNECT_NOT_FRUITFUL, not AI_TO_AI.
 
@@ -135,6 +157,8 @@ CATEGORY GUARDRAILS
 - USER_SILENCE requires at least one positively identified Saanvi block and zero
   customer blocks. Never use USER_SILENCE when the customer speaks but Saanvi is
   silent or stops responding.
+- INACTIVE_CALL requires zero customer blocks AND zero positively identified
+  Saanvi blocks. If a Saanvi block exists, USER_SILENCE is the answer.
 - When customer speech continues and Saanvi gives no substantive response after
   it begins, use AGENT_FAILURE by default.
 - Use NETWORK_FAILURE_TELECOM instead only when the transcript contains explicit
@@ -185,6 +209,23 @@ Before proposing a category, extract these observable facts independently:
 - junk_evidence: test_call, spam_or_scam, or prank_or_illegitimate_purpose only
   when an explicit supporting block exists. Otherwise none. Put only those
   supporting blocks in junk_evidence_block_numbers.
+- agent_block_numbers: every block that is positively Saanvi's own speech.
+  Never include background audio, music, ringing, unclear or unintelligible
+  blocks, ASR noise, customer speech, or voicemail/automation evidence. A block
+  you cannot attribute belongs in unclear_block_numbers or in no list at all;
+  it is never counted as Saanvi.
+- agent_failure_mode: none unless the category is AGENT_FAILURE. start when the
+  failure was present from the beginning -- never connected, never introduced,
+  failed before any meaningful service, or connected with no introduction or
+  service. mid_conversation only when meaningful two-way service was already
+  under way and the failure begins part-way through it.
+- meaningful_service_before_failure: true only when a real customer exchange and
+  a real Saanvi response both completed BEFORE the failing block. The engine
+  re-derives this from the attributed blocks and its own answer is the one that
+  counts.
+- agent_failure_start_block_number: the first block at which the failure
+  begins, or 0 when agent_failure_mode is not mid_conversation. It must be a
+  block number from the supplied transcript.
 
 The deterministic engine applies reviewed precedence to these signals. Do not
 alter a signal to justify the proposed category. A vendor-versus-recording
@@ -221,7 +262,7 @@ export const REAUDIT_CLASSIFIER_RULESET_SHA256 = canonicalJsonSha256({
   model: REAUDIT_CLASSIFICATION_MODEL,
   prompt: REAUDIT_CLASSIFIER_PROMPT,
   categories: REAUDIT_CATEGORIES,
-  outputSchemaVersion: '8',
+  outputSchemaVersion: '9',
 } as unknown as JsonValue)
 
 export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
@@ -238,6 +279,10 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
         items: { type: 'integer', minimum: 1 },
       },
       unclear_block_numbers: {
+        type: 'array',
+        items: { type: 'integer', minimum: 1 },
+      },
+      agent_block_numbers: {
         type: 'array',
         items: { type: 'integer', minimum: 1 },
       },
@@ -331,6 +376,15 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
           'none',
         ],
       },
+      agent_failure_mode: {
+        type: 'string',
+        enum: ['none', 'start', 'mid_conversation'],
+      },
+      meaningful_service_before_failure: { type: 'boolean' },
+      // 0 means "no mid-conversation boundary". The strict schema has no
+      // nullable integer, and the engine treats any number that is not a
+      // supplied block as no boundary at all.
+      agent_failure_start_block_number: { type: 'integer', minimum: 0 },
       remarks: { type: 'string', maxLength: 1200 },
       dispute_recommended: { type: 'boolean' },
     },
@@ -339,6 +393,7 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
       'confidence',
       'customer_block_numbers',
       'unclear_block_numbers',
+      'agent_block_numbers',
       'voicemail_evidence_block_numbers',
       'automation_evidence_block_numbers',
       'junk_evidence_block_numbers',
@@ -353,6 +408,9 @@ export const REAUDIT_CLASSIFIER_OUTPUT_SCHEMA = {
       'voicemail_evidence',
       'automation_evidence',
       'junk_evidence',
+      'agent_failure_mode',
+      'meaningful_service_before_failure',
+      'agent_failure_start_block_number',
       'remarks',
       'dispute_recommended',
     ],
@@ -493,6 +551,7 @@ ${transcript}`,
         confidence: number
         customer_block_numbers: number[]
         unclear_block_numbers: number[]
+        agent_block_numbers: number[]
         voicemail_evidence_block_numbers: number[]
         automation_evidence_block_numbers: number[]
         junk_evidence_block_numbers: number[]
@@ -543,6 +602,9 @@ ${transcript}`,
           | 'spam_or_scam'
           | 'prank_or_illegitimate_purpose'
           | 'none'
+        agent_failure_mode: 'none' | 'start' | 'mid_conversation'
+        meaningful_service_before_failure: boolean
+        agent_failure_start_block_number: number
         remarks: string
         dispute_recommended: boolean
       }
@@ -560,6 +622,7 @@ ${transcript}`,
         confidence: fixedConfidence(raw.confidence),
         customerBlockNumbers: raw.customer_block_numbers,
         unclearBlockNumbers: raw.unclear_block_numbers,
+        agentBlockNumbers: raw.agent_block_numbers,
         voicemailEvidenceBlockNumbers:
           raw.voicemail_evidence_block_numbers,
         automationEvidenceBlockNumbers:
@@ -572,6 +635,13 @@ ${transcript}`,
           customerEnds.length > 0 ? Math.max(...customerEnds) : null,
         remarks: raw.remarks,
         disputeRecommended: raw.dispute_recommended,
+        // Carried as a POINTER only. The engine validates the block against the
+        // transcript and decides the boundary, the service fact, and the money.
+        agentFailureStartBlockNumber:
+          Number.isInteger(raw.agent_failure_start_block_number) &&
+          raw.agent_failure_start_block_number > 0
+            ? raw.agent_failure_start_block_number
+            : null,
         decisionSignals: {
           counterpartyType: raw.counterparty_type,
           agentHandling: raw.agent_handling,
@@ -583,6 +653,9 @@ ${transcript}`,
           voicemailEvidence: raw.voicemail_evidence,
           automationEvidence: raw.automation_evidence,
           junkEvidence: raw.junk_evidence,
+          agentFailureMode: raw.agent_failure_mode,
+          meaningfulServiceBeforeFailure:
+            raw.meaningful_service_before_failure,
         },
         usage: {
           inputTokens: completion.usage?.prompt_tokens ?? null,

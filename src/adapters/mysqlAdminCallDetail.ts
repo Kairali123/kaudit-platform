@@ -25,6 +25,9 @@ interface DetailRow extends RowDataPacket {
   conversation_end_ms: number | string | null
   audited_service_end_ms: number | string | null
   audited_grace_ms: number | string | null
+  agent_failure_mode: string | null
+  meaningful_service_before_failure: number | string | null
+  failure_start_ms: number | string | null
   vendor_billed_minutes: string | null
   vendor_connected_duration_ms: number | string | null
   vendor_amount: string | null
@@ -137,6 +140,20 @@ export async function collectAdminCallDetail(
          media.metrics_json,
          '$.appliedBillingGraceMs'
        ) AS SIGNED) AS audited_grace_ms,
+       -- The agent-failure boundary is the one place a zero-rated category can
+       -- still carry a charge, so the evidence behind it is shown, not inferred.
+       JSON_UNQUOTE(JSON_EXTRACT(
+         media.metrics_json,
+         '$.agentFailureMode'
+       )) AS agent_failure_mode,
+       JSON_EXTRACT(
+         media.metrics_json,
+         '$.meaningfulServiceBeforeFailure'
+       ) AS meaningful_service_before_failure,
+       CAST(JSON_EXTRACT(
+         media.metrics_json,
+         '$.failureStartMs'
+       ) AS SIGNED) AS failure_start_ms,
        CAST(vendor_minutes.minutes_decimal AS CHAR)
          AS vendor_billed_minutes,
        ROUND(vendor_connected.quantity_decimal * 1000)
@@ -331,6 +348,17 @@ export async function collectAdminCallDetail(
         row.vendor_connected_duration_ms,
       ),
     },
+    agentFailure:
+      row.agent_failure_mode === 'start' ||
+      row.agent_failure_mode === 'mid_conversation'
+        ? {
+            mode: row.agent_failure_mode,
+            meaningfulServiceBeforeFailure:
+              String(row.meaningful_service_before_failure) === 'true' ||
+              Number(row.meaningful_service_before_failure) === 1,
+            failureStartMs: numberOrNull(row.failure_start_ms),
+          }
+        : null,
     comparison: {
       currency: 'INR',
       kserve: {

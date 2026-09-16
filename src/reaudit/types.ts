@@ -147,6 +147,22 @@ export interface ClassificationDecisionSignals {
     | 'spam_or_scam'
     | 'prank_or_illegitimate_purpose'
     | 'none'
+  /**
+   * WHERE an agent failure begins, when there is one.
+   *
+   * `start` covers never connected, never introduced, failed before any
+   * meaningful service, and connected-but-served-nothing. `mid_conversation`
+   * is the only shape that can carry a chargeable service period, and only
+   * when the engine independently confirms meaningful service before it.
+   * Required from live classifiers; absent only on durable legacy results.
+   */
+  agentFailureMode?: 'none' | 'start' | 'mid_conversation'
+  /**
+   * The model's reading of whether real service preceded the failure. It is a
+   * SIGNAL only: the engine re-derives the same fact from attributed blocks and
+   * the derived value is what reaches money.
+   */
+  meaningfulServiceBeforeFailure?: boolean
 }
 
 export interface ModelClassification {
@@ -177,6 +193,27 @@ export interface ModelClassification {
   lastBusinessRelevantCustomerExchangeMs?: number | null
   /** Latest non-unclear interaction block, independent of speaker role. */
   lastVerifiedInteractionMs?: number | null
+  /**
+   * Blocks the classifier POSITIVELY attributed to Saanvi, normalized and
+   * validated by the engine (in range, disjoint from customer, unclear, and
+   * voicemail/automation evidence). Unassigned blocks are never agent speech.
+   *
+   * Persisted because the USER_SILENCE / INACTIVE_CALL split turns entirely on
+   * whether this list is empty, and a decision nobody can re-check afterwards
+   * is not an auditable one.
+   */
+  agentBlockNumbers?: number[]
+  /** The block the agent failure begins at, when one was identified. */
+  agentFailureStartBlockNumber?: number | null
+  /**
+   * Engine-decided failure shape. Never the model's claim: `mid_conversation`
+   * survives only when meaningful service before the boundary is confirmed.
+   */
+  agentFailureMode?: 'start' | 'mid_conversation' | null
+  /** Engine-derived, from attributed blocks either side of the boundary. */
+  meaningfulServiceBeforeFailure?: boolean
+  /** Engine-derived failure boundary in milliseconds, bounded by the audio. */
+  failureStartMs?: number | null
   remarks: string
   disputeRecommended: boolean
   /** Required from live classifiers; optional for durable legacy results. */

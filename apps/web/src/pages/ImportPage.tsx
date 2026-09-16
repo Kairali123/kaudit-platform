@@ -15,6 +15,7 @@ import {
   type FormEvent,
   useState,
 } from 'react'
+import { LateRecordingCorrection } from '../components/LateRecordingCorrection'
 import { PageHeader } from '../components/Metrics'
 import {
   ErrorState,
@@ -518,6 +519,8 @@ export function ImportPage() {
           )}
         </form>
       </section>
+
+      <LateRecordingCorrection />
 
       <section className="content-section data-table">
         <div className="table-heading">

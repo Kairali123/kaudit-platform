@@ -645,6 +645,60 @@ export interface KserveSettlementSummary {
   basis: string
 }
 
+/**
+ * The late-recording correction surfaces.
+ *
+ * Every field here is either a row number, a Task ID the administrator typed
+ * themselves, a bounded code, a count, or a fixed-precision decimal string.
+ * There is deliberately no URL field of any kind: a recording URL is
+ * server-only and never reaches this application.
+ */
+export interface LateRecordingRowDecision {
+  rowNumber: number
+  outcome: 'accepted' | 'duplicate_replay' | 'rejected'
+  code?: string
+}
+
+export interface LateRecordingReceipt {
+  billMonth: string
+  decisions: LateRecordingRowDecision[]
+  submittedCount: number
+  acceptedCount: number
+  duplicateCount: number
+  rejectedCount: number
+  rejectionCounts: Record<string, number>
+  /** Present on a commit only. Opaque; never a call or artifact id. */
+  batchId?: string | null
+  outcome?: 'accepted' | 'replayed' | 'nothing_to_do'
+  status?: string | null
+}
+
+export interface LateRecordingProgress {
+  batchId: string
+  billMonth: string
+  status: string
+  submitted: number
+  accepted: number
+  rejected: number
+  queued: number
+  auditing: number
+  completed: number
+  failed: number
+  finalized: boolean
+  previousVerifiedTotal: string | null
+  revisedVerifiedTotal: string | null
+  totalAdjustment: string | null
+  items: Array<{
+    taskReference: string
+    rowNumber: number
+    state: 'accepted' | 'auditing' | 'corrected' | 'failed'
+    previousAmount: string | null
+    revisedAmount: string | null
+    failureCode: string | null
+    completedAt: string | null
+  }>
+}
+
 export interface AdminCallDetailData {
   generatedAt: string
   call: {
@@ -672,6 +726,15 @@ export interface AdminCallDetailData {
     adjustedChargeableMs: number | null
     vendorConnectedMs: number | null
   }
+  /**
+   * Present only for an AGENT_FAILURE. It is the one zero-rated category whose
+   * charge can be non-zero, so the reader is shown why.
+   */
+  agentFailure: {
+    mode: 'start' | 'mid_conversation'
+    meaningfulServiceBeforeFailure: boolean
+    failureStartMs: number | null
+  } | null
   comparison: {
     currency: 'INR'
     kserve: {

@@ -9,6 +9,22 @@ const WORKFLOW_FILE = 'audit-worker.yml'
 const DISPATCH_TIMEOUT_MS = 10_000
 const CONTROL_MODE_VARIABLE = 'KAUDIT_AUDIT_WORKER_CONTROL_MODE'
 
+/**
+ * Extra, BOUNDED scope for a dispatch.
+ *
+ * `batchId` is an opaque late-recording batch handle and is the only scope a
+ * late-recording run ever receives. A Task ID, a call id, and above all a
+ * recording URL are deliberately not expressible here: the dispatcher hands a
+ * workflow a handle, and the worker resolves everything else itself from the
+ * database.
+ */
+export interface AuditDispatchScope {
+  batchId?: string
+}
+
+/** Opaque handles only, asserted before a value can reach a workflow input. */
+const BATCH_ID = /^lrb_[0-9a-f-]{36}$/
+
 export interface AuditWorkerDispatcher {
   /** Whether this deployment can actually start this exact worker mode. */
   canDispatch?(system: AuditSystem, mode?: AuditDispatchMode): boolean
@@ -18,9 +34,14 @@ export interface AuditWorkerDispatcher {
    * `mode` is optional and defaults to `ordinary`, so every existing caller and
    * every existing dispatch keeps exactly the shape it had: no mode input is
    * sent at all for an ordinary run. `requested` adds the administrator-
-   * selected Billing Audit re-audit, and is refused for Call Audit.
+   * selected Billing Audit re-audit and `late-recording` the recurring
+   * correction; both are refused for Call Audit.
    */
-  dispatch(system: AuditSystem, mode?: AuditDispatchMode): Promise<void>
+  dispatch(
+    system: AuditSystem,
+    mode?: AuditDispatchMode,
+    scope?: AuditDispatchScope,
+  ): Promise<void>
 }
 
 export class AuditWorkerDispatchError extends Error {
@@ -111,8 +132,13 @@ export function createGitHubActionsAuditWorkerDispatcher(
       parseAuditDispatch(system, dispatchMode ?? 'ordinary')
       return true
     },
-    async dispatch(system, dispatchMode) {
+    async dispatch(system, dispatchMode, scope) {
       const parsed = parseAuditDispatch(system, dispatchMode ?? 'ordinary')
+      if (parsed.mode === 'late-recording' && !BATCH_ID.test(scope?.batchId ?? '')) {
+        // A late-recording run without its batch handle would have no scope at
+        // all, and a value that is not a handle must never reach a workflow.
+        throw new AuditWorkerDispatchError()
+      }
       try {
         const response = await fetcher(
           `https://api.github.com/repos/${config.repository}/actions/workflows/${WORKFLOW_FILE}/dispatches`,
@@ -135,7 +161,14 @@ export function createGitHubActionsAuditWorkerDispatcher(
               inputs:
                 parsed.mode === 'ordinary'
                   ? { system: parsed.system }
-                  : { system: parsed.system, mode: parsed.mode },
+                  : parsed.mode === 'late-recording'
+                    ? {
+                        system: parsed.system,
+                        mode: parsed.mode,
+                        // The opaque handle, and nothing else.
+                        late_recording_batch_id: scope?.batchId as string,
+                      }
+                    : { system: parsed.system, mode: parsed.mode },
             }),
           },
         )

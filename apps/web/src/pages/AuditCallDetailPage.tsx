@@ -167,6 +167,30 @@ export function AuditCallDetailPage() {
         <div><span>AI chargeable</span><strong>{seconds(data.durations.adjustedChargeableMs)}</strong></div>
         <div><span>KServe connected</span><strong>{seconds(data.durations.vendorConnectedMs)}</strong></div>
         <div><span>Auditor billable</span><strong>{seconds(data.comparison.auditor.billableDurationMs)}</strong></div>
+        {data.agentFailure ? (
+          <>
+            <div>
+              <span>Agent failure</span>
+              <strong>
+                {data.agentFailure.mode === 'mid_conversation'
+                  ? 'Mid conversation'
+                  : 'From start'}
+              </strong>
+            </div>
+            <div>
+              <span>Service before failure</span>
+              <strong>
+                {data.agentFailure.meaningfulServiceBeforeFailure
+                  ? 'Verified'
+                  : 'None'}
+              </strong>
+            </div>
+            <div>
+              <span>Failure starts</span>
+              <strong>{seconds(data.agentFailure.failureStartMs)}</strong>
+            </div>
+          </>
+        ) : null}
       </section>
 
       <section className="content-section evidence-player">

@@ -46,6 +46,10 @@ async function webModules(): Promise<string[]> {
  */
 const LIVE_MONITORS = new Set([
   'components/AuditWorkerControl.tsx',
+  // A late-recording batch advances while the administrator watches it: a
+  // worker is auditing the calls they just attached evidence to. It stops
+  // polling by itself once nothing is queued or auditing.
+  'components/LateRecordingCorrection.tsx',
   'pages/AuditMonitorPage.tsx',
   'pages/ImportPage.tsx',
 ])
@@ -166,6 +170,10 @@ test('each declared interval is a bounded number, never unconditional', async ()
     [60_000, 60_000, 60_000, 60_000, 60_000, 60_000],
   )
   assert.deepEqual(declared.get('pages/ImportPage.tsx'), [30_000])
+  assert.deepEqual(
+    declared.get('components/LateRecordingCorrection.tsx'),
+    [10_000],
+  )
 })
 
 test('audit monitor isolates row tables before expensive summaries', async () => {

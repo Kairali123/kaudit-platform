@@ -54,7 +54,9 @@
     "report:preview": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --env-file-if-exists=$HOME/.kcrm-audit/.env.local src/cli/run-cycle-preview.ts",
     "report:email-worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --env-file-if-exists=$HOME/.kcrm-audit/.env.local src/cli/run-report-email-worker.ts",
     "callaudit:batch": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --env-file-if-exists=$HOME/.kcrm-audit/.env.local src/cli/run-call-audit-batch.ts",
-    "callaudit:worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --env-file-if-exists=$HOME/.kcrm-audit/.env.local src/cli/run-call-audit-worker.ts"
+    "callaudit:worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --env-file-if-exists=$HOME/.kcrm-audit/.env.local src/cli/run-call-audit-worker.ts",
+    "latereco:worker": "node --env-file-if-exists=.env --env-file-if-exists=.env.local --env-file-if-exists=$HOME/.kcrm-audit/.env.local src/cli/run-late-recording-worker.ts",
+    "test:latereco": "node --test src/lateRecording/*.test.ts src/adapters/mysqlLateRecordingCorrections.test.ts src/cli/lateRecordingWorker.test.ts src/http/enterpriseDashboardServer.lateRecording.test.ts"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1093.0",

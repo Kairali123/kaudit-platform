@@ -65,6 +65,16 @@ export interface VerifiedBillingInput {
     policyCode: CategoryChargePolicyCode
     policyVersion: string
     policySha256: string
+    /**
+     * Engine-validated AGENT_FAILURE evidence. Required for the
+     * mid-conversation charge shape, and retained in the trace so the one
+     * charge a zero-rated category can carry is always explainable.
+     */
+    agentFailure?: {
+      mode: 'start' | 'mid_conversation' | null
+      meaningfulServiceBeforeFailure: boolean
+      failureStartMs: number | null
+    }
   }
   model: ModelIdentity
   classifierRulesetVersion: string
