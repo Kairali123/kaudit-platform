@@ -6,6 +6,7 @@ import {
   MAX_REQUESTED_PERIODS,
   collectPeriodAmounts,
   collectRevenueSnapshots,
+  legacyProviderPeriodTotalsSql,
   providerPeriodTotalsSql,
   validateRequestedPeriods,
   type RequestedPeriod,
@@ -722,17 +723,78 @@ const ALLOWED_RELATIONS = new Set([
   'scoped_calculation',
   'provider_claim',
   'provider_period_total',
+  'scoped_ids',
   'scoped_invoice',
 ])
 
-test('provider totals start from provider cost and fix the production join order', async () => {
+test('provider totals group costs only for calls in a requested period', async () => {
   const sql = providerPeriodTotalsSql(2)
-  assert.match(
-    sql,
-    /FROM provider_claim claim\s+STRAIGHT_JOIN kaudit_call c/,
-  )
-  assert.match(sql, /FROM kaudit_provider_cost cost/)
-  assert.doesNotMatch(sql, /cost\.call_id IN \(SELECT call_id FROM period_call\)/)
+  assert.match(sql, /scoped_ids AS \(\s*SELECT DISTINCT period_call\.call_id FROM period_call/)
+  assert.match(sql, /FROM scoped_ids\s+JOIN kaudit_provider_cost cost/)
+  assert.equal(sql.match(/FROM kaudit_provider_cost/g)?.length ?? 0, 0)
+  // Minutes keep their SUM revision semantics; amount keeps MAX.
+  assert.match(sql, /SUM\(CASE\s+WHEN cost\.provider_sku = 'vendor_asserted_billed_minutes'/)
+  assert.match(sql, /MAX\(CASE\s+WHEN cost\.provider_sku = 'vendor_asserted_billed_amount'/)
+})
+
+test('call-scoped provider totals equal the provider-first totals', () => {
+  const db = new DatabaseSync(':memory:')
+  try {
+    db.exec(SCHEMA)
+    const calls = [
+      ['c-aug-1', '2026-08-01'], ['c-aug-2', '2026-08-15'],
+      ['c-aug-3', '2026-08-31'], ['c-sep-1', '2026-09-01'],
+      ['c-jul-1', '2026-07-31'], ['c-null', null], ['c-nocost', '2026-08-10'],
+    ]
+    for (const [id, date] of calls) {
+      db.prepare('INSERT INTO kaudit_call (id, billing_period_date) VALUES (?, ?)').run(id, date)
+    }
+    const costs: Array<[string, string, string, string | null, string | null, number]> = [
+      // Revised minutes rows are SUMmed; a non-final row is ignored.
+      ['k1', 'c-aug-1', 'vendor_asserted_billed_minutes', '1.50000000', null, 1],
+      ['k2', 'c-aug-1', 'vendor_asserted_billed_minutes', '0.50000000', null, 1],
+      ['k3', 'c-aug-1', 'vendor_asserted_billed_minutes', '9.00000000', null, 0],
+      ['k4', 'c-aug-2', 'vendor_asserted_billed_minutes', '2.00000000', null, 1],
+      ['k5', 'c-aug-2', 'vendor_asserted_billed_amount', null, '19.12345678', 1],
+      ['k6', 'c-aug-2', 'vendor_asserted_billed_amount', null, '18.00000000', 1],
+      ['k7', 'c-aug-3', 'vendor_asserted_billed_amount', null, '4.75000000', 1],
+      ['k8', 'c-sep-1', 'vendor_asserted_billed_minutes', '3.00000000', null, 1],
+      ['k9', 'c-jul-1', 'vendor_asserted_billed_minutes', '1.00000000', null, 1],
+      ['k10', 'c-null', 'vendor_asserted_billed_minutes', '5.00000000', null, 1],
+      ['k11', 'c-missing', 'vendor_asserted_billed_minutes', '7.00000000', null, 1],
+      ['k12', 'c-aug-1', 'duration_without_ringing_sec', '0', '60', 1],
+    ]
+    for (const cost of costs) {
+      db.prepare(
+        `INSERT INTO kaudit_provider_cost
+           (id, call_id, provider_sku, minutes_decimal, quantity_decimal, is_final)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+      ).run(...cost)
+    }
+    const cases: Array<unknown[]> = [
+      // Overlapping weekly and monthly periods, plus an empty period.
+      ['monthly', '2026-08-01', '2026-08-31', 'weekly', '2026-08-01', '2026-08-07',
+       'empty', '2031-01-01', '2031-01-31'],
+      ['prior', '2026-07-01', '2026-07-31'],
+    ]
+    for (const params of cases) {
+      const count = params.length / 3
+      const sort = (rows: unknown[]) =>
+        [...rows].sort((a, b) =>
+          String((a as { period_key: string }).period_key).localeCompare(
+            String((b as { period_key: string }).period_key),
+          ),
+        )
+      const legacy = db
+        .prepare(legacyProviderPeriodTotalsSql(count).replaceAll('STRAIGHT_JOIN', 'JOIN'))
+        .all(...(params as string[]))
+      const current = db.prepare(providerPeriodTotalsSql(count)).all(...(params as string[]))
+      assert.deepEqual(sort(current), sort(legacy))
+      assert.ok(current.length > 0)
+    }
+  } finally {
+    db.close()
+  }
 })
 
 test('the reads are parameterized, read-only aggregates over kaudit tables', async () => {

@@ -50,7 +50,6 @@ const LIVE_MONITORS = new Set([
   // worker is auditing the calls they just attached evidence to. It stops
   // polling by itself once nothing is queued or auditing.
   'components/LateRecordingCorrection.tsx',
-  'pages/AuditMonitorPage.tsx',
   'pages/ImportPage.tsx',
 ])
 
@@ -59,6 +58,7 @@ const STATIC_SCREENS = [
   'components/AppShell.tsx',
   'components/KserveSettlement.tsx',
   'pages/AuditCallDetailPage.tsx',
+  'pages/AuditMonitorPage.tsx',
   'pages/BillingCategoryAnalysisPage.tsx',
   'pages/BillingPage.tsx',
   'pages/CallAuditReportPage.tsx',
@@ -165,10 +165,6 @@ test('each declared interval is a bounded number, never unconditional', async ()
     }
   }
   assert.deepEqual(declared.get('components/AuditWorkerControl.tsx'), [15_000])
-  assert.deepEqual(
-    declared.get('pages/AuditMonitorPage.tsx'),
-    [60_000, 60_000, 60_000, 60_000, 60_000, 60_000],
-  )
   assert.deepEqual(declared.get('pages/ImportPage.tsx'), [30_000])
   assert.deepEqual(
     declared.get('components/LateRecordingCorrection.tsx'),
@@ -211,6 +207,14 @@ test('audit monitor isolates row tables before expensive summaries', async () =>
   assert.match(source, /pendingRowsQuery\.isLoading && <LoadingState/)
   assert.match(source, /noRecordingRowsQuery\.isLoading && <LoadingState/)
   assert.match(source, /coreSummaryQuery\.isLoading && <LoadingState \/>/)
+  assert.doesNotMatch(source, /refetchInterval\s*:/)
+  assert.match(source, /const refreshMonitor = async \(\) =>/)
+  assert.match(source, /if \(refreshInFlight\.current \|\| monitorIsFetching\) return/)
+  assert.match(
+    source,
+    /await auditedRowsQuery\.refetch\(\)[\s\S]*await pendingRowsQuery\.refetch\(\)[\s\S]*await noRecordingRowsQuery\.refetch\(\)[\s\S]*await coreSummaryQuery\.refetch\(\)[\s\S]*await usageSummaryQuery\.refetch\(\)[\s\S]*await financialSummaryQuery\.refetch\(\)/,
+  )
+  assert.match(source, /'Refresh data'/)
   assert.doesNotMatch(
     source,
     /financialSummaryQuery\.isLoading && <LoadingState \/>/,

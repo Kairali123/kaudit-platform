@@ -19,9 +19,11 @@ export function LoadingState() {
 export function ErrorState({
   error,
   retry,
+  retryDisabled = false,
 }: {
   error: Error
   retry: () => void
+  retryDisabled?: boolean
 }) {
   const correlation =
     error instanceof ApiError ? error.correlationId : null
@@ -33,7 +35,12 @@ export function ErrorState({
         <p>{error.message}</p>
         {correlation && <small>Reference: {correlation}</small>}
       </div>
-      <button className="button secondary" onClick={retry} type="button">
+      <button
+        className="button secondary"
+        disabled={retryDisabled}
+        onClick={retry}
+        type="button"
+      >
         <RefreshCw size={15} aria-hidden />
         Retry
       </button>

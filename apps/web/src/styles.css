@@ -404,6 +404,7 @@ dl small { color: var(--muted); font-size: .6rem; }
 .error-state small { color: #835c5c; }
 .button { display: inline-flex; align-items: center; gap: 6px; padding: 8px 12px; border: 1px solid; background: transparent; cursor: pointer; }
 .button.secondary { color: var(--red); border-color: #dba6a2; }
+.button:disabled { opacity: .55; cursor: not-allowed; }
 .icon-button { display: grid; place-items: center; padding: 6px; color: inherit; background: transparent; border: 0; cursor: pointer; }
 .status-badge svg { margin-right: 5px; }
 .status-badge .cell-sub {
@@ -416,6 +417,14 @@ dl small { color: var(--muted); font-size: .6rem; }
   gap: 12px; align-items: end; padding: 15px 17px;
   background: var(--paper); border: 1px solid var(--line);
 }
+.audit-refresh-bar {
+  display: flex; align-items: center; justify-content: space-between; gap: 18px;
+  padding: 13px 17px; background: var(--paper); border: 1px solid var(--line);
+}
+.audit-refresh-bar > div { display: grid; gap: 3px; }
+.audit-refresh-bar strong { font-size: .76rem; }
+.audit-refresh-bar span { color: var(--muted); font-size: .7rem; line-height: 1.45; }
+.audit-refresh-button { flex: 0 0 auto; color: var(--teal); border-color: #9fc9c2; }
 .audit-control-bar > div { display: flex; align-items: flex-start; gap: 9px; color: var(--muted); font-size: .72rem; line-height: 1.5; }
 .audit-control-bar > div svg { flex: 0 0 auto; color: var(--teal); }
 .audit-control-bar label { display: grid; gap: 5px; color: var(--muted); font-size: .67rem; font-weight: 700; }
@@ -827,6 +836,8 @@ dl small { color: var(--muted); font-size: .6rem; }
   .link-grid { grid-template-columns: 1fr; }
   .permission-panel { grid-template-columns: 1fr; }
   .audit-control-bar { grid-template-columns: 1fr; }
+  .audit-refresh-bar { align-items: stretch; flex-direction: column; }
+  .audit-refresh-button { justify-content: center; width: 100%; }
   .category-kpi-grid {
     grid-template-columns: 1fr;
     grid-template-areas:

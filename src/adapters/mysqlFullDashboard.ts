@@ -139,40 +139,28 @@ export async function collectQuality(
   }
 }
 
-export async function collectBilling(
-  pool: Pool,
-  period: BillingMonthScope | null = null,
-): Promise<RawBillingMetrics> {
+/**
+ * Tests only: the pre-rewrite calculation summary and authority statements,
+ * for result-equivalence checks. Each binds `params` as returned.
+ */
+export function legacyBillingCalculationSql(
+  period: BillingMonthScope | null,
+): {
+  summary: string
+  authority: string
+  summaryParams: unknown[]
+  authorityParams: unknown[]
+} {
   const calculationWindow = period
     ? ' AND calculation_call.billing_period_date BETWEEN ? AND ?'
     : ''
-  /**
-   * Which table leads the join, and why it has to be said out loud.
-   *
-   * A calculation carries no date of its own; the billing period lives on the
-   * call. Left to choose, the optimizer read every calculation ever written
-   * and discarded the ones outside the month afterwards -- a full scan whose
-   * cost grows with the life of the dataset rather than with the month asked
-   * for. At 54,227 calculations that put three of the billing page's five
-   * aggregates at 15-30s against a 30s request limit, and the page timed out.
-   *
-   * Leading with the call makes the month a range scan on
-   * idx_call_billing_period_id and turns the calculation into an indexed
-   * lookup per call, which is the shape the two aggregates that never timed
-   * out already had.
-   *
-   * Only when a month is named. Across all periods there is no range to seek
-   * and scanning the calculations really is the cheaper plan.
-   */
   const calculationLead = period
     ? `kaudit_call calculation_call
        STRAIGHT_JOIN kaudit_billing_calculation`
     : `kaudit_billing_calculation`
   const periodParams = period ? [period.start, period.end] : []
-  const [summary, authority, rateCard, invoice, reconciliation, cycle] = await Promise.all([
-    one(
-      pool,
-      `SELECT
+  return {
+    summary: `SELECT
          COUNT(*) AS calculations,
          CAST(SUM(bc.total_amount) AS CHAR) AS calculated_total,
          CAST(SUM(bc.billable_duration_ms) / 60000 AS CHAR) AS billable_minutes,
@@ -184,11 +172,8 @@ export async function collectBilling(
          SELECT 1 FROM kaudit_billing_calculation newer
          WHERE newer.supersedes_calculation_id = bc.id
        )${calculationWindow}`,
-      periodParams,
-    ),
-    one(
-      pool,
-      `SELECT
+    summaryParams: periodParams,
+    authority: `SELECT
          COUNT(*) AS current_calculations,
          SUM(
            CASE
@@ -251,8 +236,126 @@ export async function collectBilling(
          SELECT 1 FROM kaudit_billing_calculation newer
          WHERE newer.supersedes_calculation_id = current.id
        )${calculationWindow}`,
-      period ? [...periodParams, ...periodParams] : [],
-    ),
+    // The decision sub-count binds the period before the outer window.
+    authorityParams: period ? [...periodParams, ...periodParams] : [],
+  }
+}
+
+const AUTHORITATIVE_CALCULATION_SQL = `current.status = 'final'
+              AND current.calculation_basis IN (
+                'independent_conversation_end',
+                'independent_category_service_end',
+                'accepted_as_billed_unverified',
+                'no_recording_zero'
+              )
+              AND (
+                (current.calculation_basis IN (
+                   'independent_conversation_end',
+                   'independent_category_service_end'
+                 )
+                 AND current.audit_run_id IS NOT NULL)
+                OR current.calculation_basis IN (
+                   'accepted_as_billed_unverified',
+                   'no_recording_zero'
+                )
+              )
+              AND current.input_manifest_sha256 IS NOT NULL
+              AND current.ruleset_sha256 IS NOT NULL
+              AND current.decision_trace_sha256 IS NOT NULL
+              AND current.finalized_at IS NOT NULL`
+
+/**
+ * Current-calculation totals and authority counts in ONE pass. The two former
+ * statements scanned the identical population; the join order per scope is
+ * unchanged (call-led for a month, calculation-led across all periods).
+ * Binds the period (when given).
+ */
+export function billingCalculationSummarySql(
+  period: BillingMonthScope | null,
+): string {
+  const from = period
+    ? `kaudit_call calculation_call
+       STRAIGHT_JOIN kaudit_billing_calculation current
+         ON current.call_id = calculation_call.id`
+    : `kaudit_billing_calculation current
+       JOIN kaudit_call calculation_call
+         ON calculation_call.id = current.call_id`
+  return `SELECT
+         COUNT(*) AS calculations,
+         COUNT(*) AS current_calculations,
+         CAST(SUM(current.total_amount) AS CHAR) AS calculated_total,
+         CAST(SUM(current.billable_duration_ms) / 60000 AS CHAR)
+           AS billable_minutes,
+         MAX(current.currency) AS currency,
+         SUM(
+           CASE
+             WHEN ${AUTHORITATIVE_CALCULATION_SQL}
+             THEN 1 ELSE 0
+           END
+         ) AS authoritative_calculations,
+         SUM(
+           CASE
+             WHEN current.status = 'final'
+             AND current.calculation_basis IN (
+                'independent_conversation_end',
+                'independent_category_service_end'
+              )
+             THEN 1 ELSE 0
+           END
+         ) AS independent_final_calculations
+       FROM ${from}
+       WHERE NOT EXISTS (
+         SELECT 1 FROM kaudit_billing_calculation newer
+         WHERE newer.supersedes_calculation_id = current.id
+       )${period ? `
+         AND calculation_call.billing_period_date BETWEEN ? AND ?` : ''}`
+}
+
+/**
+ * Unresolved automated billing decisions, scoped through the call. Binds the
+ * period (when given).
+ */
+export function unresolvedAutomatedDecisionsSql(
+  period: BillingMonthScope | null,
+): string {
+  const from = period
+    ? `kaudit_call decision_call
+       JOIN kaudit_automated_decision decision_row
+         ON decision_row.call_id = decision_call.id`
+    : `kaudit_automated_decision decision_row
+       JOIN kaudit_call decision_call
+         ON decision_call.id = decision_row.call_id`
+  return `SELECT COUNT(*) AS unresolved_automated_decisions
+       FROM ${from}
+       WHERE decision_row.decision_type = 'verified_call_billing'
+         AND decision_row.decision_status = 'unresolved'
+         AND NOT EXISTS (
+           SELECT 1
+           FROM kaudit_automated_decision newer_decision
+           WHERE newer_decision.supersedes_decision_id = decision_row.id
+         )${period ? `
+         AND decision_call.billing_period_date BETWEEN ? AND ?` : ''}`
+}
+
+export async function collectBilling(
+  pool: Pool,
+  period: BillingMonthScope | null = null,
+): Promise<RawBillingMetrics> {
+  /**
+   * Which table leads the join, and why it has to be said out loud.
+   *
+   * A calculation carries no date of its own; the billing period lives on the
+   * call. Left to choose, the optimizer read every calculation ever written
+   * and discarded the ones outside the month afterwards. Leading with the call
+   * makes the month a range scan and the calculation an indexed lookup per
+   * call. Only when a month is named: across all periods there is no range to
+   * seek and scanning the calculations really is the cheaper plan. See
+   * `billingCalculationSummarySql`.
+   */
+  const periodParams = period ? [period.start, period.end] : []
+  const [summary, decisions, rateCard, invoice, reconciliation, cycle] = await Promise.all([
+    one(pool, billingCalculationSummarySql(period), periodParams),
+    one(pool, unresolvedAutomatedDecisionsSql(period), periodParams),
     one(
       pool,
       `SELECT version, status, approved_by, CAST(approved_at AS CHAR) AS approved_at, currency
@@ -308,9 +411,9 @@ export async function collectBilling(
 
   return {
     calculations: n(summary?.calculations),
-    authoritativeCalculations: n(authority?.authoritative_calculations),
-    independentFinalCalculations: n(authority?.independent_final_calculations),
-    unresolvedAutomatedDecisions: n(authority?.unresolved_automated_decisions),
+    authoritativeCalculations: n(summary?.authoritative_calculations),
+    independentFinalCalculations: n(summary?.independent_final_calculations),
+    unresolvedAutomatedDecisions: n(decisions?.unresolved_automated_decisions),
     calculatedTotal: s(summary?.calculated_total),
     billableMinutes: s(summary?.billable_minutes),
     currency: s(reconciliation?.currency) ?? s(summary?.currency) ?? s(rateCard?.currency) ?? 'INR',
@@ -592,6 +695,50 @@ export function verifiedPeriodTotalsSql(periodCount: number): string {
  * containing its call.
  */
 export function providerPeriodTotalsSql(periodCount: number): string {
+  // Call-scoped: provider costs are grouped only for calls inside a requested
+  // period, then each (period, call) pair picks up its call's claim. SUM over
+  // minutes rows is kept exactly as before.
+  return `WITH ${requestedPeriodCte(periodCount)},
+          ${PERIOD_CALL_CTE},
+          scoped_ids AS (
+            SELECT DISTINCT period_call.call_id FROM period_call
+          ),
+          provider_claim AS (
+            SELECT cost.call_id,
+                   SUM(CASE
+                     WHEN cost.provider_sku = 'vendor_asserted_billed_minutes'
+                     THEN cost.minutes_decimal
+                   END) AS provider_minutes,
+                   MAX(CASE
+                     WHEN cost.provider_sku = 'vendor_asserted_billed_amount'
+                     THEN cost.quantity_decimal
+                   END) AS provider_amount
+            FROM scoped_ids
+            JOIN kaudit_provider_cost cost
+              ON cost.call_id = scoped_ids.call_id
+            WHERE cost.provider_sku IN (
+                    'vendor_asserted_billed_minutes',
+                    'vendor_asserted_billed_amount'
+                  )
+              AND cost.is_final = 1
+            GROUP BY cost.call_id
+          )
+          SELECT period_call.period_key AS period_key,
+                 CAST(SUM(claim.provider_minutes) AS CHAR)
+                   AS provider_minutes,
+                 CAST(SUM(claim.provider_amount) AS CHAR)
+                   AS provider_amount,
+                 CAST(SUM(CASE
+                   WHEN claim.provider_amount IS NULL
+                   THEN claim.provider_minutes
+                 END) AS CHAR) AS fallback_minutes
+          FROM period_call
+          JOIN provider_claim claim ON claim.call_id = period_call.call_id
+          GROUP BY period_call.period_key`
+}
+
+/** Tests/benchmarks only: the pre-rewrite provider-first statement. */
+export function legacyProviderPeriodTotalsSql(periodCount: number): string {
   return `WITH ${requestedPeriodCte(periodCount)},
           provider_claim AS (
             SELECT cost.call_id,

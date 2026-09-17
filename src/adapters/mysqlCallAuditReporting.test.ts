@@ -227,74 +227,49 @@ function usageRow(overrides: Record<string, unknown> = {}) {
   }
 }
 
+/** The per-dimension buckets the synthetic summary row is built from. */
+const SUMMARY_BUCKETS: Record<string, Array<[string | null, string]>> = {
+  byProcessingStatus: [['succeeded', '5'], ['failed', '2']],
+  byEligibility: [['content_auditable', '4'], ['operational_only', '3']],
+  byIntent: [[null, '3'], ['WARM', '2'], ['HIGH', '2']],
+  // A label outside the locked vocabulary must be counted, never surfaced.
+  byGroupedOutcome: [['EXISTING_DUPLICATE_DNC', '4'], ['SOME_FUTURE_GROUP', '3']],
+  byKserveComparison: [['match', '4'], ['mismatch', '3']],
+  byMismatchSeverity: [['none', '4'], ['high', '3']],
+  byQualification: [['NON_QUALIFIED', '7']],
+  byNextAction: [['DO_NOT_CALL', '7']],
+}
+
+/**
+ * The single summary row the database would return for SUMMARY_BUCKETS, in
+ * the statement's alias convention (d{dimension}_v{word}/_null/_invalid).
+ */
+function summaryRow(): Record<string, string> {
+  const row: Record<string, string> = { result_count: '7', audited_call_count: '5' }
+  CALL_AUDIT_REPORTING_SQL.dimensions.forEach((dimension, d) => {
+    const vocabulary = dimension.vocabulary as readonly string[]
+    vocabulary.forEach((_, v) => { row[`d${d}_v${v}`] = '0' })
+    row[`d${d}_null`] = '0'
+    row[`d${d}_invalid`] = '0'
+    for (const [bucket, count] of SUMMARY_BUCKETS[dimension.key] ?? []) {
+      const key = bucket === null
+        ? `d${d}_null`
+        : vocabulary.includes(bucket)
+          ? `d${d}_v${vocabulary.indexOf(bucket)}`
+          : `d${d}_invalid`
+      row[key] = String(Number(row[key]) + Number(count))
+    }
+  })
+  for (const flag of ISSUE_FLAGS) {
+    row[`flag_${flag}`] =
+      flag === 'DNC_RISK' ? '4' : flag === 'WEAK_NEXT_STEP' ? '2' : '0'
+  }
+  return row
+}
+
 /** Rules that give every summary statement a row, so one call exercises all. */
 function summaryRules(): RowRule[] {
-  return [
-    { match: 'audited_call_count', rows: [{ result_count: '7', audited_call_count: '5' }] },
-    {
-      match: 'GROUP BY res.`processing_status`',
-      rows: [
-        { bucket: 'succeeded', bucket_count: '5' },
-        { bucket: 'failed', bucket_count: '2' },
-      ],
-    },
-    {
-      match: 'GROUP BY res.`eligibility`',
-      rows: [
-        { bucket: 'content_auditable', bucket_count: '4' },
-        { bucket: 'operational_only', bucket_count: '3' },
-      ],
-    },
-    {
-      match: 'GROUP BY res.`intent`',
-      rows: [
-        { bucket: null, bucket_count: '3' },
-        { bucket: 'WARM', bucket_count: '2' },
-        { bucket: 'HIGH', bucket_count: '2' },
-      ],
-    },
-    {
-      match: 'GROUP BY res.`grouped_outcome`',
-      rows: [
-        { bucket: 'EXISTING_DUPLICATE_DNC', bucket_count: '4' },
-        // A label outside the locked vocabulary must be counted, never surfaced.
-        { bucket: 'SOME_FUTURE_GROUP', bucket_count: '3' },
-      ],
-    },
-    {
-      match: 'GROUP BY res.`kserve_comparison_label`',
-      rows: [
-        { bucket: 'match', bucket_count: '4' },
-        { bucket: 'mismatch', bucket_count: '3' },
-      ],
-    },
-    {
-      match: 'GROUP BY res.`mismatch_severity`',
-      rows: [
-        { bucket: 'none', bucket_count: '4' },
-        { bucket: 'high', bucket_count: '3' },
-      ],
-    },
-    {
-      match: 'GROUP BY res.`qualification_label`',
-      rows: [{ bucket: 'NON_QUALIFIED', bucket_count: '7' }],
-    },
-    {
-      match: 'GROUP BY res.`next_action_code`',
-      rows: [{ bucket: 'DO_NOT_CALL', bucket_count: '7' }],
-    },
-    {
-      match: 'flag_DNC_RISK',
-      rows: [
-        Object.fromEntries(
-          ISSUE_FLAGS.map((flag) => [
-            `flag_${flag}`,
-            flag === 'DNC_RISK' ? '4' : flag === 'WEAK_NEXT_STEP' ? '2' : '0',
-          ]),
-        ),
-      ],
-    },
-  ]
+  return [{ match: 'audited_call_count', rows: [summaryRow()] }]
 }
 
 /** Exercises every read method once, against one fake pool. */
@@ -349,7 +324,8 @@ const WRITE_KEYWORDS = [
 
 test('every statement is a read-only SELECT', async () => {
   const fake = await exerciseEveryRead(summaryRules())
-  assert.ok(fake.calls.length >= 14)
+  // run, run list, ONE period summary, metrics, results, usage.
+  assert.equal(fake.calls.length, 6)
   for (const call of fake.calls) {
     assert.match(call.sql, /^SELECT /)
     const upper = call.sql.toUpperCase()
@@ -474,7 +450,8 @@ test('a run-type filter binds each cadence as its own placeholder', async () => 
   const call = fake.find('audited_call_count')
   assert.ok(call)
   assert.ok(call.sql.includes('`run`.`run_type` IN (?, ?, ?, ?)'))
-  assert.deepEqual(call.parameters, [
+  // The scope binds after the summary's own dimension and flag values.
+  assert.deepEqual(call.parameters.slice(-6), [
     NORMALIZED_PERIOD.periodStart,
     NORMALIZED_PERIOD.periodEndExclusive,
     'daily',
@@ -697,11 +674,17 @@ test('issue flag counts are coded, complete, and bound as needles', async () => 
 
   const call = fake.find('flag_DNC_RISK')
   assert.ok(call)
+  const dimensionParameters = CALL_AUDIT_REPORTING_SQL.dimensions.flatMap(
+    (dimension) => [...dimension.vocabulary, ...dimension.vocabulary],
+  )
   assert.deepEqual(call.parameters, [
+    ...dimensionParameters,
     ...ISSUE_FLAGS.map(issueFlagNeedle),
     NORMALIZED_PERIOD.periodStart,
     NORMALIZED_PERIOD.periodEndExclusive,
   ])
+  // Placeholders and bound values line up exactly.
+  assert.equal(call.sql.split('?').length - 1, call.parameters.length)
   // INSTR, not LIKE: every flag code contains an underscore, which LIKE would
   // treat as a wildcard.
   assert.ok(call.sql.includes('INSTR(res.`issue_flags_json`, ?)'))
@@ -728,17 +711,52 @@ test('a summary over an empty period reports zeros, not missing buckets', async 
   )
 })
 
-test('summary counts every declared dimension exactly once', async () => {
+test('the period summary is one scan with every dimension and flag in it', async () => {
   const fake = fakePool(summaryRules())
   const repo = createMysqlCallAuditReportingRepository(fake.pool)
-  await repo.getPeriodSummary(periodQuery())
-  for (const dimension of CALL_AUDIT_REPORTING_SQL.dimensions) {
-    assert.equal(
-      fake.all(`GROUP BY ${dimension.column}`).length,
-      1,
-      `one statement per dimension: ${dimension.key}`,
-    )
-  }
+  await repo.getPeriodSummary(periodQuery({ runTypes: ['monthly'], runId: RUN_ID }))
+  assert.equal(fake.calls.length, 1)
+  const [call] = fake.calls
+  assert.equal(/GROUP BY/.test(call!.sql), false)
+  CALL_AUDIT_REPORTING_SQL.dimensions.forEach((dimension, d) => {
+    assert.ok(call!.sql.includes(`AS \`d${d}_null\``), dimension.key)
+    assert.ok(call!.sql.includes(`AS \`d${d}_invalid\``), dimension.key)
+    dimension.vocabulary.forEach((_, v) => {
+      assert.ok(call!.sql.includes(`AS \`d${d}_v${v}\``), dimension.key)
+    })
+    // Vocabulary words are bound, never interpolated.
+    for (const word of dimension.vocabulary) {
+      assert.equal(call!.sql.includes(`'${word}'`), false, word)
+    }
+  })
+  // Scope binds last, in its existing order.
+  assert.deepEqual(call!.parameters.slice(-4), [
+    NORMALIZED_PERIOD.periodStart,
+    NORMALIZED_PERIOD.periodEndExclusive,
+    'monthly',
+    RUN_ID,
+  ])
+  assert.equal(call!.sql.split('?').length - 1, call!.parameters.length)
+})
+
+test('stored null and unexpected labels still land in undetermined', async () => {
+  const row = summaryRow()
+  const intent = CALL_AUDIT_REPORTING_SQL.dimensions.findIndex(
+    (dimension) => dimension.key === 'byIntent',
+  )
+  row[`d${intent}_null`] = '2'
+  row[`d${intent}_invalid`] = '5'
+  const fake = fakePool([{ match: 'audited_call_count', rows: [row] }])
+  const summary = await createMysqlCallAuditReportingRepository(fake.pool)
+    .getPeriodSummary(periodQuery())
+  assert.equal(summary.byIntent.undetermined, 7)
+  // A malformed count is still refused rather than coerced.
+  row[`d${intent}_invalid`] = 'not-a-count'
+  await assert.rejects(
+    createMysqlCallAuditReportingRepository(
+      fakePool([{ match: 'audited_call_count', rows: [row] }]).pool,
+    ).getPeriodSummary(periodQuery()),
+  )
 })
 
 // ---------------------------------------------------------------------------

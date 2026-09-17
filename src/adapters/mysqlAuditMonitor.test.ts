@@ -409,9 +409,29 @@ test('rows mode fetches one lookahead row without exposing it', async () => {
   assert.deepEqual(auditedPage?.params.slice(-2), [26, 0])
   assert.match(
     auditedPage?.sql ?? '',
-    /\) audited_page[\s\S]*ORDER BY audited_page\.billing_period_date DESC/,
+    /WITH audited_page AS \([\s\S]*ORDER BY audited_page\.billing_period_date DESC/,
   )
   assert.doesNotMatch(auditedPage?.sql ?? '', /ORDER BY audited_at/)
+})
+
+test('audited rows read one finding and one page-scoped usage aggregate', async () => {
+  const fake = fakePool([])
+  await collectAuditMonitor(fake.pool, QUERY, 'rows', 'audited')
+  const sql = fake.calls.find(({ sql }) =>
+    sql.includes('c.id AS internal_call_id'),
+  )?.sql ?? ''
+  const window = sql.slice(0, sql.indexOf('page_runs AS'))
+  // The window no longer joins the latest transcript; the detail does, once.
+  assert.equal(/JOIN kaudit_transcript/.test(window), false)
+  assert.equal(sql.match(/JOIN kaudit_transcript t\b/g)?.length, 1)
+  // One finding lookup, with no latest-run condition.
+  assert.equal(sql.match(/FROM kaudit_audit_finding af/g)?.length, 1)
+  assert.equal(/af\.audit_run_id/.test(sql), false)
+  // Usage is aggregated once, over the page's latest runs only.
+  assert.equal(sql.match(/FROM kaudit_ai_usage_event/g)?.length ?? 0, 0)
+  assert.equal(sql.match(/JOIN kaudit_ai_usage_event usage_event/g)?.length, 1)
+  assert.match(sql, /FROM audited_page\s+JOIN kaudit_call page_call/)
+  assert.match(sql, /LEFT JOIN page_usage\s+ON page_usage\.audit_run_id = ar\.id/)
 })
 
 test('default audited paging limits candidates before display joins', async () => {
@@ -859,6 +879,10 @@ test('bill-audit coverage resolves missing recordings and accepted KServe fallba
   const data = await collectAuditMonitor(fake.pool, QUERY, 'summary-core')
   const overallSql = fake.find('COUNT(*) AS total_calls') ?? ''
   const fallbackSql = fake.find('AS accepted_fallback_calls') ?? ''
+  assert.equal(
+    fake.statements.filter((sql) => sql.includes('total_calls')).length,
+    1,
+  )
 
   // 3 independently audited + 2 settled by cycle close. The 5 no-recording
   // calls are NOT bill-audited merely for lacking a recording: no billing
@@ -869,14 +893,21 @@ test('bill-audit coverage resolves missing recordings and accepted KServe fallba
   assert.equal(data.summary.noRecordingCalls, 5)
   assert.equal(data.summary.pendingEligibleCalls, 2)
   assert.equal(data.summary.processingFailureCalls, 2)
+  // Artifact work is month-scoped; independent billing and audit-run facts
+  // stay in set-based statements so production cannot turn them into one
+  // dependent probe per call.
+  assert.match(overallSql, /WITH scoped_calls AS \(/)
+  assert.match(overallSql, /FROM scoped_calls c\s+JOIN kaudit_call_artifact ca/)
+  assert.equal(/SELECT DISTINCT/.test(overallSql), false)
   assert.doesNotMatch(overallSql, /kaudit_billing_calculation/)
+  assert.doesNotMatch(overallSql, /kaudit_audit_run/)
   assert.match(fallbackSql, /accepted_as_billed_unverified/)
   assert.equal(
     fallbackSql.match(/accepted_as_billed_unverified/g)?.length,
     1,
   )
   assert.match(fallbackSql, /idx_billing_calc_authority|calculation_basis/)
-  assert.match(overallSql, /recording_available, 0\) = 0/)
+  assert.match(overallSql, /AS no_recording_calls/)
 })
 
 test('accepted KServe fallbacks do not remain in the pending queue', async () => {
@@ -925,10 +956,13 @@ test('a call with no recording is not counted as bill-audited on its own', async
         processing_failures: 0,
       }],
     },
-    { match: 'accepted_fallback_calls', rows: [{
-      accepted_fallback_calls: 5,
-      accepted_failure_calls: 5,
-    }] },
+    {
+      match: 'AS accepted_fallback_calls',
+      rows: [{
+        accepted_fallback_calls: 5,
+        accepted_failure_calls: 5,
+      }],
+    },
   ])
 
   const data = await collectAuditMonitor(fake.pool, QUERY, 'summary-core')
@@ -967,7 +1001,7 @@ test('the pending queue nets off only recording-backed settlements', async () =>
       }],
     },
     {
-      match: 'accepted_fallback_calls',
+      match: 'AS accepted_fallback_calls',
       rows: [{
         // Every no-recording call settled, plus a handful of recording-backed.
         accepted_fallback_calls: 16_175,
@@ -999,7 +1033,7 @@ test('a recording-backed settlement does leave the pending queue', async () => {
       }],
     },
     {
-      match: 'accepted_fallback_calls',
+      match: 'AS accepted_fallback_calls',
       rows: [{
         accepted_fallback_calls: 65,
         accepted_recording_backed_calls: 5,

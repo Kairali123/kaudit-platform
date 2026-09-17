@@ -1075,6 +1075,88 @@ function buildIssueFlagSql(scoped: ScopedSql): string {
    WHERE ${scoped.where}`
 }
 
+/**
+ * The whole period summary as ONE scan: totals, every dimension bucket, and
+ * every issue flag as conditional aggregates over the same scoped rows.
+ *
+ * Every column and alias is a fixed fragment from the allowlists above; every
+ * value (vocabulary words, flag needles, scope) is bound. Placeholder order:
+ * for each dimension its vocabulary (bucket counts), then its vocabulary again
+ * (the invalid-value count), then the issue-flag needles, then the scope.
+ *
+ * Buckets compare as BINARY so a stored value is counted under a word only when
+ * it is byte-identical to it, exactly the check `tallyBuckets` applies. A NULL
+ * and a value outside the vocabulary are each counted, and both then flow
+ * through `tallyBuckets` into the undetermined bucket as before, so nothing
+ * disappears from the totals.
+ *
+ * Aliases: `d{dimension}_v{word}`, `d{dimension}_null`, `d{dimension}_invalid`
+ * (indexes into SUMMARY_DIMENSIONS and its vocabulary), and `flag_{code}`.
+ */
+function buildPeriodSummarySql(scoped: ScopedSql): {
+  sql: string
+  parameters: SqlValue[]
+} {
+  const columns: string[] = []
+  const parameters: SqlValue[] = []
+  SUMMARY_DIMENSIONS.forEach((dimension, d) => {
+    const vocabulary = dimension.vocabulary as readonly string[]
+    if (vocabulary.length === 0) {
+      throw new CallAuditReportingError(dimension.key, 'has no vocabulary')
+    }
+    vocabulary.forEach((word, v) => {
+      columns.push(
+        `CAST(COALESCE(SUM(CASE WHEN CAST(${dimension.column} AS BINARY) = ` +
+          `CAST(? AS BINARY) THEN 1 ELSE 0 END), 0) AS CHAR) AS \`d${d}_v${v}\``,
+      )
+      parameters.push(word)
+    })
+    columns.push(
+      `CAST(COALESCE(SUM(CASE WHEN ${dimension.column} IS NULL ` +
+        `THEN 1 ELSE 0 END), 0) AS CHAR) AS \`d${d}_null\``,
+    )
+    columns.push(
+      `CAST(COALESCE(SUM(CASE WHEN ${dimension.column} IS NOT NULL ` +
+        `AND CAST(${dimension.column} AS BINARY) NOT IN (` +
+        `${vocabulary.map(() => 'CAST(? AS BINARY)').join(', ')}) ` +
+        `THEN 1 ELSE 0 END), 0) AS CHAR) AS \`d${d}_invalid\``,
+    )
+    parameters.push(...vocabulary)
+  })
+  for (const flag of ISSUE_FLAGS) {
+    columns.push(
+      `CAST(COALESCE(SUM(CASE WHEN INSTR(res.\`issue_flags_json\`, ?) > 0 ` +
+        `THEN 1 ELSE 0 END), 0) AS CHAR) AS \`flag_${flag}\``,
+    )
+    parameters.push(issueFlagNeedle(flag))
+  }
+  return {
+    sql: `${SELECT_SUMMARY_TOTALS},
+          ${columns.join(',\n          ')}
+   ${scoped.from}
+   WHERE ${scoped.where}`,
+    parameters: [...parameters, ...scoped.parameters],
+  }
+}
+
+/** The one-row summary's buckets for one dimension, in `tallyBuckets` shape. */
+function summaryBucketRows(
+  row: RowDataPacket,
+  d: number,
+  vocabulary: readonly string[],
+): BucketRow[] {
+  return [
+    ...vocabulary.map((word, v) => ({
+      bucket: word,
+      bucket_count: row[`d${d}_v${v}`] ?? '0',
+    })),
+    { bucket: null, bucket_count: row[`d${d}_null`] ?? '0' },
+    // Any non-vocabulary label maps to undetermined inside tallyBuckets; the
+    // label itself is never read back or surfaced.
+    { bucket: '', bucket_count: row[`d${d}_invalid`] ?? '0' },
+  ] as BucketRow[]
+}
+
 // --- Metric aggregates ------------------------------------------------------
 
 const METRIC_DISTRIBUTION_COLUMNS = METRIC_SCORE_VALUES.map(
@@ -1462,47 +1544,36 @@ export function createMysqlCallAuditReportingRepository(
     },
 
     /**
-     * One totals read, one GROUP BY read per coded dimension, and one coded
-     * issue-flag read. Statements run sequentially so a report never holds
-     * several pooled connections at once for a single page.
+     * One scoped read for totals, every coded dimension, and every coded issue
+     * flag (formerly ten sequential scans of the same rows).
      */
     async getPeriodSummary(query) {
       const scope = validatePeriodQuery(query)
       const scoped = buildScopedSql(RESULT_FROM, scope)
+      const statement = buildPeriodSummarySql(scoped)
 
-      const [totalsRows] = await pool.execute<RowDataPacket[]>(
-        `${SELECT_SUMMARY_TOTALS}
-   ${scoped.from}
-   WHERE ${scoped.where}`,
-        scoped.parameters,
+      const [summaryRows] = await pool.execute<RowDataPacket[]>(
+        statement.sql,
+        statement.parameters,
       )
-      const totals = totalsRows[0] ?? {}
+      const totals = summaryRows[0] ?? ({} as RowDataPacket)
 
       const tallies = {} as Record<
         SummaryDimension['key'],
         CallAuditTally<string>
       >
-      for (const dimension of SUMMARY_DIMENSIONS) {
-        const [rows] = await pool.execute<BucketRow[]>(
-          buildDimensionSql(dimension, scoped),
-          scoped.parameters,
-        )
+      SUMMARY_DIMENSIONS.forEach((dimension, d) => {
         tallies[dimension.key] = tallyBuckets(
-          rows,
+          summaryBucketRows(totals, d, dimension.vocabulary),
           dimension.vocabulary,
           dimension.column,
         )
-      }
+      })
 
-      const [flagRows] = await pool.execute<RowDataPacket[]>(
-        buildIssueFlagSql(scoped),
-        [...ISSUE_FLAGS.map(issueFlagNeedle), ...scoped.parameters],
-      )
-      const flagRow = flagRows[0] ?? {}
       const byIssueFlag = Object.fromEntries(
         ISSUE_FLAGS.map((flag) => [
           flag,
-          countOf(flagRow[`flag_${flag}`], 'result.issue_flags_json'),
+          countOf(totals[`flag_${flag}`] ?? '0', 'result.issue_flags_json'),
         ]),
       ) as Record<IssueFlag, number>
 
@@ -1605,6 +1676,7 @@ export const CALL_AUDIT_REPORTING_SQL = {
   buildScopedSql,
   buildDimensionSql,
   buildIssueFlagSql,
+  buildPeriodSummarySql,
   buildMetricAggregateSql,
   buildResultListSql,
   buildUsageAggregateSql,

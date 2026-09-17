@@ -10,6 +10,8 @@ import {
   categoryTotalsSql,
   createMysqlBillingCategoryAnalysisRepository,
   durationGapMs,
+  legacyCategoryCallsSql,
+  legacyNoRecordingTotalsSql,
   noRecordingTotalsSql,
   toCategoryCallRow,
   toCategoryTotalsRow,
@@ -1131,43 +1133,73 @@ test('the statements never select evidence, prompts, or transcript text', () => 
   }
 })
 
-test('shared evidence relations are joined once and confidence is read once', () => {
+test('the page is windowed on kaudit_call before any enrichment runs', () => {
   const sql = categoryCallsSql(PERIOD_FILTERS)
-  // Each relation is joined exactly once as a grouped or ranked derived table.
+  const page = sql.slice(0, sql.indexOf('vendor AS ('))
+  // The window (LIMIT/OFFSET) closes the first CTE, before the vendor,
+  // evidence-payload and finding lookups are reached.
+  assert.match(page, /WITH page_calls AS \(/)
+  assert.match(page, /LIMIT \? OFFSET \?\s*\)\s*,\s*$/)
+  assert.equal(/kaudit_provider_cost|kaudit_audit_finding/.test(page), false)
+  // Eligibility is established inside the window, not after it.
+  assert.match(page, /AND EXISTS \(/)
+  // Vendor costs are aggregated only for the page's calls.
   assert.equal(sql.match(/FROM kaudit_provider_cost/g)?.length, 1)
-  assert.equal(sql.match(/kaudit_call_external_reference/g)?.length, 1)
-  assert.equal(sql.match(/kaudit_media_analysis/g)?.length, 1)
-  assert.equal(sql.match(/kaudit_transcript/g)?.length, 1)
+  assert.match(sql, /JOIN page_calls vendor_scope ON vendor_scope\.id = cost\.call_id/)
+  // No month-wide window-function relation remains in the page statement.
+  assert.equal(/ROW_NUMBER\(/.test(sql), false)
+  assert.equal(/SELECT DISTINCT/.test(sql), false)
   assert.equal(sql.match(/kaudit_billing_calculation/g)?.length ?? 0, 0)
-  assert.equal(sql.match(/finding\.confidence/g)?.length, 2)
-  assert.equal(sql.match(/finding\.explanation/g)?.length, 2)
-  assert.equal(sql.match(/kaudit_audit_finding/g)?.length, 1)
+  assert.equal(sql.match(/\bfinding\.confidence/g)?.length ?? 0, 0)
+  assert.equal(sql.match(/audit_finding\.confidence/g)?.length, 1)
 })
 
-test('No Recording starts from grouped vendor facts before the month join', () => {
-  const { sql } = noRecordingTotalsSql({
+test('category totals probe transcripts per scoped artifact', () => {
+  const sql = categoryTotalsRowsSql(PERIOD_FILTERS)
+  assert.equal(/SELECT DISTINCT/.test(sql), false)
+  assert.match(
+    sql,
+    /EXISTS \(\s*SELECT 1\s*FROM kaudit_transcript transcript\s*WHERE transcript\.call_id = artifact\.call_id\s*AND transcript\.call_artifact_id = artifact\.id/,
+  )
+  assert.match(sql, /FROM scoped_calls evidence_scope\s*JOIN kaudit_call_artifact artifact/)
+})
+
+test('No Recording aggregates vendor facts for scoped calls only', () => {
+  const { sql, params } = noRecordingTotalsSql({
     periodStart: '2026-08-01',
     periodEnd: '2026-08-31',
   })
+  assert.deepEqual(params, ['2026-08-01', '2026-08-31'])
   assert.equal(sql.match(/FROM kaudit_provider_cost/g)?.length, 1)
-  assert.equal(sql.match(/kaudit_call_artifact/g)?.length, 1)
+  assert.match(sql, /WITH scoped_calls AS \(/)
+  assert.match(sql, /JOIN scoped_calls vendor_scope ON vendor_scope\.id = cost\.call_id/)
   assert.match(sql, /vendor_asserted_billed_minutes/)
   assert.match(sql, /vendor_asserted_billed_amount/)
-  assert.equal(/NOT EXISTS/.test(sql), false)
   assert.match(sql, /GROUP BY cost\.call_id/)
-  assert.match(sql, /STRAIGHT_JOIN kaudit_call c ON c\.id = vendor\.call_id/)
-  assert.match(sql, /recording\.id IS NULL/)
+  assert.match(sql, /AND NOT EXISTS \(/)
+  // These calls may never have received an AI category.
+  assert.equal(/canonical_outcome_code/.test(sql), false)
+  const allMonths = noRecordingTotalsSql({ periodStart: null, periodEnd: null })
+  assert.deepEqual(allMonths.params, [])
+  assert.equal(/\?/.test(allMonths.sql), false)
 })
 
 test('the page order ends on a unique key that is never projected', () => {
   const sql = categoryCallsSql(PERIOD_FILTERS)
   assert.match(
     sql,
-    /ORDER BY call_started_at DESC, call_reference ASC, c\.id ASC/,
+    /ORDER BY c\.source_started_at DESC, call_reference ASC, c\.id ASC\s*LIMIT/,
   )
-  // The tie-break is an ordering key only: no internal id is selected.
-  assert.equal(/\sAS\s+(call_)?id\b/i.test(sql), false)
-  assert.equal(/\bc\.id\s+AS\s/i.test(sql), false)
+  assert.match(
+    sql,
+    /ORDER BY c\.source_started_at DESC, c\.call_reference ASC, c\.id ASC\s*$/,
+  )
+  // The tie-break is an ordering key only: no internal id is projected by the
+  // outer select (the page CTE carries it for joining only).
+  const outer = sql.slice(sql.lastIndexOf('   SELECT\n'))
+  assert.equal(/\sAS\s+(call_)?id\b/i.test(outer), false)
+  assert.equal(/\bc\.id\s+AS\s/i.test(outer), false)
+  assert.equal(/^\s*c\.id,?\s*$/m.test(outer.slice(0, outer.indexOf('FROM page_calls'))), false)
 })
 
 test('the totals aggregate caps audited money per call before summing', () => {
@@ -1252,4 +1284,220 @@ test('the repository scopes all reads and never mutates', async () => {
     25,
     50,
   ])
+})
+
+// ---------------------------------------------------------------------------
+// Rewrite equivalence: the paged/probed statements against the pre-rewrite
+// ones, over one deliberately awkward synthetic month.
+// ---------------------------------------------------------------------------
+
+const CATEGORIES = ['OK', 'AGENT_FAILURE', 'USER_SILENCE', 'INACTIVE_CALL']
+
+function equivalenceFixture(): Parameters<typeof synthetic>[0] {
+  const calls: SyntheticCall[] = []
+  for (let index = 0; index < 36; index += 1) {
+    const id = `eq-${String(index).padStart(2, '0')}`
+    const category = index % 9 === 8 ? null : CATEGORIES[index % 4]!
+    const call: SyntheticCall = {
+      id,
+      category,
+      // A few calls fall outside August so the month scope is exercised.
+      billingPeriodDate: index % 11 === 10 ? '2026-09-02' : '2026-08-15',
+      // Heavy start-time ties, and some null starts.
+      startedAt:
+        index % 7 === 6 ? null : `2026-08-${10 + (index % 3)} 09:00:00`,
+      endedAt: index % 7 === 6 ? null : `2026-08-${10 + (index % 3)} 09:05:00`,
+      billedMinutes: index % 5 === 4 ? null : `${(index % 4) + 0.5}`,
+      billedAmount: index % 3 === 0 ? `${index}.12345678` : null,
+      decodedDurationMs: index % 6 === 5 ? null : 90_000 + index * 1_000,
+      conversationEndMs: index % 8 === 7 ? null : 30_000 + index * 500,
+      transcriptCompleted: index % 10 !== 9,
+      recordingUrl: index % 4 === 3 ? null : `https://recordings.example.test/${id}.ogg`,
+      // Duplicate references on purpose: ordering must still be total.
+      taskReference: index % 5 === 0 ? null : `task-${index % 6}`,
+    }
+    if (category === 'AGENT_FAILURE') {
+      // Persisted mid-conversation service end with the 30-second grace.
+      // Mid-conversation (40s + 30s grace) or from-start (zero).
+      call.categoryServiceEndMs = index % 8 === 1 ? 40_000 : 0
+      call.categoryGraceMs = index % 8 === 1 ? 30_000 : 0
+    } else if (category === 'USER_SILENCE') {
+      call.categoryServiceEndMs = 20_000
+      call.categoryGraceMs = 60_000
+    }
+    calls.push(call)
+  }
+  // Task-ID aliases: two references, the lower id wins.
+  calls.push({
+    ...AUDITED_CALL,
+    id: 'eq-alias',
+    startedAt: '2026-08-11 09:00:00',
+    taskReference: undefined,
+    taskReferences: [
+      { id: 900, externalId: 'task-alias-b' },
+      { id: 899, externalId: 'task-alias-z' },
+    ],
+  })
+  // Several final artifacts: split evidence, a newer non-final artifact, and
+  // analyses tied on created_at so the id decides.
+  calls.push({
+    id: 'eq-multi',
+    category: 'OK',
+    billingPeriodDate: '2026-08-20',
+    startedAt: '2026-08-11 09:00:00',
+    billedMinutes: '3',
+    taskReference: 'task-1',
+    artifacts: [
+      {
+        id: 'eq-multi-a',
+        sourceUrl: null,
+        analyses: [
+          { id: 'm-a1', decodedDurationMs: 50_000, conversationEndMs: 10_000, createdAt: '2026-08-05 00:00:00' },
+          { id: 'm-a2', decodedDurationMs: 70_000, conversationEndMs: 20_000, createdAt: '2026-08-05 00:00:00' },
+        ],
+        transcripts: [{ id: 't-a1', createdAt: '2026-08-05 00:00:00' }],
+      },
+      {
+        // Newer analysis but its transcript is on another artifact.
+        id: 'eq-multi-b',
+        sourceUrl: 'https://recordings.example.test/eq-multi-b.ogg',
+        analyses: [
+          { id: 'm-b1', decodedDurationMs: 999_000, conversationEndMs: 999_000, createdAt: '2026-08-09 00:00:00' },
+        ],
+      },
+      {
+        id: 'eq-multi-c',
+        isFinal: false,
+        sourceUrl: 'https://recordings.example.test/eq-multi-c.ogg',
+        analyses: [
+          { id: 'm-c1', decodedDurationMs: 888_000, conversationEndMs: 888_000, createdAt: '2026-08-10 00:00:00' },
+        ],
+        transcripts: [{ id: 't-c1', createdAt: '2026-08-10 00:00:00' }],
+      },
+    ],
+  })
+  // No recording artifact at all, and a no-category call with vendor cost.
+  calls.push({
+    id: 'eq-bare',
+    category: null,
+    billingPeriodDate: '2026-08-03',
+    billedMinutes: '1.25',
+    billedAmount: '11.87500000',
+    artifacts: [],
+  })
+  return {
+    calls,
+    calculations: [
+      { id: 'calc-1', callId: 'eq-01', status: 'final', totalAmount: '9.50000000', calculatedAt: '2026-08-20 00:00:00' },
+      { id: 'calc-2', callId: 'eq-01', status: 'final', totalAmount: '19.00000000', calculatedAt: '2026-08-21 00:00:00', supersedesCalculationId: 'calc-1' },
+    ],
+  }
+}
+
+function equivalenceDb(): DatabaseSync {
+  const db = synthetic(equivalenceFixture())
+  // Revised provider-cost rows: a second final billed-minutes row and a
+  // non-final one. Both statements must read them identically.
+  db.exec(`
+    INSERT INTO kaudit_provider_cost (call_id, provider_sku, minutes_decimal, is_final)
+    VALUES ('eq-01', 'vendor_asserted_billed_minutes', '7.5', 1),
+           ('eq-02', 'vendor_asserted_billed_minutes', '99', 0),
+           ('eq-03', 'vendor_asserted_billed_amount', NULL, 1);
+    INSERT INTO kaudit_transcript (id, call_id, call_artifact_id, status, created_at)
+    VALUES ('t-failed', 'eq-09', 'artifact-eq-09', 'failed', '2026-08-02 00:00:00');
+  `)
+  return db
+}
+
+const MONTH_FILTERS = PERIOD_FILTERS
+const ALL_MONTH_FILTERS = ['c.canonical_outcome_code IS NOT NULL']
+
+test('the windowed page returns exactly the pre-rewrite rows on every page', () => {
+  const db = equivalenceDb()
+  try {
+    for (const [filters, baseParams] of [
+      [MONTH_FILTERS, PERIOD_PARAMS],
+      [ALL_MONTH_FILTERS, []],
+    ] as const) {
+      for (const category of [null, ...CATEGORIES, 'JUNK_CALL']) {
+        const scoped = category
+          ? [...filters, 'c.canonical_outcome_code = ?']
+          : [...filters]
+        const params = category ? [...baseParams, category] : [...baseParams]
+        for (const [limit, offset] of [[1, 0], [3, 2], [4, 3], [7, 5], [25, 0], [25, 25], [5, 500]]) {
+          const legacy = db.prepare(legacyCategoryCallsSql(scoped)).all(...params, limit!, offset!)
+          const current = db.prepare(categoryCallsSql(scoped)).all(...params, limit!, offset!)
+          assert.deepEqual(current, legacy, `${category} ${limit}/${offset}`)
+        }
+        // Adjacent pages of 4 reassemble the single unpaged read exactly:
+        // no row is skipped or repeated at a page boundary.
+        const all = db.prepare(categoryCallsSql(scoped)).all(...params, 1000, 0)
+        const stitched = []
+        for (let offset = 0; offset < all.length + 4; offset += 4) {
+          stitched.push(...db.prepare(categoryCallsSql(scoped)).all(...params, 4, offset))
+        }
+        assert.deepEqual(stitched, all)
+      }
+    }
+  } finally {
+    db.close()
+  }
+})
+
+test('the probed totals equal the pre-rewrite totals, month and all-month', () => {
+  const db = equivalenceDb()
+  try {
+    for (const [filters, params] of [
+      [MONTH_FILTERS, PERIOD_PARAMS],
+      [ALL_MONTH_FILTERS, []],
+    ] as const) {
+      const legacy = db
+        .prepare(categoryTotalsSql(categoryTotalsRowsSql(filters, { legacyEvidence: true })))
+        .all(...params)
+      const current = db
+        .prepare(categoryTotalsSql(categoryTotalsRowsSql(filters)))
+        .all(...params)
+      assert.ok(current.length > 0)
+      assert.deepEqual(current, legacy)
+    }
+    // The AGENT_FAILURE persisted 30-second grace reaches the audited total.
+    const failure = db
+      .prepare(categoryTotalsSql(categoryTotalsRowsSql(MONTH_FILTERS)))
+      .all(...PERIOD_PARAMS)
+      .map((row) => toCategoryTotalsRow(row as Parameters<typeof toCategoryTotalsRow>[0]))
+      .find((row) => row.category === 'AGENT_FAILURE')
+    assert.ok(failure)
+    assert.ok((failure.aiAuditedDurationMs ?? 0) > 0)
+  } finally {
+    db.close()
+  }
+})
+
+test('the scoped no-recording totals equal the pre-rewrite totals', () => {
+  const db = equivalenceDb()
+  try {
+    for (const scope of [
+      { periodStart: '2026-08-01', periodEnd: '2026-08-31' },
+      { periodStart: null, periodEnd: null },
+      // An empty month is a zero row, not an absent one.
+      { periodStart: '2031-01-01', periodEnd: '2031-01-31' },
+    ]) {
+      const legacy = legacyNoRecordingTotalsSql(scope)
+      const current = noRecordingTotalsSql(scope)
+      const legacyRow = db
+        .prepare(legacy.sql.replace('STRAIGHT_JOIN', 'JOIN'))
+        .get(...(legacy.params as string[]))
+      const currentRow = db.prepare(current.sql).get(...(current.params as string[]))
+      assert.deepEqual(currentRow, legacyRow, JSON.stringify(scope))
+    }
+    // The uncategorized, artifact-less call is still counted.
+    const row = toCategoryTotalsRow(
+      db.prepare(noRecordingTotalsSql({ periodStart: '2026-08-01', periodEnd: '2026-08-03' }).sql)
+        .get('2026-08-01', '2026-08-03') as Parameters<typeof toCategoryTotalsRow>[0],
+    )
+    assert.equal(row.auditedCallCount, 1)
+    assert.equal(row.kserveChargeInr, '11.875')
+  } finally {
+    db.close()
+  }
 })

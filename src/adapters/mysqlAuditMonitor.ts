@@ -6,7 +6,10 @@ import {
 import { calculateOpenAiAuditCost } from '../usage/openAiCost.ts'
 import type { ManualReauditRowStatus } from '../reaudit/manualRequests.ts'
 import { readManualReauditRowStatuses } from './mysqlManualReauditQueue.ts'
-import { KSERVE_VENDOR_RATE_PER_MINUTE } from './mysqlKserveVendorBilled.ts'
+import {
+  KSERVE_VENDOR_RATE_PER_MINUTE,
+  vendorBilledAssertionsSql,
+} from './mysqlKserveVendorBilled.ts'
 import { REAUDIT_ENGINE_FAMILY } from '../reaudit/core.ts'
 
 export interface AuditMonitorQuery {
@@ -227,12 +230,6 @@ interface OverallSummaryRow extends RowDataPacket {
   processing_failures: number | string
 }
 
-interface AcceptedFallbackSummaryRow extends RowDataPacket {
-  accepted_fallback_calls: number | string
-  accepted_recording_backed_calls: number | string
-  accepted_failure_calls: number | string
-}
-
 interface UsageSummaryRow extends RowDataPacket {
   tracked_audit_runs: number | string
   input_tokens: number | string | null
@@ -381,26 +378,6 @@ const AUDITED_JOIN = `
   LEFT JOIN kaudit_audit_run ar ON ar.id = c.latest_audit_run_id
 `
 
-/** Vendor-asserted billed minutes, one row per call. */
-const VENDOR_BILLED_MINUTES_SQL = `
-  SELECT
-    cost.call_id,
-    MAX(CASE
-      WHEN cost.provider_sku = 'vendor_asserted_billed_minutes'
-      THEN cost.minutes_decimal
-    END) AS minutes_decimal,
-    MAX(CASE
-      WHEN cost.provider_sku = 'vendor_asserted_billed_amount'
-      THEN cost.quantity_decimal
-    END) AS amount_decimal
-  FROM kaudit_provider_cost cost
-  WHERE cost.provider_sku IN (
-      'vendor_asserted_billed_minutes',
-      'vendor_asserted_billed_amount'
-    )
-    AND cost.is_final = 1
-  GROUP BY cost.call_id
-`
 
 /**
  * Audited-call financial summary.
@@ -423,6 +400,7 @@ const VENDOR_BILLED_MINUTES_SQL = `
  */
 export function auditedFinancialSummarySql(
   scopedAuditedCallsSql: string,
+  options: { legacyVendorScan?: boolean } = {},
 ): string {
   const vendorCharge = `COALESCE(
        CAST(vendor.amount_decimal AS DECIMAL(20,8)),
@@ -444,7 +422,9 @@ export function auditedFinancialSummarySql(
          THEN ${projectedCharge}
        ELSE ${vendorCharge}
      END`
-  return `SELECT
+  if (options.legacyVendorScan) {
+    // Tests only: the pre-rewrite shape (table-wide vendor grouping).
+    return `SELECT
      COUNT(*) AS audited_calls,
      SUM((${vendorCharge}) IS NOT NULL) AS kserve_priced_calls,
      COALESCE(SUM(${vendorCharge}), 0) AS kserve_charge,
@@ -458,8 +438,35 @@ export function auditedFinancialSummarySql(
      ${scopedAuditedCallsSql}
    ) scoped
    LEFT JOIN (
-     ${VENDOR_BILLED_MINUTES_SQL}
+     ${vendorBilledAssertionsSql()}
    ) vendor ON vendor.call_id = scoped.id`
+  }
+  // Vendor costs are grouped only for the scoped calls, not for the whole
+  // provider-cost table. The scoped relation and every money expression are
+  // unchanged.
+  return `WITH scoped AS (
+     ${scopedAuditedCallsSql}
+   ),
+   scoped_ids AS (
+     SELECT DISTINCT scoped.id FROM scoped
+   ),
+   vendor AS (
+     ${vendorBilledAssertionsSql(
+       'JOIN scoped_ids vendor_scope ON vendor_scope.id = cost.call_id',
+     )}
+   )
+   SELECT
+     COUNT(*) AS audited_calls,
+     SUM((${vendorCharge}) IS NOT NULL) AS kserve_priced_calls,
+     COALESCE(SUM(${vendorCharge}), 0) AS kserve_charge,
+     SUM((${cappedCharge}) IS NOT NULL)
+       AS auditor_final_priced_calls,
+     SUM((${cappedCharge}) IS NULL)
+       AS auditor_unfinalized_calls,
+     COALESCE(SUM(${cappedCharge}), 0)
+       AS auditor_final_charge
+   FROM scoped
+   LEFT JOIN vendor ON vendor.call_id = scoped.id`
 }
 
 function categoryAdjustedDurationSql(alias: string): string {
@@ -549,7 +556,7 @@ function mapQueueRow(row: QueueDataRow): AuditQueueRow {
   }
 }
 
-function filterSql(query: AuditMonitorQuery): {
+export function filterSql(query: AuditMonitorQuery): {
   sql: string
   params: unknown[]
 } {
@@ -570,7 +577,108 @@ function filterSql(query: AuditMonitorQuery): {
   return { sql: `WHERE ${clauses.join(' AND ')}`, params }
 }
 
-function financialAuditedScope(query: AuditMonitorQuery): {
+/**
+ * Calls in the monitor's filtered scope that carry audited evidence: ONE final
+ * recording artifact with a completed, classified analysis AND a completed
+ * transcript of that same artifact. The same population `AUDITED_JOIN`
+ * yields, without materializing the latest media/transcript payloads that
+ * counts and usage never read. Binds `filters.params` only.
+ */
+function eligibleAuditedCallsSql(filters: { sql: string }): string {
+  return `SELECT c.id, c.latest_audit_run_id
+     FROM kaudit_call c
+     ${filters.sql}
+       AND EXISTS (
+         SELECT 1
+         FROM kaudit_call_artifact ca
+         WHERE ca.call_id = c.id
+           AND ca.artifact_type = 'recording'
+           AND ca.is_final = 1
+           AND EXISTS (
+             SELECT 1
+             FROM kaudit_media_analysis completed_media
+             WHERE completed_media.call_artifact_id = ca.id
+               AND completed_media.status = 'completed'
+               AND completed_media.classification_status = 'completed'
+           )
+           AND EXISTS (
+             SELECT 1
+             FROM kaudit_transcript completed_transcript
+             WHERE completed_transcript.call_id = c.id
+               AND completed_transcript.call_artifact_id = ca.id
+               AND completed_transcript.status = 'completed'
+           )
+       )`
+}
+
+/** Tests only: the pre-rewrite AUDITED_JOIN-based count and usage statements. */
+export function legacyAuditedCountAndUsageSql(filters: { sql: string }): {
+  count: string
+  usage: string
+} {
+  return {
+    count: `SELECT COUNT(DISTINCT c.id) AS n
+       ${AUDITED_JOIN}
+       ${filters.sql}`,
+    usage: `SELECT
+           usage_event.model_name,
+           COUNT(DISTINCT usage_event.audit_run_id)
+             AS tracked_audit_runs,
+           COALESCE(SUM(usage_event.input_tokens), 0)
+             AS input_tokens,
+           COALESCE(SUM(usage_event.output_tokens), 0)
+             AS output_tokens,
+           COALESCE(SUM(usage_event.total_tokens), 0)
+             AS total_tokens,
+           COALESCE(SUM(usage_event.audio_seconds), 0)
+             AS audio_seconds
+         FROM kaudit_ai_usage_event usage_event
+         JOIN (
+           SELECT DISTINCT c.id AS call_id, ar.id AS audit_run_id
+           ${AUDITED_JOIN}
+           ${filters.sql}
+         ) audited
+          ON audited.call_id = usage_event.call_id
+          AND audited.audit_run_id = usage_event.audit_run_id
+         GROUP BY usage_event.model_name WITH ROLLUP`,
+  }
+}
+
+export function auditedCountAndUsageSql(filters: { sql: string }): {
+  count: string
+  usage: string
+} {
+  return {
+    count: `SELECT COUNT(*) AS n
+       FROM (
+         ${eligibleAuditedCallsSql(filters)}
+       ) eligible_calls`,
+    // Latest audit run only, exactly as before; one row per eligible call.
+    usage: `WITH eligible_calls AS (
+           ${eligibleAuditedCallsSql(filters)}
+         )
+         SELECT
+           usage_event.model_name,
+           COUNT(DISTINCT usage_event.audit_run_id)
+             AS tracked_audit_runs,
+           COALESCE(SUM(usage_event.input_tokens), 0)
+             AS input_tokens,
+           COALESCE(SUM(usage_event.output_tokens), 0)
+             AS output_tokens,
+           COALESCE(SUM(usage_event.total_tokens), 0)
+             AS total_tokens,
+           COALESCE(SUM(usage_event.audio_seconds), 0)
+             AS audio_seconds
+         FROM eligible_calls c
+         JOIN kaudit_audit_run ar ON ar.id = c.latest_audit_run_id
+         JOIN kaudit_ai_usage_event usage_event
+           ON usage_event.call_id = c.id
+          AND usage_event.audit_run_id = ar.id
+         GROUP BY usage_event.model_name WITH ROLLUP`,
+  }
+}
+
+export function financialAuditedScope(query: AuditMonitorQuery): {
   sql: string
   params: unknown[]
 } {
@@ -631,17 +739,582 @@ function financialAuditedScope(query: AuditMonitorQuery): {
   }
 }
 
-function taskIdPredicate(callAlias: string): string {
-  return `(
-    ${callAlias}.logical_call_key = ?
-    OR EXISTS (
-      SELECT 1
+/**
+ * The calls one Task ID can name, resolved ONCE as an uncorrelated set rather
+ * than probed per scanned call. UNION de-duplicates; a Task ID naming several
+ * calls still scopes to all of them, exactly as the former OR predicate did.
+ * Binds the same two values, in the same order, as before.
+ */
+export const TASK_ID_MATCHING_CALLS_SQL = `
+      SELECT task_call.id
+      FROM kaudit_call task_call
+      WHERE task_call.logical_call_key = ?
+      UNION
+      SELECT task_ref.call_id AS id
       FROM kaudit_call_external_reference task_ref
-      WHERE task_ref.call_id = ${callAlias}.id
-        AND task_ref.reference_type IN ('task_id','taskId','task')
-        AND task_ref.external_id = ?
-    )
+      WHERE task_ref.external_id = ?
+        AND task_ref.reference_type IN ('task_id','taskId','task')`
+
+function taskIdPredicate(callAlias: string): string {
+  return `${callAlias}.id IN (
+    SELECT matching_calls.id
+    FROM (${TASK_ID_MATCHING_CALLS_SQL}
+    ) matching_calls
   )`
+}
+
+/**
+ * Tests only: the three pre-rewrite core-summary statements (overall,
+ * accepted fallback, completed re-audit), for result-equivalence checks.
+ * The re-audit statement binds the engine-family LIKE before the period.
+ */
+export function legacyCoreSummarySql(periodClause: string): {
+  overall: string
+  acceptedFallback: string
+  reaudit: string
+} {
+  return {
+    overall: `SELECT
+         COUNT(*) AS total_calls,
+         SUM(
+           COALESCE(artifact.recording_available, 0) = 1
+           AND c.canonical_outcome_code IS NOT NULL
+           AND COALESCE(artifact.pipeline_complete, 0) = 1
+         ) AS audited_calls,
+         SUM(
+           COALESCE(artifact.recording_available, 0) = 1
+         ) AS recording_available,
+         SUM(
+           COALESCE(artifact.recording_available, 0) = 1
+           AND NOT (
+             c.canonical_outcome_code IS NOT NULL
+             AND COALESCE(artifact.pipeline_complete, 0) = 1
+           )
+         ) AS pending_calls,
+         SUM(
+           COALESCE(artifact.recording_available, 0) = 0
+         ) AS no_recording_calls,
+         SUM(
+           COALESCE(artifact.processing_failure, 0) = 1
+         ) AS processing_failures
+       FROM kaudit_call c
+       LEFT JOIN (
+         SELECT
+           ca.call_id,
+           MAX(ca.source_url IS NOT NULL) AS recording_available,
+           MAX(
+             ca.source_url IS NOT NULL
+             AND completed_media.call_artifact_id IS NOT NULL
+             AND completed_transcript.call_artifact_id IS NOT NULL
+           ) AS pipeline_complete,
+           MAX(ca.audio_processing_status IN
+             ('fetch_failed','transcribe_failed','classify_failed','exhausted'))
+             AS processing_failure
+         FROM kaudit_call_artifact ca
+         LEFT JOIN (
+           SELECT DISTINCT call_artifact_id
+           FROM kaudit_media_analysis
+           WHERE status = 'completed'
+             AND classification_status = 'completed'
+         ) completed_media
+           ON completed_media.call_artifact_id = ca.id
+         LEFT JOIN (
+           SELECT DISTINCT call_artifact_id
+           FROM kaudit_transcript
+           WHERE status = 'completed'
+         ) completed_transcript
+           ON completed_transcript.call_artifact_id = ca.id
+         WHERE ca.artifact_type = 'recording'
+           AND ca.is_final = 1
+         GROUP BY ca.call_id
+       ) artifact ON artifact.call_id = c.id
+       WHERE 1=1${periodClause}`,
+    acceptedFallback: `SELECT
+         COUNT(DISTINCT resolved_calculation.call_id)
+           AS accepted_fallback_calls,
+         COUNT(DISTINCT CASE
+           WHEN EXISTS (
+             SELECT 1
+             FROM kaudit_call_artifact failed_artifact
+             WHERE failed_artifact.call_id = resolved_calculation.call_id
+               AND failed_artifact.artifact_type = 'recording'
+               AND failed_artifact.is_final = 1
+               AND failed_artifact.audio_processing_status IN
+                   ('fetch_failed','transcribe_failed',
+                    'classify_failed','exhausted')
+           ) THEN resolved_calculation.call_id
+         END) AS accepted_failure_calls,
+         -- Only a RECORDING-BACKED settlement can leave the recording-backed
+         -- pending queue. Subtracting every fallback would net the whole
+         -- no-recording population against a count it was never part of.
+         COUNT(DISTINCT CASE
+           WHEN EXISTS (
+             SELECT 1
+             FROM kaudit_call_artifact backed_artifact
+             WHERE backed_artifact.call_id = resolved_calculation.call_id
+               AND backed_artifact.artifact_type = 'recording'
+               AND backed_artifact.is_final = 1
+               AND backed_artifact.source_url IS NOT NULL
+           ) THEN resolved_calculation.call_id
+         END) AS accepted_recording_backed_calls
+       FROM kaudit_billing_calculation resolved_calculation
+       JOIN kaudit_call c ON c.id = resolved_calculation.call_id
+       WHERE resolved_calculation.status = 'final'
+         -- Both cycle-close bases, so a settled no-recording call counts as
+         -- determined here exactly as the billing cycle counts it.
+         AND resolved_calculation.calculation_basis IN (
+           'accepted_as_billed_unverified',
+           'no_recording_zero'
+         )
+         AND NOT EXISTS (
+           SELECT 1
+           FROM kaudit_billing_calculation superseding_calculation
+           WHERE superseding_calculation.supersedes_calculation_id =
+                 resolved_calculation.id
+         )${periodClause}`,
+    reaudit: `SELECT COUNT(DISTINCT run.call_id) AS n
+       FROM kaudit_audit_run run
+       JOIN kaudit_call c ON c.id = run.call_id
+       WHERE run.engine_version LIKE ?
+         AND run.status = 'completed'${periodClause}`,
+  }
+}
+
+interface CoreSummaryRow extends OverallSummaryRow {}
+
+interface AcceptedFallbackSummaryRow extends RowDataPacket {
+  accepted_fallback_calls: number | string
+  accepted_failure_calls: number | string
+  accepted_recording_backed_calls: number | string
+}
+
+interface CompletedReauditSummaryRow extends RowDataPacket {
+  completed_reaudit_calls: number | string
+}
+
+/**
+ * The recording/audit portion of the month-wide core summary. Artifact work
+ * is limited to the selected month's calls, but billing settlement and
+ * re-audit facts deliberately use separate statements below. Combining the
+ * three independent relationships made MySQL choose a dependent-subquery
+ * plan in production and exceed Vercel's 30-second function limit.
+ *
+ * The category filter deliberately does not apply: the core summary has
+ * always described the whole month.
+ */
+export function coreSummarySql(monthScoped: boolean): string {
+  return `WITH scoped_calls AS (
+       SELECT c.id, c.canonical_outcome_code
+       FROM kaudit_call c${monthScoped ? `
+       WHERE c.billing_period_date BETWEEN ? AND ?` : ''}
+     ),
+     artifact_state AS (
+       -- Fixed order keeps the month's calls leading; unpinned, MySQL was
+       -- measured scanning every artifact in the table first.
+       SELECT /*+ JOIN_FIXED_ORDER() */
+         ca.call_id,
+         MAX(ca.source_url IS NOT NULL) AS recording_available,
+         MAX(
+           ca.source_url IS NOT NULL
+           AND EXISTS (
+             SELECT 1
+             FROM kaudit_media_analysis completed_media
+             WHERE completed_media.call_artifact_id = ca.id
+               AND completed_media.status = 'completed'
+               AND completed_media.classification_status = 'completed'
+           )
+           AND EXISTS (
+             SELECT 1
+             FROM kaudit_transcript completed_transcript
+             WHERE completed_transcript.call_artifact_id = ca.id
+               AND completed_transcript.status = 'completed'
+           )
+         ) AS pipeline_complete,
+         MAX(ca.audio_processing_status IN
+           ('fetch_failed','transcribe_failed','classify_failed','exhausted'))
+           AS processing_failure
+       FROM scoped_calls c
+       JOIN kaudit_call_artifact ca
+         ON ca.call_id = c.id
+        AND ca.artifact_type = 'recording'
+        AND ca.is_final = 1
+       GROUP BY ca.call_id
+     )
+     SELECT
+       COUNT(*) AS total_calls,
+       COALESCE(SUM(
+         COALESCE(artifact.recording_available, 0) = 1
+         AND c.canonical_outcome_code IS NOT NULL
+         AND COALESCE(artifact.pipeline_complete, 0) = 1
+       ), 0) AS audited_calls,
+       COALESCE(SUM(
+         COALESCE(artifact.recording_available, 0) = 1
+       ), 0) AS recording_available,
+       COALESCE(SUM(
+         COALESCE(artifact.recording_available, 0) = 1
+         AND NOT (
+           c.canonical_outcome_code IS NOT NULL
+           AND COALESCE(artifact.pipeline_complete, 0) = 1
+         )
+       ), 0) AS pending_calls,
+       COALESCE(SUM(
+         COALESCE(artifact.recording_available, 0) = 0
+       ), 0) AS no_recording_calls,
+       COALESCE(SUM(
+         COALESCE(artifact.processing_failure, 0) = 1
+       ), 0) AS processing_failures
+     FROM scoped_calls c
+     LEFT JOIN artifact_state artifact ON artifact.call_id = c.id`
+}
+
+/**
+ * Cycle-close settlements are a separate set-based read. Starting from the
+ * calculation relation lets MySQL scan it once even when a production schema
+ * has not yet received the optional per-call performance indexes.
+ */
+export function coreAcceptedFallbackSql(monthScoped: boolean): string {
+  return `SELECT
+       COUNT(DISTINCT resolved_calculation.call_id)
+         AS accepted_fallback_calls,
+       COUNT(DISTINCT CASE
+         WHEN EXISTS (
+           SELECT 1
+           FROM kaudit_call_artifact failed_artifact
+           WHERE failed_artifact.call_id = resolved_calculation.call_id
+             AND failed_artifact.artifact_type = 'recording'
+             AND failed_artifact.is_final = 1
+             AND failed_artifact.audio_processing_status IN
+                 ('fetch_failed','transcribe_failed',
+                  'classify_failed','exhausted')
+         ) THEN resolved_calculation.call_id
+       END) AS accepted_failure_calls,
+       COUNT(DISTINCT CASE
+         WHEN EXISTS (
+           SELECT 1
+           FROM kaudit_call_artifact backed_artifact
+           WHERE backed_artifact.call_id = resolved_calculation.call_id
+             AND backed_artifact.artifact_type = 'recording'
+             AND backed_artifact.is_final = 1
+             AND backed_artifact.source_url IS NOT NULL
+         ) THEN resolved_calculation.call_id
+       END) AS accepted_recording_backed_calls
+     FROM kaudit_billing_calculation resolved_calculation
+     JOIN kaudit_call c ON c.id = resolved_calculation.call_id
+     WHERE resolved_calculation.status = 'final'
+       AND resolved_calculation.calculation_basis IN (
+         'accepted_as_billed_unverified',
+         'no_recording_zero'
+       )
+       AND NOT EXISTS (
+         SELECT 1
+         FROM kaudit_billing_calculation superseding_calculation
+         WHERE superseding_calculation.supersedes_calculation_id =
+               resolved_calculation.id
+       )${monthScoped ? `
+       AND c.billing_period_date BETWEEN ? AND ?` : ''}`
+}
+
+/**
+ * Completed independent audits are counted set-wise instead of probing the
+ * audit-run table once for every call in the month.
+ */
+export function coreCompletedReauditSql(monthScoped: boolean): string {
+  return `SELECT COUNT(DISTINCT run.call_id) AS completed_reaudit_calls
+     FROM kaudit_audit_run run
+     JOIN kaudit_call c ON c.id = run.call_id
+     WHERE run.engine_version LIKE ?
+       AND run.status = 'completed'${monthScoped ? `
+       AND c.billing_period_date BETWEEN ? AND ?` : ''}`
+}
+
+/**
+ * Tests only: the pre-rewrite audited-row page statement. Binds
+ * `filters.params`, then LIMIT and OFFSET.
+ */
+export function legacyAuditedRowsSql(filters: { sql: string }): string {
+  const auditedPageTail = `FROM (
+         SELECT
+           c.id AS call_id,
+           ca_candidate.id AS call_artifact_id,
+           c.billing_period_date
+         FROM kaudit_call c
+         JOIN kaudit_call_artifact ca_candidate
+           ON ca_candidate.id = (
+             SELECT latest_artifact.id
+             FROM kaudit_call_artifact latest_artifact
+             WHERE latest_artifact.call_id = c.id
+               AND latest_artifact.artifact_type = 'recording'
+               AND latest_artifact.is_final = 1
+               AND EXISTS (
+                 SELECT 1
+                 FROM kaudit_media_analysis completed_media
+                 WHERE completed_media.call_artifact_id = latest_artifact.id
+                   AND completed_media.status = 'completed'
+                   AND completed_media.classification_status = 'completed'
+               )
+               AND EXISTS (
+                 SELECT 1
+                 FROM kaudit_transcript completed_transcript
+                 WHERE completed_transcript.call_id = c.id
+                   AND completed_transcript.call_artifact_id = latest_artifact.id
+                   AND completed_transcript.status = 'completed'
+               )
+             ORDER BY latest_artifact.created_at DESC,
+                      latest_artifact.id DESC
+             LIMIT 1
+           )
+         JOIN kaudit_transcript t
+           ON t.call_id = c.id
+          AND t.call_artifact_id = ca_candidate.id
+          AND t.status = 'completed'
+          AND t.id = (
+            SELECT t_candidate_latest.id
+            FROM kaudit_transcript t_candidate_latest
+            WHERE t_candidate_latest.call_id = c.id
+              AND t_candidate_latest.call_artifact_id = ca_candidate.id
+              AND t_candidate_latest.status = 'completed'
+            ORDER BY t_candidate_latest.created_at DESC,
+                     t_candidate_latest.id DESC
+            LIMIT 1
+          )
+         ${filters.sql}
+         ORDER BY c.billing_period_date DESC, c.id DESC
+         LIMIT ? OFFSET ?
+       ) audited_page
+       JOIN kaudit_call c
+         ON c.id = audited_page.call_id
+       JOIN kaudit_call_artifact ca
+         ON ca.id = audited_page.call_artifact_id
+       JOIN kaudit_media_analysis ma
+         ON ma.call_artifact_id = ca.id
+        AND ma.status = 'completed'
+        AND ma.classification_status = 'completed'
+        AND ma.id = (
+          SELECT ma_latest.id
+          FROM kaudit_media_analysis ma_latest
+          WHERE ma_latest.call_artifact_id = ca.id
+            AND ma_latest.status = 'completed'
+            AND ma_latest.classification_status = 'completed'
+          ORDER BY ma_latest.created_at DESC, ma_latest.id DESC
+          LIMIT 1
+        )
+       JOIN kaudit_transcript t
+         ON t.call_id = c.id
+        AND t.call_artifact_id = ca.id
+        AND t.status = 'completed'
+        AND t.id = (
+          SELECT t_latest.id
+          FROM kaudit_transcript t_latest
+          WHERE t_latest.call_id = c.id
+            AND t_latest.call_artifact_id = ca.id
+            AND t_latest.status = 'completed'
+          ORDER BY t_latest.created_at DESC, t_latest.id DESC
+          LIMIT 1
+        )
+       LEFT JOIN kaudit_audit_run ar
+         ON ar.id = c.latest_audit_run_id
+       ORDER BY audited_page.billing_period_date DESC,
+                audited_page.call_id DESC`
+  return `SELECT
+       c.id AS internal_call_id,
+       ${TASK_REFERENCE_SQL} AS call_reference,
+       c.billing_period_date,
+       c.canonical_outcome_code AS category,
+       c.outcome_taxonomy_version,
+       CAST((
+         SELECT af.confidence
+         FROM kaudit_audit_finding af
+         WHERE af.call_id = c.id
+           AND af.finding_code = c.canonical_outcome_code
+         ORDER BY af.created_at DESC, af.id DESC
+         LIMIT 1
+       ) AS CHAR) AS confidence,
+       COALESCE((
+         SELECT af.confirmation_status
+         FROM kaudit_audit_finding af
+         WHERE af.call_id = c.id
+           AND af.finding_code = c.canonical_outcome_code
+         ORDER BY af.created_at DESC, af.id DESC
+         LIMIT 1
+       ), 'model_output') AS confirmation_status,
+       LOWER(COALESCE(t.language, 'unknown')) AS language,
+       t.provider_name, t.model_name, t.model_version,
+       ar.engine_version,
+       ma.decoded_duration_ms,
+       ma.speech_ms,
+       ma.conversation_end_ms,
+       ${categoryAdjustedDurationSql('ma')}
+         AS grace_adjusted_duration_ms,
+       -- Read once per displayed row. The difference against the
+       -- grace-adjusted duration is derived from these two columns after the
+       -- fact instead of repeating the lookup.
+       (
+         SELECT ROUND(MAX(pc.quantity_decimal) * 1000)
+         FROM kaudit_provider_cost pc
+         WHERE pc.call_id = c.id
+           AND pc.provider_sku = 'duration_without_ringing_sec'
+       ) AS vendor_connected_duration_ms,
+       ca.sha256 AS evidence_sha256,
+       ca.last_verified_at,
+       COALESCE(ar.completed_at, ma.created_at) AS audited_at,
+       (
+         SELECT SUM(usage_event.input_tokens)
+         FROM kaudit_ai_usage_event usage_event
+         WHERE usage_event.audit_run_id = ar.id
+       ) AS ai_input_tokens,
+       (
+         SELECT SUM(usage_event.output_tokens)
+         FROM kaudit_ai_usage_event usage_event
+         WHERE usage_event.audit_run_id = ar.id
+       ) AS ai_output_tokens,
+       (
+         SELECT SUM(usage_event.total_tokens)
+         FROM kaudit_ai_usage_event usage_event
+         WHERE usage_event.audit_run_id = ar.id
+       ) AS ai_total_tokens,
+       (
+         SELECT SUM(usage_event.audio_seconds)
+         FROM kaudit_ai_usage_event usage_event
+         WHERE usage_event.audit_run_id = ar.id
+       ) AS ai_audio_seconds
+     ${auditedPageTail}`
+}
+
+/**
+ * One audited-row page. The candidate window is decided first (latest
+ * artifact carrying complete evidence; the ordering and the winner rule are
+ * unchanged), then each displayed row reads its latest analysis, latest
+ * transcript, one latest finding, and one page-scoped usage aggregate.
+ * Binds `filters.params`, then LIMIT and OFFSET.
+ */
+export function auditedRowsSql(filters: { sql: string }): string {
+  return `WITH audited_page AS (
+       SELECT
+         c.id AS call_id,
+         ca_candidate.id AS call_artifact_id,
+         c.billing_period_date
+       FROM kaudit_call c
+       JOIN kaudit_call_artifact ca_candidate
+         ON ca_candidate.id = (
+           SELECT latest_artifact.id
+           FROM kaudit_call_artifact latest_artifact
+           WHERE latest_artifact.call_id = c.id
+             AND latest_artifact.artifact_type = 'recording'
+             AND latest_artifact.is_final = 1
+             AND EXISTS (
+               SELECT 1
+               FROM kaudit_media_analysis completed_media
+               WHERE completed_media.call_artifact_id = latest_artifact.id
+                 AND completed_media.status = 'completed'
+                 AND completed_media.classification_status = 'completed'
+             )
+             AND EXISTS (
+               SELECT 1
+               FROM kaudit_transcript completed_transcript
+               WHERE completed_transcript.call_id = c.id
+                 AND completed_transcript.call_artifact_id = latest_artifact.id
+                 AND completed_transcript.status = 'completed'
+             )
+           ORDER BY latest_artifact.created_at DESC,
+                    latest_artifact.id DESC
+           LIMIT 1
+         )
+       ${filters.sql}
+       ORDER BY c.billing_period_date DESC, c.id DESC
+       LIMIT ? OFFSET ?
+     ),
+     page_runs AS (
+       SELECT DISTINCT page_call.latest_audit_run_id AS audit_run_id
+       FROM audited_page
+       JOIN kaudit_call page_call ON page_call.id = audited_page.call_id
+       WHERE page_call.latest_audit_run_id IS NOT NULL
+     ),
+     page_usage AS (
+       SELECT
+         usage_event.audit_run_id,
+         SUM(usage_event.input_tokens) AS input_tokens,
+         SUM(usage_event.output_tokens) AS output_tokens,
+         SUM(usage_event.total_tokens) AS total_tokens,
+         SUM(usage_event.audio_seconds) AS audio_seconds
+       FROM page_runs
+       JOIN kaudit_ai_usage_event usage_event
+         ON usage_event.audit_run_id = page_runs.audit_run_id
+       GROUP BY usage_event.audit_run_id
+     )
+     SELECT
+       c.id AS internal_call_id,
+       ${TASK_REFERENCE_SQL} AS call_reference,
+       c.billing_period_date,
+       c.canonical_outcome_code AS category,
+       c.outcome_taxonomy_version,
+       CAST(finding.confidence AS CHAR) AS confidence,
+       COALESCE(finding.confirmation_status, 'model_output')
+         AS confirmation_status,
+       LOWER(COALESCE(t.language, 'unknown')) AS language,
+       t.provider_name, t.model_name, t.model_version,
+       ar.engine_version,
+       ma.decoded_duration_ms,
+       ma.speech_ms,
+       ma.conversation_end_ms,
+       ${categoryAdjustedDurationSql('ma')}
+         AS grace_adjusted_duration_ms,
+       (
+         SELECT ROUND(MAX(pc.quantity_decimal) * 1000)
+         FROM kaudit_provider_cost pc
+         WHERE pc.call_id = c.id
+           AND pc.provider_sku = 'duration_without_ringing_sec'
+       ) AS vendor_connected_duration_ms,
+       ca.sha256 AS evidence_sha256,
+       ca.last_verified_at,
+       COALESCE(ar.completed_at, ma.created_at) AS audited_at,
+       page_usage.input_tokens AS ai_input_tokens,
+       page_usage.output_tokens AS ai_output_tokens,
+       page_usage.total_tokens AS ai_total_tokens,
+       page_usage.audio_seconds AS ai_audio_seconds
+     FROM audited_page
+     JOIN kaudit_call c
+       ON c.id = audited_page.call_id
+     JOIN kaudit_call_artifact ca
+       ON ca.id = audited_page.call_artifact_id
+     JOIN kaudit_media_analysis ma
+       ON ma.id = (
+         SELECT ma_latest.id
+         FROM kaudit_media_analysis ma_latest
+         WHERE ma_latest.call_artifact_id = ca.id
+           AND ma_latest.status = 'completed'
+           AND ma_latest.classification_status = 'completed'
+         ORDER BY ma_latest.created_at DESC, ma_latest.id DESC
+         LIMIT 1
+       )
+     -- The window already proved a completed transcript on this artifact;
+     -- the latest one is fetched once, here.
+     JOIN kaudit_transcript t
+       ON t.id = (
+         SELECT t_latest.id
+         FROM kaudit_transcript t_latest
+         WHERE t_latest.call_id = c.id
+           AND t_latest.call_artifact_id = ca.id
+           AND t_latest.status = 'completed'
+         ORDER BY t_latest.created_at DESC, t_latest.id DESC
+         LIMIT 1
+       )
+     LEFT JOIN kaudit_audit_run ar
+       ON ar.id = c.latest_audit_run_id
+     -- The latest finding for the call's category, as before: no audit-run
+     -- condition. Confidence and confirmation come from this one row.
+     LEFT JOIN kaudit_audit_finding finding
+       ON finding.id = (
+         SELECT af.id
+         FROM kaudit_audit_finding af
+         WHERE af.call_id = c.id
+           AND af.finding_code = c.canonical_outcome_code
+         ORDER BY af.created_at DESC, af.id DESC
+         LIMIT 1
+       )
+     LEFT JOIN page_usage
+       ON page_usage.audit_run_id = ar.id
+     ORDER BY audited_page.billing_period_date DESC,
+              audited_page.call_id DESC`
 }
 
 export function collectAuditMonitor(
@@ -723,115 +1396,20 @@ export async function collectAuditMonitor(
   const taskParams = query.taskId ? [query.taskId, query.taskId] : []
   const queueScopeClause = `${periodClause}${taskClause}`
   const queueScopeParams = [...periodParams, ...taskParams]
+  const monthScoped = Boolean(query.periodStart && query.periodEnd)
   const summaryPrelude = await Promise.all([
     includeCoreSummary
-      ? pool.query<OverallSummaryRow[]>(
-      `SELECT
-         COUNT(*) AS total_calls,
-         SUM(
-           COALESCE(artifact.recording_available, 0) = 1
-           AND c.canonical_outcome_code IS NOT NULL
-           AND COALESCE(artifact.pipeline_complete, 0) = 1
-         ) AS audited_calls,
-         SUM(
-           COALESCE(artifact.recording_available, 0) = 1
-         ) AS recording_available,
-         SUM(
-           COALESCE(artifact.recording_available, 0) = 1
-           AND NOT (
-             c.canonical_outcome_code IS NOT NULL
-             AND COALESCE(artifact.pipeline_complete, 0) = 1
-           )
-         ) AS pending_calls,
-         SUM(
-           COALESCE(artifact.recording_available, 0) = 0
-         ) AS no_recording_calls,
-         SUM(
-           COALESCE(artifact.processing_failure, 0) = 1
-         ) AS processing_failures
-       FROM kaudit_call c
-       LEFT JOIN (
-         SELECT
-           ca.call_id,
-           MAX(ca.source_url IS NOT NULL) AS recording_available,
-           MAX(
-             ca.source_url IS NOT NULL
-             AND completed_media.call_artifact_id IS NOT NULL
-             AND completed_transcript.call_artifact_id IS NOT NULL
-           ) AS pipeline_complete,
-           MAX(ca.audio_processing_status IN
-             ('fetch_failed','transcribe_failed','classify_failed','exhausted'))
-             AS processing_failure
-         FROM kaudit_call_artifact ca
-         LEFT JOIN (
-           SELECT DISTINCT call_artifact_id
-           FROM kaudit_media_analysis
-           WHERE status = 'completed'
-             AND classification_status = 'completed'
-         ) completed_media
-           ON completed_media.call_artifact_id = ca.id
-         LEFT JOIN (
-           SELECT DISTINCT call_artifact_id
-           FROM kaudit_transcript
-           WHERE status = 'completed'
-         ) completed_transcript
-           ON completed_transcript.call_artifact_id = ca.id
-         WHERE ca.artifact_type = 'recording'
-           AND ca.is_final = 1
-         GROUP BY ca.call_id
-       ) artifact ON artifact.call_id = c.id
-       WHERE 1=1${periodClause}`,
+      ? pool.query<CoreSummaryRow[]>(
+      coreSummarySql(monthScoped),
       periodParams,
     )
-      : Promise.resolve<[OverallSummaryRow[], never]>([
+      : Promise.resolve<[CoreSummaryRow[], never]>([
         [],
         undefined as never,
       ]),
     includeCoreSummary
       ? pool.query<AcceptedFallbackSummaryRow[]>(
-      `SELECT
-         COUNT(DISTINCT resolved_calculation.call_id)
-           AS accepted_fallback_calls,
-         COUNT(DISTINCT CASE
-           WHEN EXISTS (
-             SELECT 1
-             FROM kaudit_call_artifact failed_artifact
-             WHERE failed_artifact.call_id = resolved_calculation.call_id
-               AND failed_artifact.artifact_type = 'recording'
-               AND failed_artifact.is_final = 1
-               AND failed_artifact.audio_processing_status IN
-                   ('fetch_failed','transcribe_failed',
-                    'classify_failed','exhausted')
-           ) THEN resolved_calculation.call_id
-         END) AS accepted_failure_calls,
-         -- Only a RECORDING-BACKED settlement can leave the recording-backed
-         -- pending queue. Subtracting every fallback would net the whole
-         -- no-recording population against a count it was never part of.
-         COUNT(DISTINCT CASE
-           WHEN EXISTS (
-             SELECT 1
-             FROM kaudit_call_artifact backed_artifact
-             WHERE backed_artifact.call_id = resolved_calculation.call_id
-               AND backed_artifact.artifact_type = 'recording'
-               AND backed_artifact.is_final = 1
-               AND backed_artifact.source_url IS NOT NULL
-           ) THEN resolved_calculation.call_id
-         END) AS accepted_recording_backed_calls
-       FROM kaudit_billing_calculation resolved_calculation
-       JOIN kaudit_call c ON c.id = resolved_calculation.call_id
-       WHERE resolved_calculation.status = 'final'
-         -- Both cycle-close bases, so a settled no-recording call counts as
-         -- determined here exactly as the billing cycle counts it.
-         AND resolved_calculation.calculation_basis IN (
-           'accepted_as_billed_unverified',
-           'no_recording_zero'
-         )
-         AND NOT EXISTS (
-           SELECT 1
-           FROM kaudit_billing_calculation superseding_calculation
-           WHERE superseding_calculation.supersedes_calculation_id =
-                 resolved_calculation.id
-         )${periodClause}`,
+      coreAcceptedFallbackSql(monthScoped),
       periodParams,
     )
       : Promise.resolve<[AcceptedFallbackSummaryRow[], never]>([
@@ -839,20 +1417,17 @@ export async function collectAuditMonitor(
         undefined as never,
       ]),
     includeCoreSummary
-      ? pool.query<CountRow[]>(
-      `SELECT COUNT(DISTINCT run.call_id) AS n
-       FROM kaudit_audit_run run
-       JOIN kaudit_call c ON c.id = run.call_id
-       WHERE run.engine_version LIKE ?
-         AND run.status = 'completed'${periodClause}`,
+      ? pool.query<CompletedReauditSummaryRow[]>(
+      coreCompletedReauditSql(monthScoped),
       [`${REAUDIT_ENGINE_FAMILY}%`, ...periodParams],
     )
-      : Promise.resolve<[CountRow[], never]>([[], undefined as never]),
+      : Promise.resolve<[CompletedReauditSummaryRow[], never]>([
+        [],
+        undefined as never,
+      ]),
     section === 'all'
       ? pool.query<CountRow[]>(
-      `SELECT COUNT(DISTINCT c.id) AS n
-       ${AUDITED_JOIN}
-       ${filters.sql}`,
+      auditedCountAndUsageSql(filters).count,
       filters.params,
     )
       : Promise.resolve<[CountRow[], never]>([[], undefined as never]),
@@ -868,15 +1443,14 @@ export async function collectAuditMonitor(
   ])
 
   const [
-    overallRows,
+    coreRows,
     acceptedFallbackRows,
-    reauditRows,
+    completedReauditRows,
     filteredRows,
     categories,
-  ] =
-    summaryPrelude
+  ] = summaryPrelude
 
-  const overall = overallRows[0][0]
+  const overall = coreRows[0][0]
   const totalCalls = Number(overall?.total_calls || 0)
   const aiAuditedCalls = Number(overall?.audited_calls || 0)
   const acceptedFallback = acceptedFallbackRows[0][0]
@@ -994,27 +1568,7 @@ export async function collectAuditMonitor(
       const [usageResult] = await pool.query<
         Array<UsageSummaryRow & UsageCostRow>
       >(
-        `SELECT
-           usage_event.model_name,
-           COUNT(DISTINCT usage_event.audit_run_id)
-             AS tracked_audit_runs,
-           COALESCE(SUM(usage_event.input_tokens), 0)
-             AS input_tokens,
-           COALESCE(SUM(usage_event.output_tokens), 0)
-             AS output_tokens,
-           COALESCE(SUM(usage_event.total_tokens), 0)
-             AS total_tokens,
-           COALESCE(SUM(usage_event.audio_seconds), 0)
-             AS audio_seconds
-         FROM kaudit_ai_usage_event usage_event
-         JOIN (
-           SELECT DISTINCT c.id AS call_id, ar.id AS audit_run_id
-           ${AUDITED_JOIN}
-           ${filters.sql}
-         ) audited
-          ON audited.call_id = usage_event.call_id
-          AND audited.audit_run_id = usage_event.audit_run_id
-         GROUP BY usage_event.model_name WITH ROLLUP`,
+        auditedCountAndUsageSql(filters).usage,
         filters.params,
       )
       usage = usageResult.find((row) => row.model_name == null) ?? null
@@ -1063,7 +1617,9 @@ export async function collectAuditMonitor(
       0,
       Number(overall?.processing_failures || 0) - acceptedFailureCalls,
     ),
-    reauditV2Calls: count(reauditRows[0][0]),
+    reauditV2Calls: Number(
+      completedReauditRows[0][0]?.completed_reaudit_calls || 0,
+    ),
   }
   const aiUsage: AuditMonitorUsageSummaryData['aiUsage'] = {
     trackedAuditRuns: Number(usage?.tracked_audit_runs || 0),
@@ -1139,155 +1695,10 @@ export async function collectAuditMonitor(
   const includePendingRows = rowTable === 'all' || rowTable === 'pending'
   const includeNoRecordingRows =
     rowTable === 'all' || rowTable === 'no-recording'
-  const auditedPageTail = `FROM (
-         SELECT
-           c.id AS call_id,
-           ca_candidate.id AS call_artifact_id,
-           c.billing_period_date
-         FROM kaudit_call c
-         JOIN kaudit_call_artifact ca_candidate
-           ON ca_candidate.id = (
-             SELECT latest_artifact.id
-             FROM kaudit_call_artifact latest_artifact
-             WHERE latest_artifact.call_id = c.id
-               AND latest_artifact.artifact_type = 'recording'
-               AND latest_artifact.is_final = 1
-               AND EXISTS (
-                 SELECT 1
-                 FROM kaudit_media_analysis completed_media
-                 WHERE completed_media.call_artifact_id = latest_artifact.id
-                   AND completed_media.status = 'completed'
-                   AND completed_media.classification_status = 'completed'
-               )
-               AND EXISTS (
-                 SELECT 1
-                 FROM kaudit_transcript completed_transcript
-                 WHERE completed_transcript.call_id = c.id
-                   AND completed_transcript.call_artifact_id = latest_artifact.id
-                   AND completed_transcript.status = 'completed'
-               )
-             ORDER BY latest_artifact.created_at DESC,
-                      latest_artifact.id DESC
-             LIMIT 1
-           )
-         JOIN kaudit_transcript t
-           ON t.call_id = c.id
-          AND t.call_artifact_id = ca_candidate.id
-          AND t.status = 'completed'
-          AND t.id = (
-            SELECT t_candidate_latest.id
-            FROM kaudit_transcript t_candidate_latest
-            WHERE t_candidate_latest.call_id = c.id
-              AND t_candidate_latest.call_artifact_id = ca_candidate.id
-              AND t_candidate_latest.status = 'completed'
-            ORDER BY t_candidate_latest.created_at DESC,
-                     t_candidate_latest.id DESC
-            LIMIT 1
-          )
-         ${filters.sql}
-         ORDER BY c.billing_period_date DESC, c.id DESC
-         LIMIT ? OFFSET ?
-       ) audited_page
-       JOIN kaudit_call c
-         ON c.id = audited_page.call_id
-       JOIN kaudit_call_artifact ca
-         ON ca.id = audited_page.call_artifact_id
-       JOIN kaudit_media_analysis ma
-         ON ma.call_artifact_id = ca.id
-        AND ma.status = 'completed'
-        AND ma.classification_status = 'completed'
-        AND ma.id = (
-          SELECT ma_latest.id
-          FROM kaudit_media_analysis ma_latest
-          WHERE ma_latest.call_artifact_id = ca.id
-            AND ma_latest.status = 'completed'
-            AND ma_latest.classification_status = 'completed'
-          ORDER BY ma_latest.created_at DESC, ma_latest.id DESC
-          LIMIT 1
-        )
-       JOIN kaudit_transcript t
-         ON t.call_id = c.id
-        AND t.call_artifact_id = ca.id
-        AND t.status = 'completed'
-        AND t.id = (
-          SELECT t_latest.id
-          FROM kaudit_transcript t_latest
-          WHERE t_latest.call_id = c.id
-            AND t_latest.call_artifact_id = ca.id
-            AND t_latest.status = 'completed'
-          ORDER BY t_latest.created_at DESC, t_latest.id DESC
-          LIMIT 1
-        )
-       LEFT JOIN kaudit_audit_run ar
-         ON ar.id = c.latest_audit_run_id
-       ORDER BY audited_page.billing_period_date DESC,
-                audited_page.call_id DESC`
   const [auditedResult, pendingResult, noRecordingResult] =
     await Promise.all([
       includeAuditedRows ? pool.query<DataRow[]>(
-    `SELECT
-       c.id AS internal_call_id,
-       ${TASK_REFERENCE_SQL} AS call_reference,
-       c.billing_period_date,
-       c.canonical_outcome_code AS category,
-       c.outcome_taxonomy_version,
-       CAST((
-         SELECT af.confidence
-         FROM kaudit_audit_finding af
-         WHERE af.call_id = c.id
-           AND af.finding_code = c.canonical_outcome_code
-         ORDER BY af.created_at DESC, af.id DESC
-         LIMIT 1
-       ) AS CHAR) AS confidence,
-       COALESCE((
-         SELECT af.confirmation_status
-         FROM kaudit_audit_finding af
-         WHERE af.call_id = c.id
-           AND af.finding_code = c.canonical_outcome_code
-         ORDER BY af.created_at DESC, af.id DESC
-         LIMIT 1
-       ), 'model_output') AS confirmation_status,
-       LOWER(COALESCE(t.language, 'unknown')) AS language,
-       t.provider_name, t.model_name, t.model_version,
-       ar.engine_version,
-       ma.decoded_duration_ms,
-       ma.speech_ms,
-       ma.conversation_end_ms,
-       ${categoryAdjustedDurationSql('ma')}
-         AS grace_adjusted_duration_ms,
-       -- Read once per displayed row. The difference against the
-       -- grace-adjusted duration is derived from these two columns after the
-       -- fact instead of repeating the lookup.
-       (
-         SELECT ROUND(MAX(pc.quantity_decimal) * 1000)
-         FROM kaudit_provider_cost pc
-         WHERE pc.call_id = c.id
-           AND pc.provider_sku = 'duration_without_ringing_sec'
-       ) AS vendor_connected_duration_ms,
-       ca.sha256 AS evidence_sha256,
-       ca.last_verified_at,
-       COALESCE(ar.completed_at, ma.created_at) AS audited_at,
-       (
-         SELECT SUM(usage_event.input_tokens)
-         FROM kaudit_ai_usage_event usage_event
-         WHERE usage_event.audit_run_id = ar.id
-       ) AS ai_input_tokens,
-       (
-         SELECT SUM(usage_event.output_tokens)
-         FROM kaudit_ai_usage_event usage_event
-         WHERE usage_event.audit_run_id = ar.id
-       ) AS ai_output_tokens,
-       (
-         SELECT SUM(usage_event.total_tokens)
-         FROM kaudit_ai_usage_event usage_event
-         WHERE usage_event.audit_run_id = ar.id
-       ) AS ai_total_tokens,
-       (
-         SELECT SUM(usage_event.audio_seconds)
-         FROM kaudit_ai_usage_event usage_event
-         WHERE usage_event.audit_run_id = ar.id
-       ) AS ai_audio_seconds
-     ${auditedPageTail}`,
+    auditedRowsSql(filters),
     [...filters.params, rowLimit, offset],
       ) : Promise.resolve([[] as DataRow[]]),
       includePendingRows ? pool.query<QueueDataRow[]>(

@@ -37,11 +37,12 @@ import {
  *     and a completed transcript. Evidence is never assembled from two
  *     different artifacts.
  *
- * Performance: every relation a row or an aggregate needs — task reference,
- * recording availability, audited evidence, current vendor cost, current final
- * calculation — is a grouped or ranked derived table joined ONCE. There is no
- * per-row correlated subquery, so a page of rows costs the same shape of work
- * as one row.
+ * Performance: the month totals join each relation they need — audited
+ * evidence and current vendor cost — ONCE, as a grouped or ranked derived table
+ * over the scoped calls. A PAGE is different: eligibility and the LIMIT/OFFSET
+ * window are decided on `kaudit_call` first, and only the (at most `limit`)
+ * calls on the page then look up their evidence, vendor cost, task reference
+ * and finding. Month-wide enrichment before LIMIT is what timed out.
  */
 
 // ---------------------------------------------------------------------------
@@ -191,6 +192,51 @@ export interface BillingCategoryAnalysisPort
  * projected out of the relation.
  */
 const AUDITED_EVIDENCE_SQL = `
+  SELECT
+    ranked.call_id,
+    ranked.decoded_duration_ms,
+    ranked.conversation_end_ms,
+    ranked.metrics_json
+  FROM (
+    -- JOIN_FIXED_ORDER keeps the scoped calls leading. Without it MySQL was
+    -- measured scanning every analysis in the table (all months) and joining
+    -- the month afterwards. SQLite reads the hint as a comment.
+    SELECT /*+ JOIN_FIXED_ORDER() */
+      artifact.call_id,
+      analysis.decoded_duration_ms,
+      analysis.conversation_end_ms,
+      analysis.metrics_json,
+      ROW_NUMBER() OVER (
+        PARTITION BY artifact.call_id
+        ORDER BY analysis.created_at DESC, analysis.id DESC
+      ) AS current_rank
+    FROM scoped_calls evidence_scope
+    JOIN kaudit_call_artifact artifact
+      ON artifact.call_id = evidence_scope.id
+    JOIN kaudit_media_analysis analysis
+      ON analysis.call_artifact_id = artifact.id
+    WHERE artifact.artifact_type = 'recording'
+      AND artifact.is_final = 1
+      AND analysis.status = 'completed'
+      AND analysis.classification_status = 'completed'
+      -- Probed per scoped artifact instead of joining a DISTINCT relation
+      -- built from every completed transcript in the table.
+      AND EXISTS (
+        SELECT 1
+        FROM kaudit_transcript transcript
+        WHERE transcript.call_id = artifact.call_id
+          AND transcript.call_artifact_id = artifact.id
+          AND transcript.status = 'completed'
+      )
+  ) ranked
+  WHERE ranked.current_rank = 1
+`
+
+/**
+ * The previous evidence relation, kept ONLY so tests can prove the rewrite
+ * above returns identical rows. Not used by any repository read.
+ */
+const LEGACY_AUDITED_EVIDENCE_SQL = `
   SELECT
     ranked.call_id,
     ranked.decoded_duration_ms,
@@ -390,11 +436,16 @@ export function scopedAuditedCallsSql(
     includeRecording?: boolean
     includeTaskReference?: boolean
     includeAuditFinding?: boolean
+    /** Tests only: the pre-rewrite evidence relation. */
+    legacyEvidence?: boolean
   } = {},
 ): string {
   const includeRecording = options.includeRecording ?? true
   const includeTaskReference = options.includeTaskReference ?? true
   const includeAuditFinding = options.includeAuditFinding ?? false
+  const evidenceSql = options.legacyEvidence
+    ? LEGACY_AUDITED_EVIDENCE_SQL
+    : AUDITED_EVIDENCE_SQL
   return `WITH scoped_calls AS (
      SELECT
        c.id,
@@ -411,7 +462,7 @@ export function scopedAuditedCallsSql(
 ${select}
    FROM scoped_calls c
    JOIN (
-     ${AUDITED_EVIDENCE_SQL}
+     ${evidenceSql}
    ) media ON media.call_id = c.id
    LEFT JOIN (
      ${SCOPED_VENDOR_BILLING_SQL}
@@ -518,7 +569,63 @@ export function categoryTotalsSql(scopedRowsSql: string): string {
  * audited and never receive an invented auditor charge, but the vendor's
  * supplied amount/minutes remain part of the financial population.
  */
+const NO_RECORDING_COLUMNS_SQL = `
+      'NO_RECORDING' AS category,
+      COUNT(*) AS audited_call_count,
+      0 AS issue_found_count,
+      0 AS no_issue_found_count,
+      COUNT(*) AS kserve_priced_calls,
+      COALESCE(SUM(${VENDOR_CHARGE_SQL}), 0) AS kserve_charge_inr,
+      0 AS auditor_final_priced_calls,
+      0 AS auditor_unfinalized_calls,
+      0 AS auditor_final_charge_inr,
+      COALESCE(SUM(ROUND(vendor.minutes_decimal * 60000)), 0)
+        AS kserve_charge_time_ms,
+      0 AS ai_audited_duration_ms,
+      0 AS ai_audited_duration_calls,
+      0 AS comparable_calls,
+      COALESCE(SUM(ROUND(vendor.minutes_decimal * 60000)), 0) AS gap_ms`
+
+/**
+ * Provider costs are aggregated only for the scoped calls, instead of grouping
+ * every final vendor cost in the table and joining the month afterwards.
+ * Deliberately no `canonical_outcome_code` filter: these calls may never have
+ * received an AI category.
+ */
 export function noRecordingTotalsSql(
+  scope: BillingCategoryScope,
+): { sql: string; params: unknown[] } {
+  const monthScoped = Boolean(scope.periodStart && scope.periodEnd)
+  return {
+    sql: `WITH scoped_calls AS (
+      SELECT c.id
+      FROM kaudit_call c${
+        monthScoped ? `
+      WHERE c.billing_period_date BETWEEN ? AND ?` : ''
+      }
+    ),
+    vendor AS (
+      ${vendorBilledAssertionsSql(
+        'JOIN scoped_calls vendor_scope ON vendor_scope.id = cost.call_id',
+      )}
+    )
+    SELECT${NO_RECORDING_COLUMNS_SQL}
+    FROM vendor
+    WHERE vendor.minutes_decimal IS NOT NULL
+      AND NOT EXISTS (
+        SELECT 1
+        FROM kaudit_call_artifact recording
+        WHERE recording.call_id = vendor.call_id
+          AND recording.artifact_type = 'recording'
+          AND recording.is_final = 1
+          AND recording.source_url IS NOT NULL
+      )`,
+    params: monthScoped ? [scope.periodStart, scope.periodEnd] : [],
+  }
+}
+
+/** Tests only: the pre-rewrite no-recording statement. */
+export function legacyNoRecordingTotalsSql(
   scope: BillingCategoryScope,
 ): { sql: string; params: unknown[] } {
   const scopedFilters = ['1 = 1']
@@ -561,16 +668,45 @@ export function noRecordingTotalsSql(
 }
 
 /** The scoped projection the totals aggregate is defined over. */
-export function categoryTotalsRowsSql(filters: readonly string[]): string {
+export function categoryTotalsRowsSql(
+  filters: readonly string[],
+  options: { legacyEvidence?: boolean } = {},
+): string {
   return scopedAuditedCallsSql(
     `    c.canonical_outcome_code AS category,
     ${VENDOR_CHARGE_SQL} AS kserve_charge_inr,
     ${AUDITOR_CAPPED_CHARGE_SQL} AS auditor_final_amount,
 ${DURATION_COLUMNS_SQL}`,
     filters,
-    { includeRecording: false, includeTaskReference: false },
+    {
+      includeRecording: false,
+      includeTaskReference: false,
+      legacyEvidence: options.legacyEvidence,
+    },
   )
 }
+
+/**
+ * The artifact-consistent evidence rule, as a predicate over ONE call `c`: a
+ * final recording artifact carrying a completed, classified analysis AND a
+ * completed transcript of that same artifact.
+ */
+const PAGE_MEDIA_CANDIDATES_SQL = `
+         FROM kaudit_call_artifact eligible_artifact
+         JOIN kaudit_media_analysis eligible_media
+           ON eligible_media.call_artifact_id = eligible_artifact.id
+          AND eligible_media.status = 'completed'
+          AND eligible_media.classification_status = 'completed'
+         WHERE eligible_artifact.call_id = c.id
+           AND eligible_artifact.artifact_type = 'recording'
+           AND eligible_artifact.is_final = 1
+           AND EXISTS (
+             SELECT 1
+             FROM kaudit_transcript eligible_transcript
+             WHERE eligible_transcript.call_id = c.id
+               AND eligible_transcript.call_artifact_id = eligible_artifact.id
+               AND eligible_transcript.status = 'completed'
+           )`
 
 /**
  * One page of audited calls.
@@ -585,6 +721,85 @@ ${DURATION_COLUMNS_SQL}`,
  * it reaches neither the row shape, the API, nor a browser.
  */
 export function categoryCallsSql(filters: readonly string[]): string {
+  // Eligibility and the page window are decided on `kaudit_call` alone; the
+  // evidence, vendor and finding lookups then run for at most `limit` calls.
+  return `WITH page_calls AS (
+     -- Fixed order keeps the month's calls leading the flattened EXISTS; left
+     -- free, MySQL was measured driving from every analysis in the table.
+     SELECT /*+ JOIN_FIXED_ORDER() */
+       c.id,
+       c.logical_call_key,
+       c.canonical_outcome_code,
+       c.billing_period_date,
+       c.source_started_at,
+       c.source_ended_at,
+       c.latest_audit_run_id,
+       COALESCE((
+         SELECT reference.external_id
+         FROM kaudit_call_external_reference reference
+         WHERE reference.call_id = c.id
+           AND reference.reference_type IN ('task_id','taskId','task')
+         ORDER BY reference.id ASC
+         LIMIT 1
+       ), c.logical_call_key) AS call_reference
+     FROM kaudit_call c
+     WHERE ${filters.join('\n       AND ')}
+       AND EXISTS (
+         SELECT 1${PAGE_MEDIA_CANDIDATES_SQL}
+       )
+     ORDER BY c.source_started_at DESC, call_reference ASC, c.id ASC
+     LIMIT ? OFFSET ?
+   ),
+   vendor AS (
+     ${vendorBilledAssertionsSql(
+       'JOIN page_calls vendor_scope ON vendor_scope.id = cost.call_id',
+     )}
+   )
+   SELECT
+    c.call_reference,
+    c.source_started_at AS call_started_at,
+    c.source_ended_at AS call_ended_at,
+    c.billing_period_date,
+    c.canonical_outcome_code AS category,
+    EXISTS (
+      SELECT 1
+      FROM kaudit_call_artifact recording
+      WHERE recording.call_id = c.id
+        AND recording.artifact_type = 'recording'
+        AND recording.is_final = 1
+        AND recording.source_url IS NOT NULL
+    ) AS recording_available,
+    -- The expressions are unchanged. The CASTs pin each value to the column
+    -- type the materialized pre-rewrite plan reported (DECIMAL(22,9) and
+    -- DECIMAL(33,9)); without them MySQL sends a CASE value at its own branch
+    -- scale ('19.0' instead of '19.000000000') when nothing materializes it.
+    CAST(${VENDOR_CHARGE_SQL} AS DECIMAL(22,9)) AS kserve_charge_inr,
+    CAST(${AUDITOR_CAPPED_CHARGE_SQL} AS DECIMAL(33,9))
+      AS auditor_final_charge_inr,
+    CAST(audit_finding.confidence AS CHAR) AS ai_confidence,
+    audit_finding.explanation AS ai_audit_remark,
+${DURATION_COLUMNS_SQL}
+   FROM page_calls c
+   JOIN kaudit_media_analysis media ON media.id = (
+     SELECT eligible_media.id${PAGE_MEDIA_CANDIDATES_SQL}
+     ORDER BY eligible_media.created_at DESC, eligible_media.id DESC
+     LIMIT 1
+   )
+   LEFT JOIN vendor ON vendor.call_id = c.id
+   LEFT JOIN kaudit_audit_finding audit_finding ON audit_finding.id = (
+     SELECT finding.id
+     FROM kaudit_audit_finding finding
+     WHERE finding.call_id = c.id
+       AND finding.audit_run_id = c.latest_audit_run_id
+       AND finding.finding_code = c.canonical_outcome_code
+     ORDER BY finding.created_at DESC, finding.id DESC
+     LIMIT 1
+   )
+   ORDER BY c.source_started_at DESC, c.call_reference ASC, c.id ASC`
+}
+
+/** Tests only: the pre-rewrite page statement (month-wide enrichment first). */
+export function legacyCategoryCallsSql(filters: readonly string[]): string {
   return `${scopedAuditedCallsSql(
     `    COALESCE(task_reference.external_id, c.logical_call_key)
       AS call_reference,

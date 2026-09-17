@@ -20,6 +20,7 @@ import {
 import {
   useEffect,
   useMemo,
+  useRef,
   useState,
   type Dispatch,
   type FormEvent,
@@ -270,12 +271,9 @@ export function AuditMonitorPage() {
           `/api/v1/audits?section=rows&table=audited&${queryString}`,
         ),
       ),
-    // Keep the last completed page visible while the live worker moves rows.
-    // A minute is current enough for operations without continuously rerunning
-    // the monitor's audited/pending/no-recording joins against the worker DB.
+    // Keep the last completed page visible while an explicit refresh runs.
     placeholderData: keepPreviousData,
     retry: false,
-    refetchInterval: 60_000,
   })
   const pendingRowsQuery = useQuery({
     queryKey: [
@@ -299,7 +297,6 @@ export function AuditMonitorPage() {
     enabled: auditedRowsQuery.isFetched,
     placeholderData: keepPreviousData,
     retry: false,
-    refetchInterval: 60_000,
   })
   const noRecordingRowsQuery = useQuery({
     queryKey: [
@@ -319,7 +316,6 @@ export function AuditMonitorPage() {
     enabled: pendingRowsQuery.isFetched,
     placeholderData: keepPreviousData,
     retry: false,
-    refetchInterval: 60_000,
   })
   const summaryEnabled =
     auditedRowsQuery.isFetched &&
@@ -344,7 +340,6 @@ export function AuditMonitorPage() {
     // heaviest monitor aggregates at the same time.
     enabled: summaryEnabled,
     retry: false,
-    refetchInterval: 60_000,
   })
   const usageSummaryQuery = useQuery({
     queryKey: [
@@ -362,7 +357,6 @@ export function AuditMonitorPage() {
       ),
     enabled: coreSummaryQuery.isFetched,
     retry: false,
-    refetchInterval: 60_000,
   })
   const financialSummaryQuery = useQuery({
     queryKey: [
@@ -380,8 +374,36 @@ export function AuditMonitorPage() {
       ),
     enabled: usageSummaryQuery.isFetched,
     retry: false,
-    refetchInterval: 60_000,
   })
+  const refreshInFlight = useRef(false)
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const monitorQueries = [
+    auditedRowsQuery,
+    pendingRowsQuery,
+    noRecordingRowsQuery,
+    coreSummaryQuery,
+    usageSummaryQuery,
+    financialSummaryQuery,
+  ]
+  const monitorIsFetching = monitorQueries.some((query) => query.isFetching)
+  const refreshMonitor = async () => {
+    // One operator action is one ordered read chain. The ref guard closes the
+    // same-render double-click window that state alone cannot close.
+    if (refreshInFlight.current || monitorIsFetching) return
+    refreshInFlight.current = true
+    setIsRefreshing(true)
+    try {
+      await auditedRowsQuery.refetch()
+      await pendingRowsQuery.refetch()
+      await noRecordingRowsQuery.refetch()
+      await coreSummaryQuery.refetch()
+      await usageSummaryQuery.refetch()
+      await financialSummaryQuery.refetch()
+    } finally {
+      refreshInFlight.current = false
+      setIsRefreshing(false)
+    }
+  }
   const [selected, setSelected] = useState<string[]>([])
   const [idempotencyKey, setIdempotencyKey] = useState(newIdempotencyKey)
   const [receipt, setReceipt] = useState<ManualReauditReceipt | null>(null)
@@ -400,7 +422,7 @@ export function AuditMonitorPage() {
       setReceipt(result)
       setSelected([])
       setIdempotencyKey(newIdempotencyKey())
-      void client.invalidateQueries({ queryKey: ['audit-monitor'] })
+      void refreshMonitor()
       void client.invalidateQueries({ queryKey: ['audit-workers'] })
     },
   })
@@ -411,7 +433,7 @@ export function AuditMonitorPage() {
         {},
       ),
     onSuccess: () => {
-      void client.invalidateQueries({ queryKey: ['audit-monitor'] })
+      void refreshMonitor()
       void client.invalidateQueries({ queryKey: ['audit-workers'] })
     },
   })
@@ -638,18 +660,42 @@ export function AuditMonitorPage() {
   return (
     <>
       {pageChrome}
+      <section
+        className="content-section audit-refresh-bar"
+        aria-label="Audit data refresh"
+      >
+        <div>
+          <strong>On-demand snapshot</strong>
+          <span>
+            Heavy audit totals load once and refresh in sequence to protect the
+            database from overlapping reads.
+          </span>
+        </div>
+        <button
+          className="button audit-refresh-button"
+          type="button"
+          disabled={isRefreshing || monitorIsFetching}
+          onClick={() => void refreshMonitor()}
+        >
+          <RefreshCw size={15} aria-hidden />
+          {isRefreshing || monitorIsFetching ? 'Refreshing…' : 'Refresh data'}
+        </button>
+      </section>
       {coreSummaryQuery.isLoading && <LoadingState />}
       {coreSummaryQuery.error && <ErrorState
         error={coreSummaryQuery.error}
-        retry={() => void coreSummaryQuery.refetch()}
+        retry={() => void refreshMonitor()}
+        retryDisabled={isRefreshing || monitorIsFetching}
       />}
       {usageSummaryQuery.error && <ErrorState
         error={usageSummaryQuery.error}
-        retry={() => void usageSummaryQuery.refetch()}
+        retry={() => void refreshMonitor()}
+        retryDisabled={isRefreshing || monitorIsFetching}
       />}
       {financialSummaryQuery.error && <ErrorState
         error={financialSummaryQuery.error}
-        retry={() => void financialSummaryQuery.refetch()}
+        retry={() => void refreshMonitor()}
+        retryDisabled={isRefreshing || monitorIsFetching}
       />}
       {tiles.length > 0 && <MetricGrid tiles={tiles} />}
 
@@ -807,7 +853,8 @@ export function AuditMonitorPage() {
         {auditedRowsQuery.isLoading && <LoadingState />}
         {auditedRowsQuery.error && <ErrorState
           error={auditedRowsQuery.error}
-          retry={() => void auditedRowsQuery.refetch()}
+          retry={() => void refreshMonitor()}
+          retryDisabled={isRefreshing || monitorIsFetching}
         />}
         <div className="table-scroll">
           <table>
@@ -960,7 +1007,8 @@ export function AuditMonitorPage() {
         {pendingRowsQuery.isLoading && <LoadingState />}
         {pendingRowsQuery.error && <ErrorState
           error={pendingRowsQuery.error}
-          retry={() => void pendingRowsQuery.refetch()}
+          retry={() => void refreshMonitor()}
+          retryDisabled={isRefreshing || monitorIsFetching}
         />}
         <div className="table-scroll">
           <table>
@@ -1033,7 +1081,8 @@ export function AuditMonitorPage() {
         {noRecordingRowsQuery.isLoading && <LoadingState />}
         {noRecordingRowsQuery.error && <ErrorState
           error={noRecordingRowsQuery.error}
-          retry={() => void noRecordingRowsQuery.refetch()}
+          retry={() => void refreshMonitor()}
+          retryDisabled={isRefreshing || monitorIsFetching}
         />}
         <div className="table-scroll">
           <table>

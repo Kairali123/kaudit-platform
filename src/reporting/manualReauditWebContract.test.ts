@@ -212,7 +212,7 @@ test('a success refreshes the monitor and the worker state', async () => {
   const source = await webSource('pages/AuditMonitorPage.tsx')
   assert.match(
     source,
-    /invalidateQueries\(\{ queryKey: \['audit-monitor'\] \}\)/,
+    /onSuccess: \(result\) => \{[\s\S]*?void refreshMonitor\(\)/,
   )
   assert.match(
     source,

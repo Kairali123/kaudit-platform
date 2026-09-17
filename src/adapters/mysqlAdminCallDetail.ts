@@ -86,7 +86,62 @@ export async function resolveAdminCallAccess(
     return null
   }
   const [rows] = await pool.execute<AccessRow[]>(
-    `SELECT c.id AS call_id,
+    ADMIN_CALL_ACCESS_SQL,
+    [taskReference, taskReference, taskReference, taskReference],
+  )
+  const row = rows[0]
+  return row
+    ? {
+        callId: row.call_id,
+        callReference: row.call_reference,
+        sensitivityTier: row.sensitivity_tier,
+        sourceUrl: row.source_url,
+        evidenceSha256: row.evidence_sha256,
+      }
+    : null
+}
+
+/**
+ * The calls one Task ID can name, resolved first (UNION de-duplicates), so the
+ * reference and recording joins run only for those calls. The original
+ * predicate, returned fields, and recording ordering are applied unchanged on
+ * top, so the same row wins as before. Binds the Task ID four times.
+ *
+ * Known, pre-existing behavior kept deliberately: when one Task ID names
+ * several calls, the winner is the call with the newest final recording
+ * artifact (ties unordered). This change does not pick a different winner.
+ */
+export const ADMIN_CALL_ACCESS_SQL = `WITH matching_calls AS (
+       SELECT task_call.id
+       FROM kaudit_call task_call
+       WHERE task_call.logical_call_key = ?
+       UNION
+       SELECT task_ref.call_id AS id
+       FROM kaudit_call_external_reference task_ref
+       WHERE task_ref.external_id = ?
+         AND task_ref.reference_type IN ('task_id','taskId','task')
+     )
+     SELECT c.id AS call_id,
+            COALESCE(ref.external_id, c.logical_call_key)
+              AS call_reference,
+            c.sensitivity_tier, recording.source_url,
+            recording.sha256 AS evidence_sha256
+     FROM matching_calls
+     JOIN kaudit_call c ON c.id = matching_calls.id
+     LEFT JOIN kaudit_call_external_reference ref
+       ON ref.call_id = c.id
+      AND ref.reference_type IN ('task_id','taskId','task')
+     LEFT JOIN kaudit_call_artifact recording
+       ON recording.call_id = c.id
+      AND recording.artifact_type = 'recording'
+      AND recording.is_final = 1
+     WHERE ref.external_id = ?
+        OR c.logical_call_key = ?
+     ORDER BY recording.created_at DESC
+     LIMIT 1`
+
+/** Tests only: the pre-rewrite access statement. Binds the Task ID twice. */
+export const LEGACY_ADMIN_CALL_ACCESS_SQL = `SELECT c.id AS call_id,
             COALESCE(ref.external_id, c.logical_call_key)
               AS call_reference,
             c.sensitivity_tier, recording.source_url,
@@ -102,20 +157,7 @@ export async function resolveAdminCallAccess(
      WHERE ref.external_id = ?
         OR c.logical_call_key = ?
      ORDER BY recording.created_at DESC
-     LIMIT 1`,
-    [taskReference, taskReference],
-  )
-  const row = rows[0]
-  return row
-    ? {
-        callId: row.call_id,
-        callReference: row.call_reference,
-        sensitivityTier: row.sensitivity_tier,
-        sourceUrl: row.source_url,
-        evidenceSha256: row.evidence_sha256,
-      }
-    : null
-}
+     LIMIT 1`
 
 export async function collectAdminCallDetail(
   pool: Pool,
