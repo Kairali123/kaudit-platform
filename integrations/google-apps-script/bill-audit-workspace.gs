@@ -57,9 +57,9 @@ const BILLING_POLICY = Object.freeze({
   rulesetSha256: 'd1c23d599d2905ff8ae63a8e68d75005961fd6bc7a464883c049ca833fab9b0e',
   categoryPolicyVersion: 'management-category-charge/2026-09-16.1',
   categoryPolicySha256: 'c982ec55fea2f4770d7653b4b198f2d066384e37438aad5e5ef8e6e8a2c48bb7',
-  classifierVersion: 'kairali-12cat/2.9.0',
-  classifierSha256: 'c9dabcf5058b60910d2cd594b64dba27a6f2a18a6a81b8211bf0edfc8e08d807',
-  validationVersion: 'leadership-approved-auto-consensus/1.1.0',
+  classifierVersion: 'kairali-12cat/2.9.1',
+  classifierSha256: '162bf225d426340fe9ab13fd93ca7b61b706df44dbbe80e45991f315aa4a3009',
+  validationVersion: 'leadership-approved-auto-consensus/1.1.1',
   validationThreshold: 0.8,
   ratePaisePerMinute: 950,
   standardGraceMs: 60000,
@@ -175,9 +175,12 @@ function upgradeWorkspace() {
     billing.getRange(BILL_AUDIT.firstDataRow, 8, billingCapacity, 1).setNumberFormat('0.00');
     billing.getRange(BILL_AUDIT.firstDataRow, 9, billingCapacity, 4).setNumberFormat('₹#,##0.00');
     billing.getRange(BILL_AUDIT.firstDataRow, 21, billingCapacity, 1).setNumberFormat('0.0%');
+    // Remove validation accidentally inherited by calculation columns P:W, then
+    // restore strict validation only on the two code-owned status columns.
+    billing.getRange(BILL_AUDIT.firstDataRow, 15, billingCapacity, 10).clearDataValidations();
     billing.getRange(BILL_AUDIT.firstDataRow, 15, billingCapacity, 1).setDataValidation(
       SpreadsheetApp.newDataValidation()
-        .requireValueInList(['AUTO_APPROVED','REVIEW_REQUIRED','SUPERSEDED_REAUDIT_REQUIRED'], true)
+        .requireValueInList(billingApprovalStatuses_(), true)
         .setAllowInvalid(false)
         .build(),
     );
@@ -228,6 +231,10 @@ function upgradeWorkspace() {
   });
 }
 
+function billingApprovalStatuses_() {
+  return ['NOT_REVIEWED','APPROVED','REJECTED','BLOCKED','SUPERSEDED_REAUDIT_REQUIRED'];
+}
+
 function upsertSetting_(key, value, editable, description, secretHandling) {
   const sheet = sheet_(BILL_AUDIT.sheets.settings);
   const count = dataRowCount_(sheet);
@@ -260,7 +267,7 @@ function canonicalRuleRows_() {
 function classifierPrompt_() {
   return [
     'You are the automated call-quality auditor for Kairali Group. The female Kairali AI agent is Saanvi. Use only the numbered transcript blocks, metadata, enabled Rules and Knowledge Base.',
-    'Assign customer_block_numbers and agent_block_numbers from conversational meaning. Ambiguous blocks belong in unclear_block_numbers. Customer, agent and unclear lists must not overlap.',
+    'Assign customer_block_numbers and agent_block_numbers from conversational meaning. Ambiguous blocks belong in unclear_block_numbers. Customer, agent and unclear lists must not overlap. Set counterparty_type=human only when at least one customer block is verified; when Saanvi speaks and nobody replies, use counterparty_type=no_response.',
     'Apply these precedence rules: affirmative voicemail evidence => VOICEMAIL; interactive automation evidence => AI_TO_AI; Saanvi speech with no customer reply => USER_SILENCE; no Saanvi and no customer speech => INACTIVE_CALL; human speech with no useful Saanvi response => AGENT_FAILURE; stop intent followed by continued sales flow => AGENT_FAILURE; stop intent followed only by unnecessary administration => TIME_DURATION; appropriate close with no outcome => CONNECT_NOT_FRUITFUL; completed qualification/resolution/handoff => OK.',
     'JUNK_CALL requires explicit test, spam/scam, prank or illegitimate-purpose evidence. INCORRECT_CALL_DURATION requires the supplied duration_mismatch=true fact. NETWORK_FAILURE_TELECOM requires explicit telecom evidence.',
     'For AGENT_FAILURE, use agent_failure_mode=start unless genuine two-way service completed before a specific first failing block. Use mid_conversation only then and set agent_failure_start_block_number to that block.',
@@ -555,7 +562,11 @@ function auditQueueItem_(queueRow, settings, apiKey, auditModel, transcriptionMo
   const evidenceHash = bytesToHex_(Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, bytes));
   const ext = audioExtension_(blob.getContentType());
   blob.setName(taskId + '-' + evidenceHash.slice(0, 12) + '.' + ext);
-  const evidenceFile = saveEvidenceAudio_(settings, blob, taskId, evidenceHash);
+  const evidenceFile = runAuditStage_(
+    'EVIDENCE_AUDIO_WRITE_FAILED',
+    'Recording evidence could not be saved',
+    function() { return saveEvidenceAudio_(settings, blob, taskId, evidenceHash); },
+  );
   const transcript = transcribe_(apiKey, transcriptionModel, blob, promptText_('TRANSCRIPTION_GUIDANCE'));
   const monthly = monthlyRowByTaskId_(taskId);
   const connectedDurationMs = Math.max(0, Math.round(Number(monthly[6] || 0) * 1000));
@@ -590,10 +601,7 @@ function auditQueueItem_(queueRow, settings, apiKey, auditModel, transcriptionMo
     consensus = evaluateConsensus_([primary, second], recordedDurationMs);
     if (consensus.status === 'accepted') {
       adjudicationStatus = 'AGREED';
-    } else if (
-      consensus.reasons.length === 1 &&
-      consensus.reasons[0] === 'CATEGORY_DISAGREEMENT'
-    ) {
+    } else if (requiresThirdReview_(consensus)) {
       third = validateClassification_(
         classify_(apiKey, auditModel, promptText_('ADJUDICATOR'), context, 'call_audit_adjudicator'),
         blocks,
@@ -609,16 +617,28 @@ function auditQueueItem_(queueRow, settings, apiKey, auditModel, transcriptionMo
     finalResult = consensus.selected;
   }
   const manualReview = consensus.status !== 'accepted' || !finalResult;
-  writeAuditResult_(taskId, month, evidenceHash, primary, second, third, finalResult, consensus, adjudicationStatus,
-    auditModel, settings, evidenceFile.getUrl(), transcript);
+  runAuditStage_('AUDIT_RESULT_WRITE_FAILED', 'AI audit result could not be saved', function() {
+    writeAuditResult_(taskId, month, evidenceHash, primary, second, third, finalResult, consensus, adjudicationStatus,
+      auditModel, settings, evidenceFile.getUrl(), transcript);
+  });
   if (finalResult && consensus.status === 'accepted') {
-    writeBilling_(taskId, queueRow, finalResult, consensus, evidenceHash);
+    runAuditStage_('BILLING_RESULT_WRITE_FAILED', 'Verified billing result could not be saved', function() {
+      writeBilling_(taskId, queueRow, finalResult, consensus, evidenceHash);
+    });
   } else {
-    writeUnresolvedBilling_(taskId, monthly, consensus, evidenceHash);
+    runAuditStage_('BILLING_RESULT_WRITE_FAILED', 'Unresolved billing result could not be saved', function() {
+      writeUnresolvedBilling_(taskId, monthly, consensus, evidenceHash);
+    });
   }
-  writeEvidenceIndex_(taskId, month, recordingUrl, evidenceFile.getUrl(), evidenceHash, bytes.length);
-  writeEvidenceJson_(settings, taskId, evidenceHash, runId, transcript, primary, second, third, finalResult, consensus);
-  updateMonthlyAuditState_(taskId, manualReview ? BILL_AUDIT.queueStates.unresolved : BILL_AUDIT.queueStates.completed, runId, evidenceHash);
+  runAuditStage_('EVIDENCE_INDEX_WRITE_FAILED', 'Evidence index could not be saved', function() {
+    writeEvidenceIndex_(taskId, month, recordingUrl, evidenceFile.getUrl(), evidenceHash, bytes.length);
+  });
+  runAuditStage_('EVIDENCE_JSON_WRITE_FAILED', 'Versioned audit evidence could not be saved', function() {
+    writeEvidenceJson_(settings, taskId, evidenceHash, runId, transcript, primary, second, third, finalResult, consensus);
+  });
+  runAuditStage_('MONTHLY_STATE_WRITE_FAILED', 'Monthly audit state could not be saved', function() {
+    updateMonthlyAuditState_(taskId, manualReview ? BILL_AUDIT.queueStates.unresolved : BILL_AUDIT.queueStates.completed, runId, evidenceHash);
+  });
   return { manualReview: manualReview };
 }
 
@@ -842,9 +862,6 @@ function blockDuration_(blocks, numbers) {
 function reviewedCategory_(raw, customerCount, agentCount, voicemailCount, automationCount, junkCount, durationMismatch) {
   const proposed = String(raw.category_code || '');
   const counterparty = String(raw.counterparty_type || 'unclear');
-  if (counterparty === 'human' && customerCount === 0) {
-    throw safeError_('CLASSIFICATION_CONTRADICTORY', 'Human counterparty requires customer speech', false);
-  }
   if (['voicemail','interactive_automation','no_response'].indexOf(counterparty) >= 0 && customerCount > 0) {
     throw safeError_('CLASSIFICATION_CONTRADICTORY', 'Non-human counterparty cannot contain customer speech', false);
   }
@@ -1026,6 +1043,33 @@ function roundKserveDuration_(durationMs) {
   };
 }
 
+function capProjectedAmountAtVendor_(projectedAmountPaise, rawVendorAmount) {
+  if (!Number.isSafeInteger(projectedAmountPaise) || projectedAmountPaise < 0) {
+    throw safeError_('PROJECTED_AMOUNT_INVALID', 'Audited charge could not be calculated safely', true, BILL_AUDIT.queueStates.unresolved);
+  }
+  const supplied = String(rawVendorAmount == null ? '' : rawVendorAmount).trim();
+  if (!supplied) {
+    return {
+      projectedAmountPaise: projectedAmountPaise,
+      vendorAmountPaise: null,
+      amountPaise: projectedAmountPaise,
+      cappedByVendorAmount: false,
+    };
+  }
+  const vendorAmount = Number(rawVendorAmount);
+  if (!Number.isFinite(vendorAmount) || vendorAmount < 0) {
+    throw safeError_('VENDOR_AMOUNT_INVALID', 'Vendor billed amount must be a non-negative number', true, BILL_AUDIT.queueStates.unresolved);
+  }
+  const vendorAmountPaise = Math.round(vendorAmount * 100);
+  const cappedByVendorAmount = vendorAmountPaise < projectedAmountPaise;
+  return {
+    projectedAmountPaise: projectedAmountPaise,
+    vendorAmountPaise: vendorAmountPaise,
+    amountPaise: cappedByVendorAmount ? vendorAmountPaise : projectedAmountPaise,
+    cappedByVendorAmount: cappedByVendorAmount,
+  };
+}
+
 function projectedClassification_(classification, recordedDurationMs) {
   const decision = categoryChargeDecision_(classification, recordedDurationMs);
   const rounded = roundKserveDuration_(decision.adjustedChargeableDurationMs);
@@ -1044,6 +1088,11 @@ function singlePassConsensus_(classification, recordedDurationMs) {
     billableDurationMs: projected.rounded.billableDurationMs,
     version: BILLING_POLICY.validationVersion,
   };
+}
+
+function requiresThirdReview_(consensus) {
+  return consensus.status === 'unresolved' &&
+    consensus.reasons.indexOf('CATEGORY_DISAGREEMENT') >= 0;
 }
 
 function evaluateConsensus_(classifications, recordedDurationMs) {
@@ -1112,14 +1161,16 @@ function writeBilling_(taskId, queueRow, result, consensus, evidenceHash) {
   const connectedSeconds = Number(monthly[6] || 0);
   const decision = billingDecision_(result, result.recorded_duration_ms);
   const rounded = decision.rounded;
-  const amount = rounded.amountPaise / 100;
-  const kserveAmount = Number(monthly[8] || 0);
-  const trace = calculationTrace_(taskId, result, decision, consensus, evidenceHash, 'independent_category_service_end');
+  const pricing = capProjectedAmountAtVendor_(rounded.amountPaise, monthly[8]);
+  const amount = pricing.amountPaise / 100;
+  const kserveAmount = pricing.vendorAmountPaise == null ? '' : pricing.vendorAmountPaise / 100;
+  const variance = pricing.vendorAmountPaise == null ? '' : roundMoney_(kserveAmount - amount);
+  const trace = calculationTrace_(taskId, result, decision, consensus, evidenceHash, 'independent_category_service_end', pricing);
   upsertByTaskId_(sheet_(BILL_AUDIT.sheets.billing), [
     taskId, result.category_code, connectedSeconds, millisecondsToSeconds_(decision.charge.serviceEndMs),
     result.agent_failure_mode || '', millisecondsToSeconds_(decision.charge.graceMs),
     millisecondsToSeconds_(decision.charge.adjustedChargeableDurationMs), rounded.billableMinutes,
-    BILLING_POLICY.ratePaisePerMinute / 100, amount, kserveAmount, roundMoney_(kserveAmount - amount),
+    BILLING_POLICY.ratePaisePerMinute / 100, amount, kserveAmount, variance,
     rounded.ruleCode, BILLING_POLICY.rulesetVersion, 'NOT_REVIEWED',
     millisecondsToSeconds_(result.recorded_duration_ms), millisecondsToSeconds_(decision.charge.serviceEndMs),
     decision.charge.policyCode, 'independent_category_service_end', consensus.status,
@@ -1132,7 +1183,7 @@ function billingDecision_(result, recordedDurationMs) {
   return { charge: charge, rounded: roundKserveDuration_(charge.adjustedChargeableDurationMs) };
 }
 
-function calculationTrace_(taskId, result, decision, consensus, evidenceHash, basis) {
+function calculationTrace_(taskId, result, decision, consensus, evidenceHash, basis, pricing) {
   return {
     schemaVersion: '2',
     taskId: taskId,
@@ -1157,7 +1208,10 @@ function calculationTrace_(taskId, result, decision, consensus, evidenceHash, ba
     billableDurationMs: decision.rounded.billableDurationMs,
     billableMinutes: decision.rounded.billableMinutes,
     roundingRule: decision.rounded.ruleCode,
-    amountPaise: decision.rounded.amountPaise,
+    projectedAmountPaise: pricing.projectedAmountPaise,
+    vendorAmountPaise: pricing.vendorAmountPaise,
+    cappedByVendorAmount: pricing.cappedByVendorAmount,
+    amountPaise: pricing.amountPaise,
     calculationBasis: basis,
   };
 }
@@ -1224,7 +1278,7 @@ function saveEvidenceAudio_(settings, blob, taskId, evidenceHash) {
 
 function writeEvidenceJson_(settings, taskId, evidenceHash, runId, transcript, primary, second, third, finalResult, consensus) {
   const folder = DriveApp.getFolderById(requiredSetting_(settings, 'EVIDENCE_FOLDER_ID'));
-  const name = taskId + '-' + evidenceHash.slice(0, 12) + '.audit.json';
+  const name = auditEvidenceJsonName_(taskId, evidenceHash, runId);
   if (folder.getFilesByName(name).hasNext()) return;
   folder.createFile(name, JSON.stringify({
     task_id: taskId,
@@ -1239,6 +1293,12 @@ function writeEvidenceJson_(settings, taskId, evidenceHash, runId, transcript, p
     policy: BILLING_POLICY,
     created_at: new Date().toISOString(),
   }), 'application/json');
+}
+
+function auditEvidenceJsonName_(taskId, evidenceHash, runId) {
+  const safeRunId = String(runId || '').replace(/[^A-Za-z0-9_-]/g, '');
+  const suffix = safeRunId ? '-' + safeRunId : '';
+  return taskId + '-' + evidenceHash.slice(0, 12) + suffix + '.audit.json';
 }
 
 function retrySelectedRows() {
@@ -1396,7 +1456,7 @@ function syncPendingResults() {
       const monthly = monthlyRowByTaskId_(taskId);
       const evidenceHash = String(row[21] || monthly[20] || '');
       const audit = basis === 'independent_category_service_end'
-        ? readEvidenceJson_(settings, taskId, evidenceHash)
+        ? readEvidenceJson_(settings, taskId, evidenceHash, String(monthly[19] || ''))
         : null;
       items.push({
         task_id: taskId,
@@ -1466,12 +1526,14 @@ function syncPendingResults() {
   });
 }
 
-function readEvidenceJson_(settings, taskId, evidenceHash) {
+function readEvidenceJson_(settings, taskId, evidenceHash, runId) {
   const folder = DriveApp.getFolderById(requiredSetting_(settings, 'EVIDENCE_FOLDER_ID'));
-  const name = taskId + '-' + evidenceHash.slice(0, 12) + '.audit.json';
-  const files = folder.getFilesByName(name);
-  if (!files.hasNext()) throw safeError_('EVIDENCE_JSON_MISSING', 'Restricted audit evidence package is missing', true, BILL_AUDIT.queueStates.unresolved);
-  return JSON.parse(files.next().getBlob().getDataAsString('UTF-8'));
+  const versioned = folder.getFilesByName(auditEvidenceJsonName_(taskId, evidenceHash, runId));
+  if (versioned.hasNext()) return JSON.parse(versioned.next().getBlob().getDataAsString('UTF-8'));
+  // Compatibility for results produced before run-versioned evidence packages.
+  const legacy = folder.getFilesByName(auditEvidenceJsonName_(taskId, evidenceHash, ''));
+  if (!legacy.hasNext()) throw safeError_('EVIDENCE_JSON_MISSING', 'Restricted audit evidence package is missing', true, BILL_AUDIT.queueStates.unresolved);
+  return JSON.parse(legacy.next().getBlob().getDataAsString('UTF-8'));
 }
 
 function updateMonthlySqlState_(taskId, state) {
@@ -1740,6 +1802,15 @@ function safeError_(code, message, terminal, state) {
   error.terminal = Boolean(terminal);
   error.state = state || BILL_AUDIT.queueStates.failed;
   return error;
+}
+
+function runAuditStage_(code, safeMessage, callback) {
+  try {
+    return callback();
+  } catch (error) {
+    if (error && error.safeCode) throw error;
+    throw safeError_(code, safeMessage, false);
+  }
 }
 
 function classifySafeError_(error) {

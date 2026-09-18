@@ -31,7 +31,7 @@ async function loadFunctions() {
     },
   })
   vm.runInContext(
-    `${source}\nglobalThis.__billAuditTest = { validateRecordingUrl_, ensureSheetCapacity_, transcribe_, billingDecision_, categoryChargeDecision_, roundKserveDuration_, evaluateConsensus_, dataRowCount_, auditResultHeaders_, billingHeaders_, canonicalRuleRows_ };`,
+    `${source}\nglobalThis.__billAuditTest = { validateRecordingUrl_, ensureSheetCapacity_, transcribe_, billingDecision_, categoryChargeDecision_, roundKserveDuration_, capProjectedAmountAtVendor_, evaluateConsensus_, requiresThirdReview_, dataRowCount_, auditResultHeaders_, billingHeaders_, canonicalRuleRows_, billingApprovalStatuses_, reviewedCategory_, auditEvidenceJsonName_, runAuditStage_, classifySafeError_ };`,
     context,
   )
   const functions = context.__billAuditTest as {
@@ -60,13 +60,33 @@ async function loadFunctions() {
     roundKserveDuration_: (durationMs: number) => {
       billableDurationMs: number; billableMinutes: number; amountPaise: number; ruleCode: string
     }
+    capProjectedAmountAtVendor_: (projectedAmountPaise: number, vendorAmount: unknown) => {
+      projectedAmountPaise: number
+      vendorAmountPaise: number | null
+      amountPaise: number
+      cappedByVendorAmount: boolean
+    }
     evaluateConsensus_: (results: Array<Record<string, unknown>>, durationMs: number) => {
       status: string; reasons: string[]; billableDurationMs: number | null
     }
+    requiresThirdReview_: (consensus: { status: string; reasons: string[] }) => boolean
     dataRowCount_: (sheet: object) => number
     auditResultHeaders_: () => string[]
     billingHeaders_: () => string[]
     canonicalRuleRows_: () => unknown[][]
+    billingApprovalStatuses_: () => string[]
+    reviewedCategory_: (
+      raw: Record<string, unknown>,
+      customerCount: number,
+      agentCount: number,
+      voicemailCount: number,
+      automationCount: number,
+      junkCount: number,
+      durationMismatch: boolean,
+    ) => string
+    auditEvidenceJsonName_: (taskId: string, evidenceHash: string, runId: string) => string
+    runAuditStage_: (code: string, message: string, callback: () => unknown) => unknown
+    classifySafeError_: (error: unknown) => { code: string; safeMessage: string }
   }
   return { functions, fetchPayloads }
 }
@@ -157,6 +177,60 @@ test('locks the canonical output shapes and all twelve categories', async () => 
   ])
 })
 
+test('billing validation accepts every status written by the audit engine', async () => {
+  const { functions } = await loadFunctions()
+  assert.deepEqual(Array.from(functions.billingApprovalStatuses_()), [
+    'NOT_REVIEWED', 'APPROVED', 'REJECTED', 'BLOCKED', 'SUPERSEDED_REAUDIT_REQUIRED',
+  ])
+})
+
+test('normalizes a claimed human with no verified customer speech from speaker evidence', async () => {
+  const { functions } = await loadFunctions()
+  const raw = {
+    category_code: 'CONNECT_NOT_FRUITFUL',
+    counterparty_type: 'human',
+    voicemail_evidence: 'none',
+    automation_evidence: 'none',
+    junk_evidence: 'none',
+  }
+  assert.equal(functions.reviewedCategory_(raw, 0, 2, 0, 0, 0, false), 'USER_SILENCE')
+  assert.equal(functions.reviewedCategory_(raw, 0, 0, 0, 0, 0, false), 'INACTIVE_CALL')
+  assert.throws(
+    () => functions.reviewedCategory_({ ...raw, counterparty_type: 'no_response' }, 1, 1, 0, 0, 0, false),
+    /Non-human counterparty cannot contain customer speech/,
+  )
+})
+
+test('uses a run-versioned immutable audit evidence package name', async () => {
+  const { functions } = await loadFunctions()
+  assert.equal(
+    functions.auditEvidenceJsonName_('Tsynthetic', 'abcdef1234567890', 'run-123'),
+    'Tsynthetic-abcdef123456-run-123.audit.json',
+  )
+  assert.equal(
+    functions.auditEvidenceJsonName_('Tsynthetic', 'abcdef1234567890', ''),
+    'Tsynthetic-abcdef123456.audit.json',
+  )
+})
+
+test('reports the failing persistence stage without exposing the underlying exception', async () => {
+  const { functions } = await loadFunctions()
+  let captured: unknown
+  try {
+    functions.runAuditStage_('BILLING_RESULT_WRITE_FAILED', 'Verified billing result could not be saved', () => {
+      throw new Error('sensitive spreadsheet implementation detail')
+    })
+  } catch (error) {
+    captured = error
+  }
+  assert.deepEqual({ ...functions.classifySafeError_(captured) }, {
+    code: 'BILLING_RESULT_WRITE_FAILED',
+    safeMessage: 'Verified billing result could not be saved',
+    terminal: false,
+    state: 'FAILED_PERMANENT',
+  })
+})
+
 test('charges agent failure only for an exact mid-conversation failure', async () => {
   const { functions } = await loadFunctions()
 
@@ -227,6 +301,32 @@ test('uses the locked half-minute flat and whole-minute ceiling', async () => {
   }
 })
 
+test('caps an audited projection at the immutable vendor charge using integer paise', async () => {
+  const { functions } = await loadFunctions()
+  assert.deepEqual({ ...functions.capProjectedAmountAtVendor_(950, 4.75) }, {
+    projectedAmountPaise: 950,
+    vendorAmountPaise: 475,
+    amountPaise: 475,
+    cappedByVendorAmount: true,
+  })
+  assert.deepEqual({ ...functions.capProjectedAmountAtVendor_(475, 9.5) }, {
+    projectedAmountPaise: 475,
+    vendorAmountPaise: 950,
+    amountPaise: 475,
+    cappedByVendorAmount: false,
+  })
+  assert.deepEqual({ ...functions.capProjectedAmountAtVendor_(475, '') }, {
+    projectedAmountPaise: 475,
+    vendorAmountPaise: null,
+    amountPaise: 475,
+    cappedByVendorAmount: false,
+  })
+  assert.throws(
+    () => functions.capProjectedAmountAtVendor_(475, -1),
+    /Vendor billed amount must be a non-negative number/,
+  )
+})
+
 test('consensus includes category, customer speech and rounded duration', async () => {
   const { functions } = await loadFunctions()
   const base = {
@@ -240,6 +340,26 @@ test('consensus includes category, customer speech and rounded duration', async 
   ], 180_000)
   assert.equal(durationConflict.status, 'unresolved')
   assert.equal(durationConflict.reasons.includes('BILLABLE_DURATION_DISAGREEMENT'), true)
+})
+
+test('uses the third reviewer for compound disagreement and accepts a two-of-three majority', async () => {
+  const { functions } = await loadFunctions()
+  const silence = {
+    category_code: 'USER_SILENCE', customer_spoke: false, confidence: 0.9,
+    last_agent_exchange_ms: 20_000,
+  }
+  const inactive = {
+    category_code: 'INACTIVE_CALL', customer_spoke: false, confidence: 0.9,
+  }
+  const twoPass = functions.evaluateConsensus_([silence, inactive], 120_000)
+  assert.equal(twoPass.status, 'unresolved')
+  assert.equal(twoPass.reasons.includes('CATEGORY_DISAGREEMENT'), true)
+  assert.equal(twoPass.reasons.includes('BILLABLE_DURATION_DISAGREEMENT'), true)
+  assert.equal(functions.requiresThirdReview_(twoPass), true)
+
+  const threePass = functions.evaluateConsensus_([silence, inactive, { ...silence, confidence: 0.85 }], 120_000)
+  assert.equal(threePass.status, 'accepted')
+  assert.equal(threePass.billableDurationMs, 120_000)
 })
 
 test('counts real Task-ID rows instead of prefilled formulas in other columns', async () => {
