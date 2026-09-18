@@ -108,7 +108,7 @@ test('database auth may retain dormant OIDC settings for one-variable rollback',
 test('success output is a small fixed JSON object', () => {
   assert.equal(
     formatPreflightReport(evaluate(productionEnv())),
-    '{"preflight":"vercel-release","result":"pass","checks":16,"optionalFeatures":[]}',
+    '{"preflight":"vercel-release","result":"pass","checks":17,"optionalFeatures":[]}',
   )
 })
 
@@ -533,6 +533,27 @@ test('the GAS import secret is strongly shaped without echoing its value', () =>
     'KAUDIT_GAS_IMPORT_SECRET',
   ])
   assert.equal(formatPreflightReport(report).includes(invalidSecret), false)
+})
+
+test('GAS audit sync is enabled only with its secret and rate card together', () => {
+  const enabled = evaluate({
+    ...productionEnv(),
+    KAUDIT_GAS_AUDIT_SYNC_SECRET:
+      'synthetic-audit-sync-secret-32-characters',
+    KAUDIT_GAS_AUDIT_SYNC_RATE_CARD_ID: 'rcv-2026-02-28-v1',
+  })
+  assert.equal(enabled.ok, true)
+  assert.deepEqual(enabled.optionalFeatures, ['gasAuditSync'])
+
+  const incomplete = evaluate({
+    ...productionEnv(),
+    KAUDIT_GAS_AUDIT_SYNC_SECRET:
+      'synthetic-audit-sync-secret-32-characters',
+  })
+  assert.deepEqual(
+    variablesFor(incomplete, 'FEATURE_CONFIG_INCOMPLETE'),
+    ['KAUDIT_GAS_AUDIT_SYNC_RATE_CARD_ID'],
+  )
 })
 
 // ---------------------------------------------------------------------------

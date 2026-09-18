@@ -19,6 +19,7 @@ import { createLocalImportObjectStore } from '../adapters/localImportObjectStore
 import { createGoogleDriveImportObjectStore } from '../adapters/googleDriveImportObjectStore.ts'
 import { createImportAnalysisService } from '../imports/analysis.ts'
 import { configuredGasImportSecret } from '../imports/gasImportAuth.ts'
+import { configuredGasAuditSyncSecret } from '../integrations/gasAuditSyncAuth.ts'
 import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.ts'
 import { createOpenAiCallAuditModel } from '../adapters/openaiCallAuditClient.ts'
 import { resolveDatabaseTls, type CaFileReader } from './databaseTls.ts'
@@ -173,6 +174,9 @@ export function createDashboardRuntime(
       : undefined
   const allowedRecordingHosts = hostList(env)
   const gasImportSecret = configuredGasImportSecret(env) ?? undefined
+  const gasAuditSyncSecret = configuredGasAuditSyncSecret(env) ?? undefined
+  const gasAuditSyncRateCardId =
+    env.KAUDIT_GAS_AUDIT_SYNC_RATE_CARD_ID?.trim() || undefined
   const importObjectStore =
     options.cycleImports === 'local-disk'
       ? createLocalImportObjectStore(
@@ -281,6 +285,8 @@ export function createDashboardRuntime(
     audit,
     imports,
     gasImportSecret,
+    gasAuditSyncSecret,
+    gasAuditSyncRateCardId,
     importAnalysis,
     recordingFetcher,
     allowedRecordingHosts,

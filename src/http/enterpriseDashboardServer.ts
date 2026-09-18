@@ -90,6 +90,12 @@ import {
   readLateRecordingBatchProgress,
 } from '../adapters/mysqlLateRecordingCorrections.ts'
 import { verifyGasImportSignature } from '../imports/gasImportAuth.ts'
+import { verifyGasAuditSyncSignature } from '../integrations/gasAuditSyncAuth.ts'
+import {
+  createGasAuditResultSync,
+  type GasAuditSyncRequest,
+  type GasAuditSyncReceipt,
+} from '../integrations/gasAuditResultSync.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
 import {
   collectBilling,
@@ -277,6 +283,13 @@ interface Dependencies {
   imports?: CycleImportService
   /** Dedicated HMAC secret for the usage-import-only GAS service principal. */
   gasImportSecret?: string
+  /** Dedicated HMAC secret for final GAS audit-result synchronization. */
+  gasAuditSyncSecret?: string
+  /** Published rate card used to independently revalidate synchronized results. */
+  gasAuditSyncRateCardId?: string
+  gasAuditResultSync?: {
+    sync(input: GasAuditSyncRequest): Promise<GasAuditSyncReceipt>
+  }
   importAnalysis?: ImportAnalysisService
   recordingFetcher?: UrlFetcher
   allowedRecordingHosts?: string[]
@@ -487,6 +500,7 @@ const USER_ADMIN_WRITE_ROUTES = new Set([
 ])
 const MAX_USER_ADMIN_BODY_BYTES = 16 * 1024
 const MAX_AUDIT_WORKER_BODY_BYTES = 2 * 1024
+const MAX_GAS_AUDIT_SYNC_BODY_BYTES = 5 * 1024 * 1024
 
 /**
  * The two public GETs of the authorization-code browser flow.
@@ -694,6 +708,58 @@ function authenticateGasUsageImport(
     },
     issuer: 'kaudit-gas-import',
     subject: 'usage-import',
+  }
+}
+
+const GAS_AUDIT_SYNC_ROUTE = '/api/v1/imports/gas-audit-results'
+
+function authenticateGasAuditSync(
+  request: IncomingMessage,
+  pathname: string,
+  dependencies: Dependencies,
+): AuthContext | null {
+  if (request.method !== 'POST' || pathname !== GAS_AUDIT_SYNC_ROUTE) {
+    return null
+  }
+  const signature = requestHeaderValue(
+    request,
+    'x-kaudit-audit-sync-signature',
+  )
+  const timestamp = requestHeaderValue(
+    request,
+    'x-kaudit-audit-sync-timestamp',
+  )
+  const bodySha256 = requestHeaderValue(
+    request,
+    'x-kaudit-content-sha256',
+  )
+  const attempted = Boolean(signature || timestamp || bodySha256)
+  if (!attempted) return null
+  const secret = dependencies.gasAuditSyncSecret
+  const valid = Boolean(secret) && verifyGasAuditSyncSignature({
+    secret: secret as string,
+    signature,
+    nowMs: Date.now(),
+    method: request.method,
+    pathname,
+    timestamp,
+    bodySha256,
+    billMonth: requestHeaderValue(request, 'x-kaudit-bill-month'),
+    batchId: requestHeaderValue(request, 'x-kaudit-batch-id'),
+  })
+  if (!valid) {
+    throw new AuthFailure(401, 'AUTH_INVALID', 'Authentication token is invalid')
+  }
+  return {
+    user: {
+      id: 'gas-audit-sync-service',
+      email: 'gas-audit-sync@kaudit.invalid',
+      status: 'active',
+      maxSensitivityTier: 'K0',
+      roles: ['admin'],
+    },
+    issuer: 'kaudit-gas-audit-sync',
+    subject: 'audit-result-sync',
   }
 }
 
@@ -2447,6 +2513,9 @@ export function createEnterpriseDashboardServer(
     const isLateRecordingPost =
       request.method === 'POST' &&
       LATE_RECORDING_WRITE_ROUTES.has(url.pathname)
+    const isGasAuditSyncPost =
+      request.method === 'POST' &&
+      url.pathname === GAS_AUDIT_SYNC_ROUTE
     if (
       request.method === 'GET' &&
       (IMPORT_WRITE_ROUTES.has(url.pathname) ||
@@ -2475,7 +2544,8 @@ export function createEnterpriseDashboardServer(
       !isAuditWorkerPost &&
       !isManualReauditPost &&
       !isSettlementPost &&
-      !isLateRecordingPost
+      !isLateRecordingPost &&
+      !isGasAuditSyncPost
     ) {
       problem(
         response,
@@ -2565,6 +2635,7 @@ export function createEnterpriseDashboardServer(
       IMPORT_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
       LATE_RECORDING_WRITE_ROUTES.has(url.pathname) ||
+      url.pathname === GAS_AUDIT_SYNC_ROUTE ||
       MONTHLY_REPORT_DOWNLOADS.has(url.pathname) ||
       url.pathname === RESTRICTED_EXPORT_ROUTE ||
       APP_ROUTES.has(url.pathname) ||
@@ -2878,6 +2949,10 @@ export function createEnterpriseDashboardServer(
     let context: AuthContext | null = null
     try {
       context = authenticateGasUsageImport(
+        request,
+        url.pathname,
+        dependencies,
+      ) ?? authenticateGasAuditSync(
         request,
         url.pathname,
         dependencies,
@@ -3429,6 +3504,75 @@ export function createEnterpriseDashboardServer(
           'audit_operations',
         )
         if (committing) apiCache.clear()
+        sendJson(response, correlation, receipt)
+        return
+      }
+      if (
+        request.method === 'POST' &&
+        url.pathname === GAS_AUDIT_SYNC_ROUTE
+      ) {
+        requirePermission(context, 'import:write')
+        if (context.issuer !== 'kaudit-gas-audit-sync') {
+          throw new AuthFailure(
+            401,
+            'AUTH_INVALID',
+            'Authentication token is invalid',
+          )
+        }
+        const bytes = await readRequestBody(
+          request,
+          MAX_GAS_AUDIT_SYNC_BODY_BYTES,
+        )
+        const bodySha256 = requestHeaderValue(
+          request,
+          'x-kaudit-content-sha256',
+        )
+        if (sha256Hex(bytes) !== bodySha256) {
+          throw new AuthFailure(
+            401,
+            'AUTH_INVALID',
+            'Authentication token is invalid',
+          )
+        }
+        let body: unknown
+        try {
+          body = JSON.parse(bytes.toString('utf8'))
+        } catch {
+          throw Object.assign(new Error('Audit sync JSON is invalid'), {
+            code: 'INVALID_AUDIT_SYNC',
+            status: 400,
+          })
+        }
+        const rateCardId = dependencies.gasAuditSyncRateCardId?.trim() || ''
+        if (!rateCardId) {
+          throw Object.assign(new Error('Audit sync rate card is unavailable'), {
+            code: 'AUDIT_SYNC_NOT_CONFIGURED',
+            status: 503,
+          })
+        }
+        const service =
+          dependencies.gasAuditResultSync ??
+          createGasAuditResultSync(dependencies.pool)
+        const receipt = await service.sync({
+          batchId: requestHeaderValue(request, 'x-kaudit-batch-id'),
+          billMonth: requestHeaderValue(request, 'x-kaudit-bill-month'),
+          bodySha256,
+          body,
+          rateCardId,
+          correlationId: correlation,
+        })
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          'gas_audit_result.sync',
+          'billing_cycle',
+          requestHeaderValue(request, 'x-kaudit-bill-month'),
+          'audit_operations',
+        )
+        apiCache.clear()
         sendJson(response, correlation, receipt)
         return
       }
