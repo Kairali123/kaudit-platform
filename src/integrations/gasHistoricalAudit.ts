@@ -13,11 +13,10 @@ import {
 const MONTH = /^(\d{4})-(\d{2})$/
 const TASK_ID = /^[A-Za-z0-9._:-]{1,128}$/
 const REQUEST_KEY = /^[A-Za-z0-9-]{16,64}$/
-const MAX_PAGE_SIZE = 500
+const MAX_PAGE_SIZE = 200
 const MAX_PREPARE_ROWS = 20
 
-interface HistoricalRow extends RowDataPacket {
-  task_id: string
+interface HistoricalDetailRow extends RowDataPacket {
   call_id: string
   artifact_id: string | null
   source_url: string | null
@@ -31,6 +30,15 @@ interface HistoricalRow extends RowDataPacket {
   confidence: string | null
   verified_amount: string | null
   calculation_basis: string | null
+}
+
+interface HistoricalRow extends HistoricalDetailRow {
+  task_id: string
+}
+
+interface HistoricalPageRow extends RowDataPacket {
+  task_id: string
+  call_id: string
 }
 
 export interface GasHistoricalStateTokenPayload {
@@ -190,8 +198,8 @@ function stateMatches(
   return hash(JSON.stringify(left)) === hash(JSON.stringify(right))
 }
 
-const HISTORICAL_SELECT = `
-  SELECT ref.external_id AS task_id, c.id AS call_id,
+const HISTORICAL_DETAILS_SELECT = `
+  SELECT c.id AS call_id,
          recording.id AS artifact_id, recording.source_url,
          recording.sha256 AS artifact_sha256,
          c.latest_audit_run_id,
@@ -222,8 +230,6 @@ const HISTORICAL_SELECT = `
          CAST(current_calc.total_amount AS CHAR) AS verified_amount,
          current_calc.calculation_basis
   FROM kaudit_call c
-  JOIN kaudit_call_external_reference ref
-    ON ref.call_id = c.id AND ref.reference_type = 'task_id'
   LEFT JOIN kaudit_call_artifact recording
     ON recording.id = (
       SELECT artifact.id
@@ -259,13 +265,15 @@ async function loadHistoricalRow(
   lock = false,
 ): Promise<HistoricalRow | null> {
   const [rows] = await connection.execute<HistoricalRow[]>(
-    `${HISTORICAL_SELECT}
+    `${HISTORICAL_DETAILS_SELECT}
+     JOIN kaudit_call_external_reference ref
+       ON ref.call_id = c.id AND ref.reference_type = 'task_id'
      WHERE c.billing_period_date BETWEEN ? AND ?
        AND ref.external_id = ?
      LIMIT 1${lock ? ' FOR UPDATE' : ''}`,
     [bounds.start, bounds.end, taskId],
   )
-  return rows[0] ?? null
+  return rows[0] ? { ...rows[0], task_id: taskId } : null
 }
 
 function publicRow(row: HistoricalRow, month: string, secret: string) {
@@ -307,19 +315,44 @@ export function createGasHistoricalAudit(pool: Pool): {
         ? ''
         : text(body.cursor, 'cursor', 128)
       const bounds = monthBounds(month)
-      const [rows] = await pool.execute<HistoricalRow[]>(
-        `${HISTORICAL_SELECT}
+      // Resolve the page from the narrow month/call-id index before touching
+      // artifacts, costs, findings, or calculations. Applying LIMIT after the
+      // historical detail joins made MySQL evaluate thousands of correlated
+      // lookups for a 500-row response and could outlive the Vercel function.
+      const [candidates] = await pool.execute<HistoricalPageRow[]>(
+        `SELECT ref.external_id AS task_id, c.id AS call_id
+         FROM kaudit_call c
+         JOIN kaudit_call_external_reference ref
+           ON ref.call_id = c.id AND ref.reference_type = 'task_id'
          WHERE c.billing_period_date BETWEEN ? AND ?
-           AND ref.external_id > ?
-         ORDER BY ref.external_id, c.id
+           AND c.id > ?
+         ORDER BY c.id
          LIMIT ?`,
         [bounds.start, bounds.end, cursor, limit + 1],
       )
-      const page = rows.slice(0, limit)
+      const page = candidates.slice(0, limit)
+      if (!page.length) {
+        return { billMonth: month, rows: [], nextCursor: null }
+      }
+      const callIds = page.map((row) => row.call_id)
+      const placeholders = callIds.map(() => '?').join(',')
+      const [details] = await pool.execute<HistoricalDetailRow[]>(
+        `${HISTORICAL_DETAILS_SELECT}
+         WHERE c.id IN (${placeholders})`,
+        callIds,
+      )
+      const detailByCallId = new Map(details.map((row) => [row.call_id, row]))
+      const rows = page.map((candidate): HistoricalRow => {
+        const detail = detailByCallId.get(candidate.call_id)
+        if (!detail) throw new Error('HISTORICAL_PAGE_INCONSISTENT')
+        return { ...detail, task_id: candidate.task_id }
+      })
       return {
         billMonth: month,
-        rows: page.map((row) => publicRow(row, month, input.tokenSecret)),
-        nextCursor: rows.length > limit ? page[page.length - 1]?.task_id ?? null : null,
+        rows: rows.map((row) => publicRow(row, month, input.tokenSecret)),
+        nextCursor: candidates.length > limit
+          ? page[page.length - 1]?.call_id ?? null
+          : null,
       }
     },
 

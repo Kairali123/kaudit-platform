@@ -438,7 +438,7 @@ function syncDatabaseAuditMonth() {
     let total = 0;
     do {
       const receipt = gasSignedPost_('/api/v1/imports/gas-audit-month', month, {
-        schema_version: '1', bill_month: month, cursor: cursor, limit: 500,
+        schema_version: '1', bill_month: month, cursor: cursor, limit: 200,
       });
       const rows = Array.isArray(receipt.rows) ? receipt.rows : [];
       const now = new Date();
