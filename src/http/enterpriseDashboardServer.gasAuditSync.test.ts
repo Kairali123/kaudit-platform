@@ -11,6 +11,12 @@ import type {
   GasAuditSyncRequest,
   GasAuditSyncReceipt,
 } from '../integrations/gasAuditResultSync.ts'
+import type {
+  GasHistoricalMonthRequest,
+  GasHistoricalMonthReceipt,
+  GasHistoricalPrepareRequest,
+  GasHistoricalPrepareReceipt,
+} from '../integrations/gasHistoricalAudit.ts'
 import { createEnterpriseDashboardServer } from './enterpriseDashboardServer.ts'
 
 const secret = 'synthetic-audit-sync-secret-32-characters'
@@ -45,6 +51,10 @@ const access: AccessRepository = {
 async function withServer(
   sync: (input: GasAuditSyncRequest) => Promise<GasAuditSyncReceipt>,
   run: (baseUrl: string, events: AuditEvent[]) => Promise<void>,
+  historical?: {
+    list(input: GasHistoricalMonthRequest): Promise<GasHistoricalMonthReceipt>
+    prepare(input: GasHistoricalPrepareRequest): Promise<GasHistoricalPrepareReceipt>
+  },
 ): Promise<void> {
   const events: AuditEvent[] = []
   const audit: AuditSink = {
@@ -60,6 +70,12 @@ async function withServer(
     gasAuditSyncSecret: secret,
     gasAuditSyncRateCardId: 'rc-synthetic',
     gasAuditResultSync: { sync },
+    gasHistoricalAudit: historical,
+    billingMonthSummary: {
+      async read() { return null },
+      async write() { return false },
+      async invalidate() {},
+    },
   })
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
   const address = server.address() as AddressInfo
@@ -72,7 +88,11 @@ async function withServer(
   }
 }
 
-function signedRequest(body: string, bodyOverride = body): {
+function signedRequest(
+  body: string,
+  bodyOverride = body,
+  pathname = '/api/v1/imports/gas-audit-results',
+): {
   headers: Record<string, string>
   body: string
 } {
@@ -83,7 +103,7 @@ function signedRequest(body: string, bodyOverride = body): {
   const signature = createHmac('sha256', secret)
     .update(gasAuditSyncSigningPayload({
       method: 'POST',
-      pathname: '/api/v1/imports/gas-audit-results',
+      pathname,
       timestamp,
       bodySha256,
       billMonth,
@@ -139,4 +159,33 @@ test('a signed hash for different bytes is rejected before sync', async () => {
     assert.equal(response.status, 401)
     assert.equal(called, false)
   })
+})
+
+test('signed month synchronization reaches the read service without browser authentication', async () => {
+  const body = JSON.stringify({
+    schema_version: '1', batch_id: 'batch-20260831-abcdef',
+    bill_month: '2026-08', cursor: '', limit: 500,
+  })
+  const calls: GasHistoricalMonthRequest[] = []
+  await withServer(
+    async () => ({ batchId: 'unused', items: [] }),
+    async (baseUrl, events) => {
+      const path = '/api/v1/imports/gas-audit-month'
+      const signed = signedRequest(body, body, path)
+      const response = await fetch(`${baseUrl}${path}`, {
+        method: 'POST', headers: signed.headers, body: signed.body,
+      })
+      assert.equal(response.status, 200)
+      assert.equal(calls.length, 1)
+      assert.equal(calls[0]?.billMonth, '2026-08')
+      assert.ok(events.some((event) => event.action === 'gas_historical_audit.list'))
+    },
+    {
+      async list(input) {
+        calls.push(input)
+        return { billMonth: input.billMonth, rows: [], nextCursor: null }
+      },
+      async prepare() { return { items: [] } },
+    },
+  )
 })

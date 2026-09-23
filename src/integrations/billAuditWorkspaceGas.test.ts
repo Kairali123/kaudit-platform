@@ -31,7 +31,7 @@ async function loadFunctions() {
     },
   })
   vm.runInContext(
-    `${source}\nglobalThis.__billAuditTest = { validateRecordingUrl_, ensureSheetCapacity_, transcribe_, billingDecision_, categoryChargeDecision_, roundKserveDuration_, capProjectedAmountAtVendor_, evaluateConsensus_, requiresThirdReview_, dataRowCount_, auditResultHeaders_, billingHeaders_, canonicalRuleRows_, billingApprovalStatuses_, reviewedCategory_, auditEvidenceJsonName_, runAuditStage_, classifySafeError_ };`,
+    `${source}\nglobalThis.__billAuditTest = { validateRecordingUrl_, ensureSheetCapacity_, transcribe_, billingDecision_, categoryChargeDecision_, roundKserveDuration_, capProjectedAmountAtVendor_, evaluateConsensus_, requiresThirdReview_, dataRowCount_, auditResultHeaders_, billingHeaders_, databaseAuditHeaders_, canonicalRuleRows_, billingApprovalStatuses_, reviewedCategory_, auditEvidenceJsonName_, runAuditStage_, classifySafeError_ };`,
     context,
   )
   const functions = context.__billAuditTest as {
@@ -73,6 +73,7 @@ async function loadFunctions() {
     dataRowCount_: (sheet: object) => number
     auditResultHeaders_: () => string[]
     billingHeaders_: () => string[]
+    databaseAuditHeaders_: () => string[]
     canonicalRuleRows_: () => unknown[][]
     billingApprovalStatuses_: () => string[]
     reviewedCategory_: (
@@ -169,6 +170,13 @@ test('locks the canonical output shapes and all twelve categories', async () => 
   const { functions } = await loadFunctions()
   assert.equal(functions.auditResultHeaders_().length, 43)
   assert.equal(functions.billingHeaders_().length, 24)
+  assert.deepEqual(Array.from(functions.databaseAuditHeaders_()), [
+    'Task ID','Bill Month','Connected Seconds','KServe Minutes','KServe Amount INR',
+    'Recording Status','Audit Status','Current Category','Current Confidence',
+    'Current Verified Amount INR','Current Calculation Basis','State Token',
+    'Recording URL','Audit Required','Prepared Mode','Queue State','Error Code',
+    'Request Key','Evidence SHA-256','SQL Sync Status','Updated At','Notes',
+  ])
   const categories = functions.canonicalRuleRows_().map((row) => row[1])
   assert.deepEqual(Array.from(categories), [
     'TIME_DURATION', 'AGENT_FAILURE', 'CONNECT_NOT_FRUITFUL', 'INACTIVE_CALL',

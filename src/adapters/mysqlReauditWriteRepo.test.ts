@@ -70,6 +70,49 @@ test('append re-audit claims an older completed call without resetting its artif
   )
 })
 
+test('Sheet-selected audit defers stale-versus-retry decision until persistence', async () => {
+  const statements: string[] = []
+  const pool = {
+    async getConnection() {
+      return {
+        async beginTransaction() {},
+        async execute(sql: string) {
+          statements.push(sql)
+          if (/SELECT latest_audit_run_id/.test(sql)) {
+            return [[{ latest_audit_run_id: 'run-synthetic-current' }]]
+          }
+          return [{ affectedRows: 1 }]
+        },
+        async commit() {},
+        async rollback() {},
+        release() {},
+      }
+    },
+  } as unknown as Pool
+  const repo = createMysqlReauditWriteRepo(pool, { sheetRequest: true })
+  const current = {
+    ...candidate,
+    sheetRequest: {
+      requestKey: 'request-synthetic-1234',
+      baselineAuditRunId: 'run-synthetic-current',
+    },
+  }
+  const stale = {
+    ...candidate,
+    sheetRequest: {
+      requestKey: 'request-synthetic-5678',
+      baselineAuditRunId: 'run-synthetic-older',
+    },
+  }
+
+  assert.equal(await repo.markStarted(current, new Date(0)), 'acquired')
+  assert.equal(await repo.markStarted(stale, new Date(0)), 'acquired')
+  assert.equal(
+    statements.some((sql) => /UPDATE kaudit_call_artifact/.test(sql)),
+    false,
+  )
+})
+
 test('ordinary claiming reopens only bounded legacy exhausted failures', async () => {
   const fixture = appendPool()
   const repo = createMysqlReauditWriteRepo(fixture.pool)

@@ -41,6 +41,7 @@ const BILL_AUDIT = Object.freeze({
     evidence: 'Evidence Index',
     log: 'Run Log',
     automation: 'Automation',
+    historical: 'Database Audit',
   }),
 });
 
@@ -92,6 +93,8 @@ function onOpen() {
     .addItem('Set SQL sync secret', 'setSqlSyncSecret')
     .addSeparator()
     .addItem('Import KServe month', 'importKServeMonth')
+    .addItem('Sync database month', 'syncDatabaseAuditMonth')
+    .addItem('Queue marked database rows', 'queueMarkedDatabaseAudits')
     .addItem('Build audit queue', 'buildAuditQueue')
     .addItem('Start or resume audit', 'runAuditBatch')
     .addItem('Retry selected rows', 'retrySelectedRows')
@@ -103,6 +106,8 @@ function onOpen() {
 }
 
 function setupWorkspace() {
+  ensureDatabaseAuditSheet_();
+  ensureQueueExtensions_();
   const required = Object.keys(BILL_AUDIT.sheets).map(function(key) {
     return BILL_AUDIT.sheets[key];
   });
@@ -120,6 +125,8 @@ function setupWorkspace() {
 
 function upgradeWorkspace() {
   withScriptLock_(function() {
+    ensureDatabaseAuditSheet_();
+    ensureQueueExtensions_();
     PropertiesService.getScriptProperties().setProperty('BILL_AUDIT_STOPPED', 'true');
     deleteContinuationTriggers_();
     const settingsSheet = sheet_(BILL_AUDIT.sheets.settings);
@@ -202,6 +209,7 @@ function upgradeWorkspace() {
       billing.getRange(BILL_AUDIT.firstDataRow, 1, billingRows, 24).setValues(values);
     }
     const queue = sheet_(BILL_AUDIT.sheets.queue);
+    ensureSheetCapacity_(queue, queue.getMaxRows(), 16);
     const queueCapacity = Math.max(1, queue.getMaxRows() - BILL_AUDIT.headerRow);
     queue.getRange(BILL_AUDIT.firstDataRow, 4, queueCapacity, 1).setDataValidation(
       SpreadsheetApp.newDataValidation()
@@ -362,6 +370,227 @@ function setSqlSyncSecret() {
   appendRunLog_('setSqlSyncSecret', 0, 0, 0, 0, 'SQL sync secret updated');
 }
 
+function databaseAuditHeaders_() {
+  return [
+    'Task ID','Bill Month','Connected Seconds','KServe Minutes','KServe Amount INR',
+    'Recording Status','Audit Status','Current Category','Current Confidence',
+    'Current Verified Amount INR','Current Calculation Basis','State Token',
+    'Recording URL','Audit Required','Prepared Mode','Queue State','Error Code',
+    'Request Key','Evidence SHA-256','SQL Sync Status','Updated At','Notes',
+  ];
+}
+
+function ensureQueueExtensions_() {
+  const queue = sheet_(BILL_AUDIT.sheets.queue);
+  ensureSheetCapacity_(queue, queue.getMaxRows(), 16);
+  queue.getRange(BILL_AUDIT.headerRow, 14, 1, 3)
+    .setValues([['Source Type','State Token','Request Key']])
+    .setFontWeight('bold');
+  queue.hideColumns(15);
+}
+
+function ensureDatabaseAuditSheet_() {
+  const ss = SpreadsheetApp.getActive();
+  let sheet = ss.getSheetByName(BILL_AUDIT.sheets.historical);
+  if (!sheet) sheet = ss.insertSheet(BILL_AUDIT.sheets.historical);
+  ensureSheetCapacity_(sheet, 1004, 22);
+  sheet.getRange(1, 1).setValue('DATABASE AUDIT · SELECTED RE-AUDIT WORKSPACE');
+  sheet.getRange(2, 1).setValue('Sync the active month, paste an approved recording URL, tick Audit Required, then use Queue marked database rows. Database-owned columns are refreshed on every sync.');
+  sheet.getRange(BILL_AUDIT.headerRow, 1, 1, 22).setValues([databaseAuditHeaders_()]);
+  sheet.setFrozenRows(BILL_AUDIT.headerRow);
+  sheet.getRange(BILL_AUDIT.headerRow, 1, 1, 22)
+    .setFontWeight('bold')
+    .setBackground('#d9ead3');
+  const capacity = Math.max(1, sheet.getMaxRows() - BILL_AUDIT.headerRow);
+  sheet.getRange(BILL_AUDIT.firstDataRow, 14, capacity, 1).setDataValidation(
+    SpreadsheetApp.newDataValidation().requireCheckbox().setAllowInvalid(false).build(),
+  );
+  sheet.getRange(BILL_AUDIT.firstDataRow, 12, capacity, 1).setNumberFormat('@');
+  sheet.getRange(BILL_AUDIT.firstDataRow, 18, capacity, 1).setNumberFormat('@');
+  sheet.getRange(BILL_AUDIT.firstDataRow, 5, capacity, 1).setNumberFormat('₹#,##0.00');
+  sheet.getRange(BILL_AUDIT.firstDataRow, 9, capacity, 1).setNumberFormat('0.0%');
+  sheet.getRange(BILL_AUDIT.firstDataRow, 10, capacity, 1).setNumberFormat('₹#,##0.00');
+  sheet.setColumnWidth(1, 220);
+  sheet.setColumnWidth(12, 100);
+  sheet.hideColumns(12);
+  return sheet;
+}
+
+function syncDatabaseAuditMonth() {
+  withScriptLock_(function() {
+    const settings = readSettings_();
+    if (!truthy_(settings.SQL_SYNC_ENABLED)) {
+      throw new Error('SQL_SYNC_ENABLED is false. Configure the signed database connection first.');
+    }
+    const month = requiredSetting_(settings, 'ACTIVE_BILL_MONTH');
+    if (!/^\d{4}-\d{2}$/.test(month)) throw new Error('ACTIVE_BILL_MONTH must use YYYY-MM');
+    const target = ensureDatabaseAuditSheet_();
+    const oldCount = dataRowCount_(target);
+    const preserved = {};
+    if (oldCount) {
+      target.getRange(BILL_AUDIT.firstDataRow, 1, oldCount, 22).getValues().forEach(function(row) {
+        const key = String(row[0] || '').trim() + '|' + String(row[1] || '').trim();
+        if (key !== '|') preserved[key] = row;
+      });
+    }
+    if (oldCount) target.getRange(BILL_AUDIT.firstDataRow, 1, oldCount, 22).clearContent();
+    let cursor = '';
+    let total = 0;
+    do {
+      const receipt = gasSignedPost_('/api/v1/imports/gas-audit-month', month, {
+        schema_version: '1', bill_month: month, cursor: cursor, limit: 500,
+      });
+      const rows = Array.isArray(receipt.rows) ? receipt.rows : [];
+      const now = new Date();
+      const output = rows.map(function(row) {
+        const prior = preserved[String(row.taskId || '') + '|' + String(row.billMonth || '')] || [];
+        return [
+          row.taskId, row.billMonth, row.connectedSeconds, row.vendorBilledMinutes,
+          row.vendorBilledAmount, row.recordingStatus, row.auditStatus,
+          row.currentCategory, row.currentConfidence, row.currentVerifiedAmount,
+          row.currentCalculationBasis, row.stateToken, prior[12] || '', Boolean(prior[13]),
+          prior[14] || '', prior[15] || '', prior[16] || '', prior[17] || '',
+          prior[18] || '', prior[19] || '', now, prior[21] || '',
+        ];
+      });
+      appendRowsInChunks_(target, output, 22, 500);
+      total += output.length;
+      cursor = String(receipt.nextCursor || '');
+      SpreadsheetApp.flush();
+    } while (cursor);
+    appendRunLog_('syncDatabaseAuditMonth', total, total, 0, 0, 'Database month loaded without exposing stored recording URLs');
+    SpreadsheetApp.getUi().alert(total + ' database rows loaded for ' + month + '. Paste URLs only on rows you intend to audit.');
+  });
+}
+
+function queueMarkedDatabaseAudits() {
+  withScriptLock_(function() {
+    const settings = readSettings_();
+    const historical = ensureDatabaseAuditSheet_();
+    const count = dataRowCount_(historical);
+    if (!count) throw new Error('Sync a database month first');
+    const rows = historical.getRange(BILL_AUDIT.firstDataRow, 1, count, 22).getValues();
+    const marked = [];
+    let preRejected = 0;
+    rows.forEach(function(row, index) {
+      if (!truthy_(row[13])) return;
+      const taskId = String(row[0] || '').trim();
+      const recordingUrl = String(row[12] || '').trim();
+      if (!recordingUrl) {
+        row[16] = 'RECORDING_URL_REQUIRED';
+        row[15] = 'NOT_QUEUED';
+        return;
+      }
+      try {
+        validateRecordingUrl_(recordingUrl);
+      } catch (error) {
+        const classified = classifySafeError_(error);
+        row[16] = classified.code;
+        row[15] = 'NOT_QUEUED';
+        preRejected += 1;
+        return;
+      }
+      const requestKey = String(row[17] || '').trim() || Utilities.getUuid();
+      row[17] = requestKey;
+      marked.push({ index: index, taskId: taskId, requestKey: requestKey });
+    });
+    if (!marked.length) {
+      historical.getRange(BILL_AUDIT.firstDataRow, 1, count, 22).setValues(rows);
+      throw new Error('No valid rows are marked. Tick Audit Required and paste a recording URL.');
+    }
+    let prepared = 0;
+    let rejected = preRejected;
+    for (let start = 0; start < marked.length; start += 20) {
+      const part = marked.slice(start, start + 20);
+      const month = String(rows[part[0].index][1] || settings.ACTIVE_BILL_MONTH || '');
+      const receipt = gasSignedPost_('/api/v1/imports/gas-audit-prepare', month, {
+        schema_version: '1',
+        bill_month: month,
+        items: part.map(function(item) {
+          const row = rows[item.index];
+          return {
+            task_id: item.taskId,
+            state_token: String(row[11] || ''),
+            recording_url: String(row[12] || ''),
+            request_key: item.requestKey,
+          };
+        }),
+      });
+      if (!Array.isArray(receipt.items) || receipt.items.length !== part.length) {
+        throw new Error('Database preparation returned an invalid receipt');
+      }
+      receipt.items.forEach(function(item, position) {
+        const selected = part[position];
+        const row = rows[selected.index];
+        if (String(item.status || '') !== 'prepared') {
+          row[15] = 'NOT_QUEUED';
+          row[16] = String(item.code || 'PREPARE_FAILED');
+          rejected += 1;
+          return;
+        }
+        row[11] = String(item.stateToken || '');
+        row[14] = String(item.mode || '');
+        row[15] = BILL_AUDIT.queueStates.pending;
+        row[16] = '';
+        row[20] = new Date();
+        upsertDatabaseQueueRow_([
+          selected.taskId, row[1], BILL_AUDIT.firstDataRow + selected.index,
+          BILL_AUDIT.queueStates.pending, 0, '', '', '', row[12], 'QUEUED',
+          '', '', new Date(), 'DATABASE_AUDIT', row[11], selected.requestKey,
+        ]);
+        prepared += 1;
+      });
+    }
+    historical.getRange(BILL_AUDIT.firstDataRow, 1, count, 22).setValues(rows);
+    appendRunLog_('queueMarkedDatabaseAudits', marked.length, prepared, 0, rejected, 'Only manually marked database rows were queued');
+    SpreadsheetApp.getUi().alert(prepared + ' rows queued; ' + rejected + ' rejected. Use Start or resume audit.');
+  });
+}
+
+function gasSignedPost_(path, month, payload) {
+  const settings = readSettings_();
+  const secret = PropertiesService.getScriptProperties().getProperty('KAUDIT_GAS_AUDIT_SYNC_SECRET');
+  if (!secret || secret.length < 32) throw new Error('SQL sync secret is not configured');
+  const bodyObject = Object.assign({}, payload, { batch_id: Utilities.getUuid() });
+  const body = JSON.stringify(bodyObject);
+  const timestamp = String(Date.now());
+  const bodyHash = sha256Hex_(body);
+  const signature = bytesToHex_(Utilities.computeHmacSha256Signature(
+    ['POST', path, timestamp, bodyHash, month, bodyObject.batch_id].join('\n'),
+    secret,
+    Utilities.Charset.UTF_8,
+  ));
+  const response = UrlFetchApp.fetch(requiredSetting_(settings, 'API_BASE_URL').replace(/\/$/, '') + path, {
+    method: 'post', contentType: 'application/json; charset=utf-8', payload: body,
+    muteHttpExceptions: true, followRedirects: false,
+    headers: {
+      'X-Kaudit-Audit-Sync-Timestamp': timestamp,
+      'X-Kaudit-Content-Sha256': bodyHash,
+      'X-Kaudit-Audit-Sync-Signature': signature,
+      'X-Kaudit-Bill-Month': month,
+      'X-Kaudit-Batch-Id': bodyObject.batch_id,
+    },
+  });
+  if (response.getResponseCode() !== 200) {
+    throw safeError_('DATABASE_SYNC_FAILED', 'Database request failed with HTTP ' + response.getResponseCode(), false);
+  }
+  return JSON.parse(response.getContentText() || '{}');
+}
+
+function upsertDatabaseQueueRow_(row) {
+  const queue = sheet_(BILL_AUDIT.sheets.queue);
+  ensureSheetCapacity_(queue, queue.getMaxRows(), 16);
+  const count = dataRowCount_(queue);
+  let target = BILL_AUDIT.firstDataRow + count;
+  if (count) {
+    const match = queue.getRange(BILL_AUDIT.firstDataRow, 1, count, 1)
+      .createTextFinder(String(row[0])).matchEntireCell(true).findNext();
+    if (match) target = match.getRow();
+  }
+  ensureSheetCapacity_(queue, target, 16);
+  queue.getRange(target, 1, 1, 16).setValues([row]);
+}
+
 function importKServeMonth() {
   withScriptLock_(function() {
     const settings = readSettings_();
@@ -441,10 +670,13 @@ function buildAuditQueue() {
         '',
         '',
         new Date(),
+        'MONTHLY_INPUT',
+        '',
+        '',
       ]);
       existing[taskId] = true;
     });
-    appendRowsInChunks_(queue, output, 13, 1000);
+    appendRowsInChunks_(queue, output, 16, 1000);
     appendRunLog_('buildAuditQueue', output.length, output.length, 0, 0, 'Recording-backed rows queued');
   });
 }
@@ -464,7 +696,7 @@ function runAuditBatch() {
     const queueSheet = sheet_(BILL_AUDIT.sheets.queue);
     const queueRows = dataRowCount_(queueSheet);
     if (!queueRows) return;
-    const queue = queueSheet.getRange(BILL_AUDIT.firstDataRow, 1, queueRows, 13).getValues();
+    const queue = queueSheet.getRange(BILL_AUDIT.firstDataRow, 1, queueRows, 16).getValues();
     const indexes = [];
     for (let i = 0; i < queue.length && indexes.length < batchSize; i += 1) {
       const state = String(queue[i][3] || '');
@@ -568,7 +800,7 @@ function auditQueueItem_(queueRow, settings, apiKey, auditModel, transcriptionMo
     function() { return saveEvidenceAudio_(settings, blob, taskId, evidenceHash); },
   );
   const transcript = transcribe_(apiKey, transcriptionModel, blob, promptText_('TRANSCRIPTION_GUIDANCE'));
-  const monthly = monthlyRowByTaskId_(taskId);
+  const monthly = sourceRowForQueue_(queueRow);
   const connectedDurationMs = Math.max(0, Math.round(Number(monthly[6] || 0) * 1000));
   const recordedDurationMs = recordedDurationMs_(transcript);
   const durationMismatch = Math.abs(connectedDurationMs - recordedDurationMs) > 5000;
@@ -637,7 +869,7 @@ function auditQueueItem_(queueRow, settings, apiKey, auditModel, transcriptionMo
     writeEvidenceJson_(settings, taskId, evidenceHash, runId, transcript, primary, second, third, finalResult, consensus);
   });
   runAuditStage_('MONTHLY_STATE_WRITE_FAILED', 'Monthly audit state could not be saved', function() {
-    updateMonthlyAuditState_(taskId, manualReview ? BILL_AUDIT.queueStates.unresolved : BILL_AUDIT.queueStates.completed, runId, evidenceHash);
+    updateSourceAuditState_(queueRow, manualReview ? BILL_AUDIT.queueStates.unresolved : BILL_AUDIT.queueStates.completed, runId, evidenceHash);
   });
   return { manualReview: manualReview };
 }
@@ -1157,7 +1389,7 @@ function writeAuditResult_(taskId, month, evidenceHash, primary, second, third, 
 }
 
 function writeBilling_(taskId, queueRow, result, consensus, evidenceHash) {
-  const monthly = monthlyRowByTaskId_(taskId);
+  const monthly = sourceRowForQueue_(queueRow);
   const connectedSeconds = Number(monthly[6] || 0);
   const decision = billingDecision_(result, result.recorded_duration_ms);
   const rounded = decision.rounded;
@@ -1428,8 +1660,24 @@ function pendingSqlSyncCount_() {
   const billing = sheet_(BILL_AUDIT.sheets.billing);
   const count = dataRowCount_(billing);
   if (!count) return 0;
-  return billing.getRange(BILL_AUDIT.firstDataRow, 24, count, 1).getDisplayValues().filter(function(row) {
-    return String(row[0] || '') !== 'SYNCED';
+  const activeMonth = String(readSettings_().ACTIVE_BILL_MONTH || '');
+  const months = {};
+  const monthly = sheet_(BILL_AUDIT.sheets.monthly);
+  const monthlyCount = dataRowCount_(monthly);
+  if (monthlyCount) {
+    monthly.getRange(BILL_AUDIT.firstDataRow, 1, monthlyCount, 12).getDisplayValues().forEach(function(row) {
+      months[String(row[0] || '').trim()] = String(row[11] || '').trim();
+    });
+  }
+  const queue = sheet_(BILL_AUDIT.sheets.queue);
+  const queueCount = dataRowCount_(queue);
+  if (queueCount) {
+    queue.getRange(BILL_AUDIT.firstDataRow, 1, queueCount, 2).getDisplayValues().forEach(function(row) {
+      if (String(row[0] || '').trim()) months[String(row[0] || '').trim()] = String(row[1] || '').trim();
+    });
+  }
+  return billing.getRange(BILL_AUDIT.firstDataRow, 1, count, 24).getDisplayValues().filter(function(row) {
+    return String(row[23] || '') !== 'SYNCED' && months[String(row[0] || '').trim()] === activeMonth;
   }).length;
 }
 
@@ -1447,20 +1695,28 @@ function syncPendingResults() {
     const rows = billing.getRange(BILL_AUDIT.firstDataRow, 1, count, 24).getValues();
     const indexes = [];
     const items = [];
+    let targetMonth = '';
     const limit = Math.min(20, positiveInteger_(settings.BATCH_SIZE || 5, 'BATCH_SIZE'));
     for (let index = 0; index < rows.length && items.length < limit; index += 1) {
       const row = rows[index];
       const basis = String(row[18] || '');
       if (String(row[23] || '') === 'SYNCED' || ['independent_category_service_end','accepted_as_billed_unverified','no_recording_zero'].indexOf(basis) < 0) continue;
       const taskId = String(row[0] || '').trim();
-      const monthly = monthlyRowByTaskId_(taskId);
+      const queueRow = queueRowByTaskId_(taskId);
+      const monthly = queueRow ? sourceRowForQueue_(queueRow) : monthlyRowByTaskId_(taskId);
+      const rowMonth = String(monthly[11] || settings.ACTIVE_BILL_MONTH || '');
+      if (!targetMonth) targetMonth = rowMonth;
+      if (rowMonth !== targetMonth) continue;
       const evidenceHash = String(row[21] || monthly[20] || '');
       const audit = basis === 'independent_category_service_end'
-        ? readEvidenceJson_(settings, taskId, evidenceHash, String(monthly[19] || ''))
+        ? readEvidenceJson_(settings, taskId, evidenceHash, String(queueRow ? queueRow[7] : monthly[19] || ''))
         : null;
       items.push({
         task_id: taskId,
-        bill_month: String(monthly[11] || settings.ACTIVE_BILL_MONTH || ''),
+        bill_month: rowMonth,
+        source_type: queueRow && String(queueRow[13] || '') === 'DATABASE_AUDIT' ? 'database_audit' : null,
+        state_token: queueRow && String(queueRow[13] || '') === 'DATABASE_AUDIT' ? String(queueRow[14] || '') : null,
+        request_key: queueRow && String(queueRow[13] || '') === 'DATABASE_AUDIT' ? String(queueRow[15] || '') : null,
         evidence_sha256: evidenceHash,
         calculation_basis: basis,
         vendor_billed_minutes: String(monthly[7] == null ? '' : monthly[7]),
@@ -1484,7 +1740,7 @@ function syncPendingResults() {
     const body = JSON.stringify({
       schema_version: '1',
       batch_id: Utilities.getUuid(),
-      bill_month: String(settings.ACTIVE_BILL_MONTH || ''),
+      bill_month: targetMonth,
       items: items,
     });
     const timestamp = String(Date.now());
@@ -1519,7 +1775,7 @@ function syncPendingResults() {
     });
     indexes.forEach(function(index) {
       billing.getRange(BILL_AUDIT.firstDataRow + index, 24).setValue(rows[index][23]);
-      updateMonthlySqlState_(String(rows[index][0] || ''), rows[index][23]);
+      updateSourceSqlState_(String(rows[index][0] || ''), rows[index][23]);
     });
     appendRunLog_('syncPendingResults', items.length, indexes.filter(function(index) { return rows[index][23] === 'SYNCED'; }).length, 0, indexes.filter(function(index) { return rows[index][23] !== 'SYNCED'; }).length, 'Signed final results synchronized');
     finalizeCycleIfReady_();
@@ -1542,6 +1798,16 @@ function updateMonthlySqlState_(taskId, state) {
   if (!count) return;
   const match = monthly.getRange(BILL_AUDIT.firstDataRow, 1, count, 1).createTextFinder(taskId).matchEntireCell(true).findNext();
   if (match) monthly.getRange(match.getRow(), 18).setValue(state);
+}
+
+function updateSourceSqlState_(taskId, state) {
+  const queueRow = queueRowByTaskId_(taskId);
+  if (!queueRow || String(queueRow[13] || '') !== 'DATABASE_AUDIT') {
+    updateMonthlySqlState_(taskId, state);
+    return;
+  }
+  const found = databaseAuditRowByTaskId_(taskId, String(queueRow[1] || ''));
+  ensureDatabaseAuditSheet_().getRange(found.sheetRow, 20, 1, 2).setValues([[state, new Date()]]);
 }
 
 function readSettings_() {
@@ -1579,6 +1845,67 @@ function monthlyRowByTaskId_(taskId) {
   const finder = sheet.getRange(BILL_AUDIT.firstDataRow, 1, count, 1).createTextFinder(taskId).matchEntireCell(true).findNext();
   if (!finder) throw new Error('Task ID is missing from Monthly Input');
   return sheet.getRange(finder.getRow(), 1, 1, 21).getValues()[0];
+}
+
+function databaseAuditRowByTaskId_(taskId, month) {
+  const sheet = ensureDatabaseAuditSheet_();
+  const count = dataRowCount_(sheet);
+  if (!count) throw new Error('Database Audit is empty');
+  const values = sheet.getRange(BILL_AUDIT.firstDataRow, 1, count, 22).getValues();
+  const index = values.findIndex(function(row) {
+    return String(row[0] || '').trim() === taskId && String(row[1] || '').trim() === month;
+  });
+  if (index < 0) throw new Error('Task ID is missing from Database Audit');
+  return { row: values[index], sheetRow: BILL_AUDIT.firstDataRow + index };
+}
+
+function sourceRowForQueue_(queueRow) {
+  if (String(queueRow[13] || '') !== 'DATABASE_AUDIT') {
+    return monthlyRowByTaskId_(String(queueRow[0] || '').trim());
+  }
+  const found = databaseAuditRowByTaskId_(
+    String(queueRow[0] || '').trim(),
+    String(queueRow[1] || '').trim(),
+  ).row;
+  const normalized = new Array(21).fill('');
+  normalized[0] = found[0];
+  normalized[6] = found[2];
+  normalized[7] = found[3];
+  normalized[8] = found[4];
+  normalized[9] = found[12];
+  normalized[11] = found[1];
+  normalized[12] = Number(queueRow[2] || 0);
+  normalized[16] = found[15];
+  normalized[17] = found[19];
+  normalized[19] = queueRow[7];
+  normalized[20] = found[18];
+  return normalized;
+}
+
+function queueRowByTaskId_(taskId) {
+  const queue = sheet_(BILL_AUDIT.sheets.queue);
+  const count = dataRowCount_(queue);
+  if (!count) return null;
+  const match = queue.getRange(BILL_AUDIT.firstDataRow, 1, count, 1)
+    .createTextFinder(taskId).matchEntireCell(true).findNext();
+  return match ? queue.getRange(match.getRow(), 1, 1, 16).getValues()[0] : null;
+}
+
+function updateSourceAuditState_(queueRow, state, runId, evidenceHash) {
+  if (String(queueRow[13] || '') !== 'DATABASE_AUDIT') {
+    updateMonthlyAuditState_(String(queueRow[0] || '').trim(), state, runId, evidenceHash);
+    return;
+  }
+  const found = databaseAuditRowByTaskId_(
+    String(queueRow[0] || '').trim(),
+    String(queueRow[1] || '').trim(),
+  );
+  const sheet = ensureDatabaseAuditSheet_();
+  sheet.getRange(found.sheetRow, 14).setValue(false);
+  sheet.getRange(found.sheetRow, 16, 1, 5).setValues([[
+    state, '', String(queueRow[15] || ''), evidenceHash, 'PENDING',
+  ]]);
+  sheet.getRange(found.sheetRow, 21).setValue(new Date());
 }
 
 function updateMonthlyAuditState_(taskId, state, runId, evidenceHash) {
@@ -1637,7 +1964,7 @@ function ensureSheetCapacity_(sheet, requiredLastRow, requiredLastColumn) {
 
 function writeQueueRows_(sheet, allRows, indexes) {
   indexes.forEach(function(index) {
-    sheet.getRange(BILL_AUDIT.firstDataRow + index, 1, 1, 13).setValues([allRows[index]]);
+    sheet.getRange(BILL_AUDIT.firstDataRow + index, 1, 1, 16).setValues([allRows[index]]);
   });
 }
 

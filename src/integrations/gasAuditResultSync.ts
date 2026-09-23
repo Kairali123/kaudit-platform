@@ -23,6 +23,8 @@ import type {
   TranscriptionResult,
 } from '../reaudit/types.ts'
 import type { EvidenceHashReference } from '../billing/types.ts'
+import { canonicalUrlSha256 } from '../lateRecording/corrections.ts'
+import { verifyGasHistoricalStateToken } from './gasHistoricalAudit.ts'
 
 const SHA256 = /^[a-f0-9]{64}$/
 const MONTH = /^(\d{4})-(\d{2})$/
@@ -37,6 +39,7 @@ interface CandidateRow extends RowDataPacket {
   claimed_duration_ms: number | string | null
   vendor_billed_minutes: string | null
   vendor_billed_amount: string | null
+  latest_audit_run_id: string | null
 }
 
 type Raw = Record<string, unknown>
@@ -59,6 +62,7 @@ export interface GasAuditSyncRequest {
   body: unknown
   rateCardId: string
   correlationId: string | null
+  tokenSecret: string
 }
 
 function record(value: unknown, name: string): Raw {
@@ -217,7 +221,8 @@ async function candidateForTask(
             ROUND(connected.quantity_decimal * 1000) AS connected_duration_ms,
             ROUND(vendor_minutes.minutes_decimal * 60000) AS claimed_duration_ms,
             CAST(vendor_minutes.minutes_decimal AS CHAR) AS vendor_billed_minutes,
-            CAST(vendor_amount.quantity_decimal AS CHAR) AS vendor_billed_amount
+            CAST(vendor_amount.quantity_decimal AS CHAR) AS vendor_billed_amount,
+            c.latest_audit_run_id
      FROM kaudit_call c
      JOIN kaudit_call_external_reference ref
        ON ref.call_id = c.id AND ref.reference_type = 'task_id'
@@ -407,6 +412,38 @@ export function createGasAuditResultSync(
             throw new Error('CALCULATION_BASIS_INVALID')
           }
           const candidate = await candidateForTask(pool, taskId, bounds)
+          const sourceType = optionalText(item.source_type, 64)
+          const sheetRequest = sourceType === 'database_audit'
+          if (sourceType != null && !sheetRequest) {
+            throw new Error('SOURCE_TYPE_INVALID')
+          }
+          if (sheetRequest) {
+            const token = verifyGasHistoricalStateToken(
+              text(item.state_token, 'state_token', 2_000),
+              input.tokenSecret,
+            )
+            const requestKey = text(item.request_key, 'request_key', 64)
+            if (!/^[A-Za-z0-9-]{16,64}$/.test(requestKey)) {
+              throw new Error('REQUEST_KEY_INVALID')
+            }
+            if (
+              token.month !== input.billMonth ||
+              token.taskId !== taskId ||
+              token.callId !== candidate.callId ||
+              token.artifactId !== candidate.artifactId ||
+              token.sourceUrlSha256 !== (
+                candidate.sourceUrl
+                  ? canonicalUrlSha256(candidate.sourceUrl)
+                  : null
+              )
+            ) {
+              throw new Error('STATE_TOKEN_SCOPE_MISMATCH')
+            }
+            candidate.sheetRequest = {
+              requestKey,
+              baselineAuditRunId: token.latestAuditRunId,
+            }
+          }
           const sourceEvidence: EvidenceHashReference = {
             kind: 'call_manifest',
             referenceId: `gas-sync:${input.batchId}`,
@@ -460,12 +497,17 @@ export function createGasAuditResultSync(
             throw new Error('EVIDENCE_HASH_MISMATCH')
           }
           const audit = record(item.audit, 'audit')
-          const repo = createMysqlReauditWriteRepo(pool)
+          const repo = createMysqlReauditWriteRepo(
+            pool,
+            sheetRequest ? { sheetRequest: true } : {},
+          )
           const started = await repo.markStarted(candidate, new Date())
-          if (started === 'acquired') {
-            const result = buildPrimaryResult({ candidate, audit, evidenceSha256 })
-            await repo.persist(candidate, result, new Date())
+          if (started !== 'acquired') {
+            receipts.push({ taskId, status: 'duplicate' })
+            continue
           }
+          const result = buildPrimaryResult({ candidate, audit, evidenceSha256 })
+          await repo.persist(candidate, result, new Date())
           const [validationCandidate] = await collectAutomatedValidationCandidates(pool, {
             ...bounds,
             limit: 1,

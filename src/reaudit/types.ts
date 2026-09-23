@@ -34,6 +34,15 @@ export interface ReauditCandidate {
     /** The call's current audit run when the administrator selected the row. */
     baselineAuditRunId: string
   }
+  /**
+   * One operator-selected Apps Script audit. The stable request key makes a
+   * retried HTTP write idempotent, while the baseline prevents a stale Sheet
+   * result from replacing a newer audit completed after the row was synced.
+   */
+  sheetRequest?: {
+    requestKey: string
+    baselineAuditRunId: string | null
+  }
 }
 
 export interface TranscriptSegment {

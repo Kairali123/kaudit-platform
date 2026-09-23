@@ -96,6 +96,13 @@ import {
   type GasAuditSyncRequest,
   type GasAuditSyncReceipt,
 } from '../integrations/gasAuditResultSync.ts'
+import {
+  createGasHistoricalAudit,
+  type GasHistoricalMonthRequest,
+  type GasHistoricalMonthReceipt,
+  type GasHistoricalPrepareRequest,
+  type GasHistoricalPrepareReceipt,
+} from '../integrations/gasHistoricalAudit.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
 import {
   collectBilling,
@@ -289,6 +296,10 @@ interface Dependencies {
   gasAuditSyncRateCardId?: string
   gasAuditResultSync?: {
     sync(input: GasAuditSyncRequest): Promise<GasAuditSyncReceipt>
+  }
+  gasHistoricalAudit?: {
+    list(input: GasHistoricalMonthRequest): Promise<GasHistoricalMonthReceipt>
+    prepare(input: GasHistoricalPrepareRequest): Promise<GasHistoricalPrepareReceipt>
   }
   importAnalysis?: ImportAnalysisService
   recordingFetcher?: UrlFetcher
@@ -712,13 +723,20 @@ function authenticateGasUsageImport(
 }
 
 const GAS_AUDIT_SYNC_ROUTE = '/api/v1/imports/gas-audit-results'
+const GAS_AUDIT_MONTH_ROUTE = '/api/v1/imports/gas-audit-month'
+const GAS_AUDIT_PREPARE_ROUTE = '/api/v1/imports/gas-audit-prepare'
+const GAS_AUDIT_SERVICE_ROUTES = new Set([
+  GAS_AUDIT_SYNC_ROUTE,
+  GAS_AUDIT_MONTH_ROUTE,
+  GAS_AUDIT_PREPARE_ROUTE,
+])
 
 function authenticateGasAuditSync(
   request: IncomingMessage,
   pathname: string,
   dependencies: Dependencies,
 ): AuthContext | null {
-  if (request.method !== 'POST' || pathname !== GAS_AUDIT_SYNC_ROUTE) {
+  if (request.method !== 'POST' || !GAS_AUDIT_SERVICE_ROUTES.has(pathname)) {
     return null
   }
   const signature = requestHeaderValue(
@@ -2515,7 +2533,7 @@ export function createEnterpriseDashboardServer(
       LATE_RECORDING_WRITE_ROUTES.has(url.pathname)
     const isGasAuditSyncPost =
       request.method === 'POST' &&
-      url.pathname === GAS_AUDIT_SYNC_ROUTE
+      GAS_AUDIT_SERVICE_ROUTES.has(url.pathname)
     if (
       request.method === 'GET' &&
       (IMPORT_WRITE_ROUTES.has(url.pathname) ||
@@ -2635,7 +2653,7 @@ export function createEnterpriseDashboardServer(
       IMPORT_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
       LATE_RECORDING_WRITE_ROUTES.has(url.pathname) ||
-      url.pathname === GAS_AUDIT_SYNC_ROUTE ||
+      GAS_AUDIT_SERVICE_ROUTES.has(url.pathname) ||
       MONTHLY_REPORT_DOWNLOADS.has(url.pathname) ||
       url.pathname === RESTRICTED_EXPORT_ROUTE ||
       APP_ROUTES.has(url.pathname) ||
@@ -3035,7 +3053,7 @@ export function createEnterpriseDashboardServer(
           system,
           'audit_operations',
         )
-        apiCache.clear()
+        if (url.pathname === GAS_AUDIT_PREPARE_ROUTE) apiCache.clear()
         sendJson(response, correlation, state)
         return
       }
@@ -3509,6 +3527,79 @@ export function createEnterpriseDashboardServer(
       }
       if (
         request.method === 'POST' &&
+        (url.pathname === GAS_AUDIT_MONTH_ROUTE ||
+          url.pathname === GAS_AUDIT_PREPARE_ROUTE)
+      ) {
+        requirePermission(context, 'import:write')
+        if (context.issuer !== 'kaudit-gas-audit-sync') {
+          throw new AuthFailure(
+            401,
+            'AUTH_INVALID',
+            'Authentication token is invalid',
+          )
+        }
+        const bytes = await readRequestBody(
+          request,
+          MAX_GAS_AUDIT_SYNC_BODY_BYTES,
+        )
+        const bodySha256 = requestHeaderValue(
+          request,
+          'x-kaudit-content-sha256',
+        )
+        if (sha256Hex(bytes) !== bodySha256) {
+          throw new AuthFailure(
+            401,
+            'AUTH_INVALID',
+            'Authentication token is invalid',
+          )
+        }
+        let body: unknown
+        try {
+          body = JSON.parse(bytes.toString('utf8'))
+        } catch {
+          throw Object.assign(new Error('Historical audit JSON is invalid'), {
+            code: 'INVALID_AUDIT_SYNC',
+            status: 400,
+          })
+        }
+        const secret = dependencies.gasAuditSyncSecret?.trim() || ''
+        if (!secret) {
+          throw Object.assign(new Error('Audit sync is unavailable'), {
+            code: 'AUDIT_SYNC_NOT_CONFIGURED',
+            status: 503,
+          })
+        }
+        const service =
+          dependencies.gasHistoricalAudit ??
+          createGasHistoricalAudit(dependencies.pool)
+        const billMonth = requestHeaderValue(request, 'x-kaudit-bill-month')
+        const receipt = url.pathname === GAS_AUDIT_MONTH_ROUTE
+          ? await service.list({ billMonth, body, tokenSecret: secret })
+          : await service.prepare({
+              billMonth,
+              body,
+              tokenSecret: secret,
+              allowedRecordingHosts: dependencies.allowedRecordingHosts ?? [],
+            })
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          url.pathname === GAS_AUDIT_MONTH_ROUTE
+            ? 'gas_historical_audit.list'
+            : 'gas_historical_audit.prepare',
+          'billing_cycle',
+          billMonth,
+          'audit_operations',
+        )
+        apiCache.clear()
+        sendJson(response, correlation, receipt)
+        return
+      }
+      if (
+        request.method === 'POST' &&
         url.pathname === GAS_AUDIT_SYNC_ROUTE
       ) {
         requirePermission(context, 'import:write')
@@ -3560,7 +3651,15 @@ export function createEnterpriseDashboardServer(
           body,
           rateCardId,
           correlationId: correlation,
+          tokenSecret: dependencies.gasAuditSyncSecret as string,
         })
+        // Closed months are normally served from the durable aggregate cache.
+        // A historical Sheet correction is one of the few valid ways a closed
+        // month changes, so evict that month before Vercel is allowed to serve
+        // the newly superseded call calculation.
+        await billingSummaryStore(dependencies).invalidate(
+          requestHeaderValue(request, 'x-kaudit-bill-month'),
+        )
         await auditAccess(
           dependencies,
           request,

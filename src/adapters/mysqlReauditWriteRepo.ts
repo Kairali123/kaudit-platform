@@ -132,16 +132,35 @@ export function createMysqlReauditWriteRepo(
      * SAME ruleset must still be allowed to run again.
      */
     manualRequest?: boolean
+    /** Append one explicitly marked Apps Script result without a worker queue. */
+    sheetRequest?: boolean
   } = {},
 ): ReauditResultRepository {
   const manualRequest = options.manualRequest === true
+  const sheetRequest = options.sheetRequest === true
   const allowCompletedReaudit =
-    options.allowCompletedReaudit === true || manualRequest
+    options.allowCompletedReaudit === true || manualRequest || sheetRequest
   return {
     async markStarted(candidate, at) {
       const connection = await pool.getConnection()
       try {
         await connection.beginTransaction()
+        if (sheetRequest) {
+          const request = candidate.sheetRequest
+          if (!request) throw new Error('SHEET_AUDIT_REQUEST_MISSING')
+          const [rows] = await connection.execute<RowDataPacket[]>(
+            `SELECT latest_audit_run_id
+             FROM kaudit_call
+             WHERE id = ? FOR UPDATE`,
+            [candidate.callId],
+          )
+          if (!rows[0]) throw new Error('TASK_NOT_FOUND')
+          // Do not decide a stale baseline here. `persist` can first recognize
+          // a retry by its exact request manifest; only then may it reject a
+          // different audit that advanced the call since Sheet synchronization.
+          await connection.commit()
+          return 'acquired'
+        }
         if (manualRequest) {
           const request = manualRequestOf(candidate)
           const decision = manualReauditBaselineDecision({
@@ -286,6 +305,48 @@ export function createMysqlReauditWriteRepo(
       const connection = await pool.getConnection()
       try {
         await connection.beginTransaction()
+        const sheetRequestData = sheetRequest ? candidate.sheetRequest : null
+        if (sheetRequest && !sheetRequestData) {
+          throw new Error('SHEET_AUDIT_REQUEST_MISSING')
+        }
+        const inputManifestSha256 = canonicalJsonSha256({
+          schemaVersion: '1',
+          callId: candidate.callId,
+          artifactId: candidate.artifactId,
+          sourceEvidenceSha256:
+            result.analysis?.evidenceSha256 ?? candidate.baselineSha256,
+          engineVersion: REAUDIT_ENGINE_VERSION,
+          classifierRulesetVersion:
+            REAUDIT_CLASSIFIER_RULESET_VERSION,
+          classifierRulesetSha256:
+            REAUDIT_CLASSIFIER_RULESET_SHA256,
+          ...(sheetRequestData
+            ? { sheetRequestKey: sheetRequestData.requestKey }
+            : {}),
+        } as unknown as JsonValue)
+        if (sheetRequest && sheetRequestData) {
+          const [callRows] = await connection.execute<RowDataPacket[]>(
+            `SELECT latest_audit_run_id
+             FROM kaudit_call
+             WHERE id = ? FOR UPDATE`,
+            [candidate.callId],
+          )
+          const latest = (callRows[0]?.latest_audit_run_id as string | null | undefined) ?? null
+          const [existingRows] = await connection.execute<CountRow[]>(
+            `SELECT COUNT(*) AS n
+             FROM kaudit_audit_run
+             WHERE call_id = ? AND input_manifest_sha256 = ?
+               AND status = 'completed'`,
+            [candidate.callId, inputManifestSha256],
+          )
+          if (Number(existingRows[0]?.n || 0) > 0) {
+            await connection.commit()
+            return 'already_completed'
+          }
+          if (latest !== sheetRequestData.baselineAuditRunId) {
+            throw new Error('ROW_CHANGED_RESYNC_REQUIRED')
+          }
+        }
         if (manualRequest) {
           // Re-read under the row lock the whole write then holds. Between the
           // claim and here, another worker may have advanced this call; that
@@ -325,7 +386,7 @@ export function createMysqlReauditWriteRepo(
         // Skipped entirely in manual mode: the baseline above already decided
         // this call, and asking again whether a completed run exists would
         // refuse every administrator-requested re-audit, since one always does.
-        if (!manualRequest) {
+        if (!manualRequest && !sheetRequest) {
           // Lock one concrete parent row before probing or inserting audit
           // history. Locking an empty audit-run range first creates gap-lock
           // cycles when several different calls persist concurrently.
@@ -361,18 +422,6 @@ export function createMysqlReauditWriteRepo(
         }
 
         const auditRunId = randomUUID()
-        const inputManifestSha256 = canonicalJsonSha256({
-          schemaVersion: '1',
-          callId: candidate.callId,
-          artifactId: candidate.artifactId,
-          sourceEvidenceSha256:
-            result.analysis?.evidenceSha256 ?? candidate.baselineSha256,
-          engineVersion: REAUDIT_ENGINE_VERSION,
-          classifierRulesetVersion:
-            REAUDIT_CLASSIFIER_RULESET_VERSION,
-          classifierRulesetSha256:
-            REAUDIT_CLASSIFIER_RULESET_SHA256,
-        } as unknown as JsonValue)
 
         if (
           result.outcome !== 'projected' ||
@@ -383,7 +432,7 @@ export function createMysqlReauditWriteRepo(
           // The artifact's own attempt counter belongs to the ordinary intake
           // queue. A manual re-audit is counted by its queue item instead, and
           // must not read or advance the pipeline's retry state.
-          const [attemptRows] = manualRequest
+          const [attemptRows] = manualRequest || sheetRequest
             ? [[] as AttemptRow[]]
             : await connection.execute<AttemptRow[]>(
                 `SELECT audio_attempt_count
@@ -730,6 +779,8 @@ export function createMysqlReauditWriteRepo(
                 itemId: manualRequestOf(candidate).itemId,
                 inputManifestSha256,
               })
+            : sheetRequest
+              ? `gas-sheet-audit:${inputManifestSha256}`
             : `audit-completed:${inputManifestSha256}`,
           aggregateType: 'call',
           aggregateId: candidate.callId,
