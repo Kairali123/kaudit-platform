@@ -997,3 +997,39 @@ test('recovery includes every batch that still lacks its immutable correction', 
   assert.doesNotMatch(statement.sql, /batch\.status IN/)
   assert.doesNotMatch(statement.sql, /item\.state IN/)
 })
+
+test('a storage failure logs only the operation and driver identifiers', async () => {
+  const leaked = 'https://recordings.example.test/secret.ogg'
+  const pool = {
+    execute: async () => {
+      throw Object.assign(new Error(`Unknown column near '${leaked}'`), {
+        code: 'ER_BAD_FIELD_ERROR',
+        errno: 1054,
+        sql: `SELECT '${leaked}'`,
+      })
+    },
+  } as unknown as Pool
+  const written: string[] = []
+  const original = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((chunk: string) => {
+    written.push(String(chunk))
+    return true
+  }) as typeof process.stderr.write
+  try {
+    await assert.rejects(
+      listUnfinishedLateRecordingBatchIds(pool),
+      (error: unknown) =>
+        error instanceof LateRecordingError &&
+        error.code === 'LATE_RECORDING_UNAVAILABLE',
+    )
+  } finally {
+    process.stderr.write = original
+  }
+  assert.deepEqual(written.map((line) => JSON.parse(line)), [{
+    event: 'late_recording_storage_failed',
+    operation: 'listUnfinished',
+    code: 'ER_BAD_FIELD_ERROR',
+    errno: 1054,
+  }])
+  assert.doesNotMatch(written.join(''), /secret|SELECT|Unknown column/)
+})
