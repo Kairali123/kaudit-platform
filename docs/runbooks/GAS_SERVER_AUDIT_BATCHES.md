@@ -13,14 +13,19 @@ the audit, and applies deterministic billing.
 | `late_recording` | Task ID and replacement recording URL | Attaches the new immutable recording evidence, audits it, appends the correction, and recalculates the month adjustment. |
 | `transcript_reaudit` | Task ID only | Reuses the completed transcript bound to the final recording hash. It does not download or transcribe the recording again. |
 
-All three modes share one `Audit Intake` tab (A:J the locked KServe usage
-columns, K `Import Status`, L `Kaudit Audit Mode`, M `Kaudit Bill Month`, then
-the lifecycle columns). The base importer uploads only `new_month` (or blank
-mode) rows and leaves the other modes untouched. Run
-`setupKauditUnifiedIntake` (menu: **Set up Audit Intake tab**) once; it creates
-or repairs headers, the mode dropdown, the text month column, the frozen header
-and status colours, and stops without writing if an existing header conflicts.
-It never clears or queues rows.
+Each mode has its own tab, and the tab name picks the mode:
+
+| Tab | Columns you fill |
+| --- | --- |
+| `New Month` | A:J the locked KServe usage columns (the importer writes K `Import Status`), L `Kaudit Bill Month` |
+| `Late Recording` | `Task ID`, `Recording URL`, `Kaudit Bill Month` |
+| `Re-audit` | `Task ID`, `Kaudit Bill Month` |
+
+Run `setupKauditAuditTabs` (menu: **Set up audit tabs**) once. It creates or
+repairs the three tabs' headers, text month column, frozen header and status
+colours, and stops before writing a tab whose existing header conflicts. It
+never clears or queues rows. One trigger serves all three tabs and takes turns
+between them, so a long list on one tab does not hold up the others.
 
 Only Task IDs placed in the configured tabs are selected. Existing historical
 rows elsewhere, including old `REAUDIT_REQUIRED` rows, are not swept into this
@@ -54,7 +59,7 @@ Script project. Set these Script Properties:
 | --- | --- | --- |
 | `KAUDIT_RECONCILIATION_ENDPOINT` | Yes, unless derived from `KAUDIT_IMPORT_ENDPOINT` | `https://kaudit-platform.vercel.app/api/v1/reconciliation/batch` |
 | `KAUDIT_GAS_AUDIT_SYNC_SECRET` | Yes | Same dedicated secret as Vercel |
-| `KAUDIT_AUDIT_SHEET_NAMES` | Optional; defaults to `Audit Intake` (never the active tab) | `Audit Intake` |
+| `KAUDIT_AUDIT_SHEET_NAMES` | Optional; defaults to the three tabs (never the active tab) | `New Month,Late Recording,Re-audit` |
 | `KAUDIT_BILL_MONTH` | Fallback only; prefer the row's `Kaudit Bill Month` | `2026-08` |
 | `KAUDIT_AUDIT_YEAR` | Optional for tabs named only by month | `2026` |
 | `KAUDIT_AUDIT_PARALLEL_BATCHES` | Optional, 1–8 | `4` |

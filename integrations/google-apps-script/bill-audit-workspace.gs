@@ -99,7 +99,7 @@ function onOpen() {
     .addItem('Retry selected rows', 'retrySelectedRows')
     .addItem('Stop audit', 'stopAudit')
     .addSeparator()
-    .addItem('Set up Audit Intake tab', 'setupKauditUnifiedIntake')
+    .addItem('Set up audit tabs', 'setupKauditAuditTabs')
     .addItem('Run server audit batches', 'runKauditServerAuditBatches')
     .addItem('Retry selected server audits', 'retrySelectedKauditServerAudits')
     .addItem('Install server audit trigger', 'installKauditServerAuditTrigger')

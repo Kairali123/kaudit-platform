@@ -1,9 +1,9 @@
 /**
  * Sheet-to-KAudit audit dispatcher.
  *
- * Install this file beside usage-import.gs and run setupKauditUnifiedIntake()
- * once. One "Audit Intake" tab then carries new-month, late-recording and
- * transcript re-audit rows; the per-row mode picks the flow.
+ * Install this file beside usage-import.gs and run setupKauditAuditTabs()
+ * once. Three tabs (New Month, Late Recording, Re-audit) are served by one
+ * trigger; each run takes turns between the tabs so they progress together.
  * Provider credentials stay in Vercel. The Sheet keeps only bounded lifecycle
  * state and signs each exact 1–3 item request with the audit-sync secret.
  */
@@ -13,7 +13,12 @@ const KAUDIT_SERVER_AUDIT = Object.freeze({
   defaultParallelBatches: 4,
   maxParallelBatches: 8,
   triggerMinutes: 1,
-  intakeSheetName: 'Audit Intake',
+  // Tab name picks the mode (see kauditAuditMode_), so rows need no mode cell.
+  tabs: Object.freeze({
+    newMonth: 'New Month',
+    lateRecording: 'Late Recording',
+    reaudit: 'Re-audit',
+  }),
   modes: Object.freeze(['new_month', 'late_recording', 'transcript_reaudit']),
   headers: Object.freeze({
     taskId: 'Task ID',
@@ -128,22 +133,31 @@ function retrySelectedKauditServerAudits() {
 }
 
 /**
- * Creates or repairs the "Audit Intake" tab: headers, mode dropdown, text
- * month column, frozen header and status colours. Never clears or queues
- * rows; a conflicting existing header stops it before anything is written.
+ * Creates or repairs the three audit tabs: headers, text month column, frozen
+ * header and status colours. Never clears or queues rows; a conflicting
+ * existing header stops it before that tab is written.
  */
-function setupKauditUnifiedIntake() {
+function setupKauditAuditTabs() {
   if (typeof KAUDIT_USAGE_HEADERS === 'undefined') {
     throw new Error('Add usage-import.gs to this Apps Script project first');
   }
-  const spreadsheet = SpreadsheetApp.getActive();
-  const sheet = spreadsheet.getSheetByName(KAUDIT_SERVER_AUDIT.intakeSheetName) ||
-    spreadsheet.insertSheet(KAUDIT_SERVER_AUDIT.intakeSheetName);
   const h = KAUDIT_SERVER_AUDIT.headers;
-  const expected = KAUDIT_USAGE_HEADERS.concat([
-    h.importStatus, h.mode, h.billMonth,
-    h.status, h.stage, h.error, h.batchId, h.attempt, h.updatedAt, h.amount,
-  ]);
+  const lifecycle = [h.status, h.stage, h.error, h.batchId, h.attempt, h.updatedAt, h.amount];
+  const tabs = KAUDIT_SERVER_AUDIT.tabs;
+  const layouts = {};
+  // New Month keeps the importer's locked A:J + K layout.
+  layouts[tabs.newMonth] = KAUDIT_USAGE_HEADERS.concat([h.importStatus, h.billMonth], lifecycle);
+  layouts[tabs.lateRecording] = [h.taskId, h.recordingUrl, h.billMonth].concat(lifecycle);
+  layouts[tabs.reaudit] = [h.taskId, h.billMonth].concat(lifecycle);
+  const spreadsheet = SpreadsheetApp.getActive();
+  Object.keys(layouts).forEach(function(name) {
+    kauditAuditSetupTab_(spreadsheet, name, layouts[name]);
+  });
+}
+
+function kauditAuditSetupTab_(spreadsheet, name, expected) {
+  const h = KAUDIT_SERVER_AUDIT.headers;
+  const sheet = spreadsheet.getSheetByName(name) || spreadsheet.insertSheet(name);
   if (sheet.getMaxColumns() < expected.length) {
     sheet.insertColumnsAfter(sheet.getMaxColumns(), expected.length - sheet.getMaxColumns());
   }
@@ -152,26 +166,18 @@ function setupKauditUnifiedIntake() {
   headerRange.getDisplayValues()[0].forEach(function(value, index) {
     const current = String(value || '').trim();
     if (current && current.toLowerCase() !== expected[index].toLowerCase()) {
-      throw new Error('Column ' + (index + 1) + ' header is "' + current + '" but should be "' +
-        expected[index] + '". Nothing was changed.');
+      throw new Error(name + ' column ' + (index + 1) + ' header is "' + current +
+        '" but should be "' + expected[index] + '". Nothing was changed on that tab.');
     }
   });
   headerRange.setValues([expected]).setFontWeight('bold');
   sheet.setFrozenRows(1);
 
   const dataRows = sheet.getMaxRows() - 1;
-  const modeColumn = expected.indexOf(h.mode) + 1;
-  const monthColumn = expected.indexOf(h.billMonth) + 1;
-  const statusColumn = expected.indexOf(h.status) + 1;
-  sheet.getRange(2, modeColumn, dataRows, 1).setDataValidation(
-    SpreadsheetApp.newDataValidation()
-      .requireValueInList(KAUDIT_SERVER_AUDIT.modes.slice(), true)
-      .setAllowInvalid(false)
-      .build(),
-  );
   // Plain text stops Sheets turning 2026-07 into a date.
-  sheet.getRange(2, monthColumn, dataRows, 1).setNumberFormat('@');
+  sheet.getRange(2, expected.indexOf(h.billMonth) + 1, dataRows, 1).setNumberFormat('@');
 
+  const statusColumn = expected.indexOf(h.status) + 1;
   const statusRange = sheet.getRange(2, statusColumn, dataRows, 1);
   const colours = { COMPLETED: '#d9ead3', FAILED: '#f4cccc', RETRYABLE: '#fff2cc', RUNNING: '#cfe2f3' };
   const rules = sheet.getConditionalFormatRules().filter(function(rule) {
@@ -185,7 +191,6 @@ function setupKauditUnifiedIntake() {
       .build());
   });
   sheet.setConditionalFormatRules(rules);
-  spreadsheet.setActiveSheet(sheet);
 }
 
 /** Run once. The trigger is intentionally harmless when no rows are pending. */
@@ -270,8 +275,9 @@ function kauditAuditContexts_(config) {
   const spreadsheet = SpreadsheetApp.getActive();
   // Never fall back to the active sheet: a trigger could land on a historical
   // tab and enqueue rows nobody put into the intake.
+  const tabs = KAUDIT_SERVER_AUDIT.tabs;
   const names = config.sheetNames.length
-    ? config.sheetNames : [KAUDIT_SERVER_AUDIT.intakeSheetName];
+    ? config.sheetNames : [tabs.newMonth, tabs.lateRecording, tabs.reaudit];
   const sheets = names.map(function(name) {
     const sheet = spreadsheet.getSheetByName(name);
     if (!sheet) throw new Error('Audit sheet is missing: ' + name);
@@ -282,7 +288,10 @@ function kauditAuditContexts_(config) {
 
 function kauditAuditContext_(sheet, config) {
   const headerRow = kauditAuditHeaderRow_(sheet);
-  const required = Object.keys(KAUDIT_SERVER_AUDIT.headers).map(function(key) {
+  // Mode and Import Status are optional inputs; everything else is added.
+  const required = Object.keys(KAUDIT_SERVER_AUDIT.headers).filter(function(key) {
+    return key !== 'mode' && key !== 'importStatus';
+  }).map(function(key) {
     return KAUDIT_SERVER_AUDIT.headers[key];
   });
   const original = sheet.getRange(headerRow, 1, 1, Math.max(1, sheet.getLastColumn()))
@@ -348,17 +357,20 @@ function kauditAuditFlush_(contexts) {
 }
 
 function kauditAuditMode_(ref) {
-  const explicit = String(kauditAuditGet_(ref, 'mode') || ref.context.config.defaultMode || '')
-    .trim().toLowerCase().replace(/\s+/g, '_');
-  if (KAUDIT_SERVER_AUDIT.modes.indexOf(explicit) >= 0) {
-    return explicit;
-  }
+  const normalise = function(value) {
+    return String(value || '').trim().toLowerCase().replace(/\s+/g, '_');
+  };
+  const explicit = normalise(kauditAuditGet_(ref, 'mode'));
+  if (KAUDIT_SERVER_AUDIT.modes.indexOf(explicit) >= 0) return explicit;
+  // The tab name outranks the project-wide default so each tab keeps its flow.
   const name = ref.context.sheet.getName().toLowerCase();
   if (name.indexOf('late') >= 0) return 'late_recording';
   if (name.indexOf('reaudit') >= 0 || name.indexOf('re-audit') >= 0) {
     return 'transcript_reaudit';
   }
-  return 'new_month';
+  if (name.indexOf('new month') >= 0) return 'new_month';
+  const fallback = normalise(ref.context.config.defaultMode);
+  return KAUDIT_SERVER_AUDIT.modes.indexOf(fallback) >= 0 ? fallback : 'new_month';
 }
 
 function kauditAuditMonth_(ref) {
@@ -421,20 +433,32 @@ function kauditAuditInitialBatches_(contexts, limit) {
       groups[key].rows.push(ref);
     });
   });
-  const batches = [];
-  Object.keys(groups).sort().forEach(function(key) {
+  const queues = Object.keys(groups).sort().map(function(key) {
     const group = groups[key];
-    for (let index = 0; index < group.rows.length && batches.length < limit;
-         index += KAUDIT_SERVER_AUDIT.batchSize) {
-      batches.push({
+    const chunks = [];
+    for (let index = 0; index < group.rows.length; index += KAUDIT_SERVER_AUDIT.batchSize) {
+      chunks.push({
         mode: group.mode,
         billMonth: group.billMonth,
         rows: group.rows.slice(index, index + KAUDIT_SERVER_AUDIT.batchSize),
         batchId: '',
       });
     }
+    return chunks;
   });
-  return batches.slice(0, limit);
+  // Take turns between mode/month groups so no tab starves the others.
+  const batches = [];
+  for (let round = 0; batches.length < limit; round += 1) {
+    let added = false;
+    queues.forEach(function(chunks) {
+      if (batches.length < limit && chunks[round]) {
+        batches.push(chunks[round]);
+        added = true;
+      }
+    });
+    if (!added) break;
+  }
+  return batches;
 }
 
 function kauditAuditRetryBatches_(contexts, limit) {
