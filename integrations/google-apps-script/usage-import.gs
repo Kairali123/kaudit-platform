@@ -2,9 +2,9 @@ const KAUDIT_USAGE_IMPORT = Object.freeze({
   headerRow: 1,
   sourceColumnCount: 10,
   statusColumn: 11,
-  // Unified "Audit Intake" tab: only new_month (or blank, for legacy sheets)
-  // rows are base-data uploads. Late-recording and transcript re-audit rows
-  // share the tab but are handled by server-audit-batches.gs.
+  // Optional per-row mode column: only new_month (or blank) rows are base-data
+  // uploads; late-recording and re-audit rows are left to
+  // server-audit-batches.gs.
   modeColumn: 12,
   modeHeader: 'Kaudit Audit Mode',
   batchSize: 500,
