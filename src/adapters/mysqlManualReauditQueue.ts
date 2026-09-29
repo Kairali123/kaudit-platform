@@ -124,8 +124,23 @@ function nullableMs(value: string | number | null): number | null {
  * quote SQL, a column value, or an internal id, and is dropped rather than
  * carried outward.
  */
-function asSafeQueueError(error: unknown): ManualReauditError {
+function asSafeQueueError(
+  error: unknown,
+  operation: string,
+): ManualReauditError {
   if (error instanceof ManualReauditError) return error
+  // Bounded driver identifiers only (e.g. ER_LOCK_DEADLOCK / 1213); never the
+  // message, SQL, or a value.
+  const driver = error as { code?: unknown; errno?: unknown }
+  process.stderr.write(`${JSON.stringify({
+    event: 'reaudit_queue_storage_failed',
+    operation,
+    code:
+      typeof driver?.code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(driver.code)
+        ? driver.code
+        : 'UNKNOWN',
+    errno: Number.isInteger(driver?.errno) ? driver.errno : null,
+  })}\n`)
   return new ManualReauditError(
     'REAUDIT_QUEUE_UNAVAILABLE',
     503,
@@ -454,7 +469,7 @@ export function createMysqlManualReauditRequestRepository(
         }
       } catch (error) {
         await connection.rollback().catch(() => undefined)
-        throw asSafeQueueError(error)
+        throw asSafeQueueError(error, 'enqueue')
       } finally {
         if (held) {
           await connection
@@ -536,7 +551,7 @@ export function createMysqlManualReauditCandidateRepository(
       } catch (error) {
         await connection.rollback().catch(() => undefined)
         connection.release()
-        throw asSafeQueueError(error)
+        throw asSafeQueueError(error, 'claim')
       }
       if (selected.length === 0) {
         connection.release()
@@ -633,7 +648,7 @@ export function createMysqlManualReauditCandidateRepository(
         }
         return candidates
       } catch (error) {
-        throw asSafeQueueError(error)
+        throw asSafeQueueError(error, 'loadCandidates')
       } finally {
         connection.release()
       }
