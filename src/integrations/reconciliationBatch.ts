@@ -192,6 +192,33 @@ async function resolveTaskCalls(
   return { calls, invalid }
 }
 
+/**
+ * One stderr line for a swallowed billing failure: the error class and its
+ * bounded identifiers only. Messages and SQL can carry call data, so they are
+ * never written.
+ */
+export function logReconciliationBillingFailure(
+  operation: 'validate_and_bill' | 'late_correction',
+  error: unknown,
+): void {
+  const shaped = (error ?? {}) as {
+    name?: unknown
+    code?: unknown
+    errno?: unknown
+    status?: unknown
+  }
+  const bounded = (value: unknown, pattern: RegExp): string | null =>
+    typeof value === 'string' && pattern.test(value) ? value : null
+  process.stderr.write(`${JSON.stringify({
+    event: 'reconciliation_billing_failed',
+    operation,
+    name: bounded(shaped.name, /^[A-Za-z][A-Za-z0-9]{0,63}$/),
+    code: bounded(shaped.code, /^[A-Za-z][A-Za-z0-9_]{0,63}$/),
+    errno: Number.isInteger(shaped.errno) ? shaped.errno : null,
+    status: Number.isInteger(shaped.status) ? shaped.status : null,
+  })}\n`)
+}
+
 function oneShotCandidates(
   candidates: Awaited<ReturnType<ReauditCandidateRepository['listCandidates']>>,
 ): ReauditCandidateRepository {
@@ -480,7 +507,8 @@ export function createReconciliationBatchService(options: {
             ...(billed.code ? { code: billed.code } : {}),
             amount: billed.amount,
           })
-        } catch {
+        } catch (error) {
+          logReconciliationBillingFailure('validate_and_bill', error)
           receipts.set(taskId, {
             taskId,
             stage: 'billing',
@@ -608,7 +636,8 @@ export function createReconciliationBatchService(options: {
           decidedAt: new Date().toISOString(),
           correlationId: input.correlationId ?? `gas:${input.batchId}`,
         })
-      } catch {
+      } catch (error) {
+        logReconciliationBillingFailure('late_correction', error)
         // The durable item remains in flight and the sheet retries this batch.
       }
     }
