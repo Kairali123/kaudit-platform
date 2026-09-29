@@ -164,10 +164,15 @@ export function createElevenLabsTranscriber(
       // Decode the exact fetched bytes independently. Speech timestamps end at
       // the final detected word and therefore cannot measure trailing silence,
       // which is material to duration disputes and deterministic billing.
-      const durationMs = await decodeDuration(
-        bytes,
-        transcriptionOptions.contentType,
-      )
+      let durationMs: number
+      try {
+        durationMs = await decodeDuration(bytes, transcriptionOptions.contentType)
+      } catch {
+        // Not decodable audio (e.g. an error page served as the recording).
+        throw Object.assign(new Error('Recording bytes are not decodable audio'), {
+          code: 'AUDIO_UNDECODABLE',
+        })
+      }
       const form = new FormData()
       form.append(
         'file',

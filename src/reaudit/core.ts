@@ -86,6 +86,7 @@ function providerFailureCode(
   }
   // Other 4xx refusals (bad key, unsupported file) stay terminal but visible.
   if (status >= 400 && status < 500) return `${phase}_HTTP_${status}`
+  if (code === 'AUDIO_UNDECODABLE') return `${phase}_AUDIO_UNDECODABLE`
   return null
 }
 

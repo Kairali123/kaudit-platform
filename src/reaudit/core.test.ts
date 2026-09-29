@@ -1533,6 +1533,8 @@ test('a transcription deadline is retryable and a 4xx refusal names its status',
       'TRANSCRIPTION_PROVIDER_TIMEOUT'],
     [Object.assign(new Error('synthetic refusal'), { status: 401, code: 'provider_error' }),
       'TRANSCRIPTION_HTTP_401'],
+    [Object.assign(new Error('synthetic page'), { code: 'AUDIO_UNDECODABLE' }),
+      'TRANSCRIPTION_AUDIO_UNDECODABLE'],
     [new Error('synthetic unknown failure'), 'TRANSCRIPTION_FAILED'],
   ]
   for (const [thrown, expected] of cases) {
