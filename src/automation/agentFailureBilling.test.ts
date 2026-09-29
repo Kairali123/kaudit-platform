@@ -418,3 +418,28 @@ test('candidate collection carries the primary failure facts into consensus', as
   assert.equal(outcome.status, 'accepted')
   assert.equal(outcome.amount, '19.00000000')
 })
+
+test('a second opinion is repaired like the primary instead of aborting billing', async () => {
+  // USER_SILENCE with no positively identified agent speech is invalid as
+  // given; the primary audit repairs it, and so must the consensus reviewer.
+  const silentWithoutAgent = raw({
+    category: 'USER_SILENCE',
+    customerBlockNumbers: [],
+    agentBlockNumbers: [],
+    customerSpoke: false,
+    agentFailureStartBlockNumber: null,
+    decisionSignals: { ...BASE_SIGNALS, counterpartyType: 'no_response' },
+  })
+  assert.throws(() => validated(silentWithoutAgent), /positively identified agent speech/)
+  const { outcome } = await run(validated(raw()), silentWithoutAgent)
+  assert.equal(outcome.status, 'unresolved')
+  assert.equal(outcome.billingStatus, 'unresolved')
+})
+
+test('an unrepairable second opinion stops with a terminal code', async () => {
+  await assert.rejects(
+    run(validated(raw()), raw({ confidence: 'not-a-number' })),
+    (error: unknown) =>
+      (error as { code?: string }).code === 'CONSENSUS_OUTPUT_UNRECOVERABLE',
+  )
+})

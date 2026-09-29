@@ -516,11 +516,15 @@ export function createReconciliationBatchService(options: {
           })
         } catch (error) {
           logReconciliationBillingFailure('validate_and_bill', error)
+          const unrecoverable =
+            (error as { code?: unknown })?.code === 'CONSENSUS_OUTPUT_UNRECOVERABLE'
           receipts.set(taskId, {
             taskId,
             stage: 'billing',
-            status: 'retryable',
-            code: 'BILLING_RETRY_REQUIRED',
+            status: unrecoverable ? 'failed' : 'retryable',
+            code: unrecoverable
+              ? 'CONSENSUS_OUTPUT_UNRECOVERABLE'
+              : 'BILLING_RETRY_REQUIRED',
           })
         }
       }

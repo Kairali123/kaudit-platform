@@ -11,6 +11,7 @@ import {
 } from './consensus.ts'
 import {
   mergeTranscriptSegments,
+  repairClassification,
   validateClassification,
   REAUDIT_CLASSIFIER_RULESET_VERSION,
 } from '../reaudit/core.ts'
@@ -96,20 +97,39 @@ export async function runAutomatedValidation(
     candidate.connectedDurationMs != null &&
     Math.abs(candidate.connectedDurationMs - candidate.recordedDurationMs) >
       5_000
-  const classify = async (ai: ClassificationOnly) =>
-    validateClassification(
-      await ai.classify({
-        blocks,
-        language: candidate.language,
-        recordedDurationMs: candidate.recordedDurationMs,
-        speechDurationMs: candidate.speechDurationMs,
-        connectedDurationMs: candidate.connectedDurationMs,
-        durationMismatch,
-      }),
+  // Same validate -> repair -> validate ladder as the primary audit
+  // (core.ts), so a second opinion is held to the same evidence rules.
+  const classify = async (ai: ClassificationOnly) => {
+    const raw = await ai.classify({
       blocks,
-      candidate.recordedDurationMs,
-      { durationMismatch },
-    )
+      language: candidate.language,
+      recordedDurationMs: candidate.recordedDurationMs,
+      speechDurationMs: candidate.speechDurationMs,
+      connectedDurationMs: candidate.connectedDurationMs,
+      durationMismatch,
+    })
+    try {
+      return validateClassification(
+        raw, blocks, candidate.recordedDurationMs, { durationMismatch },
+      )
+    } catch {
+      try {
+        return validateClassification(
+          repairClassification(raw, blocks, { durationMismatch }),
+          blocks,
+          candidate.recordedDurationMs,
+          { durationMismatch },
+        )
+      } catch {
+        // Terminal for this call: another paid attempt would ask the same
+        // question. It is left unresolved for a person.
+        throw Object.assign(
+          new Error('Consensus classification output is unrecoverable'),
+          { code: 'CONSENSUS_OUTPUT_UNRECOVERABLE' },
+        )
+      }
+    }
+  }
 
   const secondary = await classify(options.reviewer)
   let consensus = evaluateAutomatedConsensus({
