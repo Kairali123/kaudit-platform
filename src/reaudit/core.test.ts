@@ -1526,3 +1526,40 @@ test('a live audit of Saanvi plus unattributed noise charges agent speech only',
   assert.equal(inactive.analysis?.category, 'INACTIVE_CALL')
   assert.equal(inactive.analysis?.agentSpeechMs, 0)
 })
+
+test('a transcription deadline is retryable and a 4xx refusal names its status', async () => {
+  const cases: Array<[Error, string]> = [
+    [Object.assign(new Error('synthetic deadline'), { name: 'TimeoutError' }),
+      'TRANSCRIPTION_PROVIDER_TIMEOUT'],
+    [Object.assign(new Error('synthetic refusal'), { status: 401, code: 'provider_error' }),
+      'TRANSCRIPTION_HTTP_401'],
+    [new Error('synthetic unknown failure'), 'TRANSCRIPTION_FAILED'],
+  ]
+  for (const [thrown, expected] of cases) {
+    const result = await auditOneCall({
+      candidate,
+      allowedHosts: ['cdr-storage-recs.s3.ap-south-1.amazonaws.com'],
+      fetcher: {
+        async fetch() {
+          return {
+            ok: true,
+            status: 200,
+            bytes: Buffer.from('synthetic-audio'),
+            contentType: 'audio/ogg',
+          }
+        },
+      },
+      ai: {
+        transcriptionModel: { provider: 'elevenlabs', name: 'scribe_v2', version: 'scribe_v2' },
+        async transcribe() {
+          throw thrown
+        },
+        async classify() {
+          throw new Error('unreachable')
+        },
+      },
+    })
+    assert.equal(result.outcome, 'transcription_failed')
+    assert.equal(result.errorCode, expected)
+  }
+})

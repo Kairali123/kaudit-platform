@@ -79,6 +79,13 @@ function providerFailureCode(
   ]).has(code)) {
     return `${phase}_PROVIDER_CONNECTION_ERROR`
   }
+  // Our own request deadline (AbortSignal.timeout) is transient, like 408.
+  const name = String((error as { name?: unknown }).name || '')
+  if (name === 'TimeoutError' || name === 'AbortError') {
+    return `${phase}_PROVIDER_TIMEOUT`
+  }
+  // Other 4xx refusals (bad key, unsupported file) stay terminal but visible.
+  if (status >= 400 && status < 500) return `${phase}_HTTP_${status}`
   return null
 }
 

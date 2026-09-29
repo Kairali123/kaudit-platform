@@ -251,18 +251,25 @@ async function failureReceipts(
 ): Promise<Map<string, ReconciliationItemReceipt>> {
   if (taskIds.length === 0) return new Map()
   const placeholders = taskIds.map(() => '?').join(',')
+  // Same two ways to match a Task ID as resolveTaskCalls.
+  const columns = `c.latest_audit_run_id, c.processing_status,
+            artifact.audio_processing_status, artifact.audio_last_error
+     FROM kaudit_call c`
+  const recording = `LEFT JOIN kaudit_call_artifact artifact ON artifact.call_id = c.id
+      AND artifact.artifact_type = 'recording' AND artifact.is_final = 1`
   const [rows] = await pool.execute<FailureRow[]>(
-    `SELECT ref.external_id AS task_id, c.latest_audit_run_id,
-            c.processing_status, artifact.audio_processing_status,
-            artifact.audio_last_error
-     FROM kaudit_call c
+    `SELECT ref.external_id AS task_id, ${columns}
      JOIN kaudit_call_external_reference ref ON ref.call_id = c.id
       AND ref.reference_type IN ('task_id','taskId','task')
-     LEFT JOIN kaudit_call_artifact artifact ON artifact.call_id = c.id
-      AND artifact.artifact_type = 'recording' AND artifact.is_final = 1
+     ${recording}
      WHERE c.billing_period_date BETWEEN ? AND ?
-       AND ref.external_id IN (${placeholders})`,
-    [period.start, period.end, ...taskIds],
+       AND ref.external_id IN (${placeholders})
+     UNION
+     SELECT c.logical_call_key AS task_id, ${columns}
+     ${recording}
+     WHERE c.billing_period_date BETWEEN ? AND ?
+       AND c.logical_call_key IN (${placeholders})`,
+    [period.start, period.end, ...taskIds, period.start, period.end, ...taskIds],
   )
   return new Map(rows.flatMap((row) => {
     if (row.audio_processing_status === 'completed') return []
@@ -622,6 +629,15 @@ export function createReconciliationBatchService(options: {
     })
     const progress = await readLateRecordingBatchProgress(pool, committed.batchId)
     const byTask = new Map(progress?.items.map((item) => [item.taskReference, item]) ?? [])
+    // A corrected item whose recording never finished auditing was settled at
+    // the vendor's claim (accepted_as_billed_unverified); say so.
+    const unaudited = await failureReceipts(
+      pool,
+      period,
+      [...byTask.values()]
+        .filter((item) => item.state === 'corrected')
+        .map((item) => item.taskReference),
+    )
     return {
       batchId: input.batchId,
       billMonth: period.month,
@@ -630,6 +646,16 @@ export function createReconciliationBatchService(options: {
       totalAdjustment: progress?.totalAdjustment ?? null,
       items: items.map((item, index) => {
         const progressItem = byTask.get(item.taskId)
+        const unauditedReceipt = unaudited.get(item.taskId)
+        if (progressItem?.state === 'corrected' && unauditedReceipt) {
+          return {
+            taskId: item.taskId,
+            stage: 'billing',
+            status: 'failed',
+            code: `ACCEPTED_AS_BILLED_UNVERIFIED|${unauditedReceipt.code}`,
+            amount: progressItem.revisedAmount,
+          }
+        }
         if (progressItem) {
           return {
             taskId: item.taskId,
