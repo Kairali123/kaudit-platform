@@ -149,8 +149,24 @@ function nullableMs(value: string | number | null): number | null {
  * column value, an internal id, or -- the reason this matters most here -- a
  * recording URL, and is dropped rather than carried outward.
  */
-function asSafeLateRecordingError(error: unknown): LateRecordingError {
+function asSafeLateRecordingError(
+  error: unknown,
+  operation: string,
+): LateRecordingError {
   if (error instanceof LateRecordingError) return error
+  // Only the driver's bounded identifiers are logged (e.g. ER_BAD_FIELD_ERROR /
+  // 1054) so the failing step can be diagnosed; never the message, SQL, or a
+  // value, any of which could carry a recording URL.
+  const driver = error as { code?: unknown; errno?: unknown }
+  process.stderr.write(`${JSON.stringify({
+    event: 'late_recording_storage_failed',
+    operation,
+    code:
+      typeof driver?.code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(driver.code)
+        ? driver.code
+        : 'UNKNOWN',
+    errno: Number.isInteger(driver?.errno) ? driver.errno : null,
+  })}\n`)
   return new LateRecordingError(
     'LATE_RECORDING_UNAVAILABLE',
     503,
@@ -446,7 +462,7 @@ export async function previewLateRecordingBatch(
     )
     return preview
   } catch (error) {
-    throw asSafeLateRecordingError(error)
+    throw asSafeLateRecordingError(error, 'preview')
   }
 }
 
@@ -695,7 +711,7 @@ export async function commitLateRecordingBatch(
     }
   } catch (error) {
     await connection.rollback().catch(() => undefined)
-    throw asSafeLateRecordingError(error)
+    throw asSafeLateRecordingError(error, 'commit')
   } finally {
     if (held) {
       await connection
@@ -807,7 +823,7 @@ export function createMysqlLateRecordingCandidateRepository(
       } catch (error) {
         await connection.rollback().catch(() => undefined)
         connection.release()
-        throw asSafeLateRecordingError(error)
+        throw asSafeLateRecordingError(error, 'claim')
       }
       if (claimed.length === 0) {
         connection.release()
@@ -853,7 +869,7 @@ export function createMysqlLateRecordingCandidateRepository(
           }
         })
       } catch (error) {
-        throw asSafeLateRecordingError(error)
+        throw asSafeLateRecordingError(error, 'loadCandidates')
       } finally {
         connection.release()
       }
@@ -1091,7 +1107,7 @@ export async function prepareLateRecordingBatch(
     }
   } catch (error) {
     await connection.rollback().catch(() => undefined)
-    throw asSafeLateRecordingError(error)
+    throw asSafeLateRecordingError(error, 'prepare')
   } finally {
     connection.release()
   }
@@ -1345,7 +1361,7 @@ export async function finalizeLateRecordingBatch(
     }
   } catch (error) {
     await connection.rollback().catch(() => undefined)
-    throw asSafeLateRecordingError(error)
+    throw asSafeLateRecordingError(error, 'finalize')
   } finally {
     connection.release()
   }
@@ -1468,7 +1484,7 @@ export async function readLateRecordingBatchProgress(
       })),
     }
   } catch (error) {
-    throw asSafeLateRecordingError(error)
+    throw asSafeLateRecordingError(error, 'progress')
   }
 }
 
@@ -1499,7 +1515,7 @@ export async function listUnfinishedLateRecordingBatchIds(
     )
     return rows.map((row) => String(row.id))
   } catch (error) {
-    throw asSafeLateRecordingError(error)
+    throw asSafeLateRecordingError(error, 'listUnfinished')
   }
 }
 
@@ -1525,7 +1541,7 @@ export async function listLateRecordingItemsAwaitingCorrection(
       taskReference: String(row.task_reference),
     }))
   } catch (error) {
-    throw asSafeLateRecordingError(error)
+    throw asSafeLateRecordingError(error, 'listAwaitingCorrection')
   }
 }
 
@@ -1752,6 +1768,6 @@ export async function listLateRecordingCorrectionFacts(
           : null,
     }))
   } catch (error) {
-    throw asSafeLateRecordingError(error)
+    throw asSafeLateRecordingError(error, 'listCorrectionFacts')
   }
 }
