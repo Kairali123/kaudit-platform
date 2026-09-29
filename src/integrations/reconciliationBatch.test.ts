@@ -1,5 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import type { Pool } from 'mysql2/promise'
 import {
   createReconciliationBatchService,
@@ -172,6 +173,9 @@ test('a swallowed billing failure logs only bounded identifiers', async () => {
     code: 'ER_DUP_ENTRY',
     errno: 1062,
     status: null,
+    messageSha256: createHash('sha256')
+      .update("Duplicate entry 'https://recordings.example.test/x.ogg'")
+      .digest('hex').slice(0, 16),
   })
   assert.doesNotMatch(written.join(''), /recordings|secret|Duplicate/)
 })

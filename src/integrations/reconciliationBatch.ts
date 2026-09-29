@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import type { Pool, RowDataPacket } from 'mysql2/promise'
 import { createConfiguredReauditAi } from '../adapters/configuredReaudit.ts'
 import { createMysqlBillingMonthSummaryStore } from '../adapters/mysqlBillingMonthSummary.ts'
@@ -202,6 +203,7 @@ export function logReconciliationBillingFailure(
   error: unknown,
 ): void {
   const shaped = (error ?? {}) as {
+    message?: unknown
     name?: unknown
     code?: unknown
     errno?: unknown
@@ -216,6 +218,11 @@ export function logReconciliationBillingFailure(
     code: bounded(shaped.code, /^[A-Za-z][A-Za-z0-9_]{0,63}$/),
     errno: Number.isInteger(shaped.errno) ? shaped.errno : null,
     status: Number.isInteger(shaped.status) ? shaped.status : null,
+    // A fingerprint, not the text: our own fixed messages can be matched
+    // offline, while a model refusal (which may quote the call) cannot leak.
+    messageSha256: typeof shaped.message === 'string'
+      ? createHash('sha256').update(shaped.message).digest('hex').slice(0, 16)
+      : null,
   })}\n`)
 }
 
