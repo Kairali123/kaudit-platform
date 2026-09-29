@@ -83,7 +83,7 @@ function tab(name: string, rows: Array<[string, string]>, defaultMode = '') {
     status: 4, stage: 5, error: 6, batchId: 7, attempt: 8, updatedAt: 9, amount: 10,
   }
   return {
-    sheet: { getName: () => name },
+    sheet: { getName: () => name, getSheetId: () => 1 },
     headerRow: 1,
     columns,
     config: { defaultMode, billMonth: '', auditYear: '', allowPreimported: false },
@@ -140,4 +140,36 @@ test('a busy refusal hands rows back without spending an attempt', () => {
   assert.equal(sheet.rows[0]?.[6], 'LATE_RECORDING_BUSY')
   // The first-attempt row is queued again on the next run.
   assert.equal(dispatcher.kauditAuditInitialBatches_([sheet], 4).length, 1)
+})
+
+test('a low-confidence billing refusal is parked for review, not retried', () => {
+  const context = vm.createContext({ console })
+  new vm.Script(source).runInContext(context)
+  const dispatcher = context as unknown as {
+    kauditAuditApplyResponse_: (batch: unknown, response: unknown) => void
+    kauditAuditRetryBatches_: (contexts: unknown[], limit: number) => unknown[]
+  }
+  const sheet = tab('Re-audit', [['re-1', '2026-06'], ['re-2', '2026-06']])
+  for (const row of sheet.rows) {
+    row[4] = 'RUNNING'
+    row[7] = 'gas-batch-1'
+    row[8] = '1'
+  }
+  dispatcher.kauditAuditApplyResponse_(
+    { rows: [{ context: sheet, index: 0 }, { context: sheet, index: 1 }] },
+    {
+      getResponseCode: () => 200,
+      getContentText: () => JSON.stringify({ items: [
+        { taskId: 're-1', stage: 'billing', status: 'failed',
+          code: 'WINNING_CONSENSUS_CONFIDENCE_BELOW_FLOOR' },
+        { taskId: 're-2', stage: 'billing', status: 'failed',
+          code: 'AUDIT_RESULT_NOT_READY' },
+      ] }),
+    },
+  )
+  assert.equal(sheet.rows[0]?.[4], 'NEEDS_REVIEW')
+  assert.equal(sheet.rows[1]?.[4], 'FAILED')
+  // Only the not-ready row keeps the batch eligible for its final retry.
+  sheet.rows[1]![4] = 'COMPLETED'
+  assert.equal(dispatcher.kauditAuditRetryBatches_([sheet], 4).length, 0)
 })

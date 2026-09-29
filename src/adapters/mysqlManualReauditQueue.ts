@@ -124,8 +124,23 @@ function nullableMs(value: string | number | null): number | null {
  * quote SQL, a column value, or an internal id, and is dropped rather than
  * carried outward.
  */
-function asSafeQueueError(error: unknown): ManualReauditError {
+function asSafeQueueError(
+  error: unknown,
+  operation: string,
+): ManualReauditError {
   if (error instanceof ManualReauditError) return error
+  // Bounded driver identifiers only (e.g. ER_LOCK_DEADLOCK / 1213); never the
+  // message, SQL, or a value.
+  const driver = error as { code?: unknown; errno?: unknown }
+  process.stderr.write(`${JSON.stringify({
+    event: 'reaudit_queue_storage_failed',
+    operation,
+    code:
+      typeof driver?.code === 'string' && /^[A-Z][A-Z0-9_]{1,63}$/.test(driver.code)
+        ? driver.code
+        : 'UNKNOWN',
+    errno: Number.isInteger(driver?.errno) ? driver.errno : null,
+  })}\n`)
   return new ManualReauditError(
     'REAUDIT_QUEUE_UNAVAILABLE',
     503,
@@ -165,19 +180,30 @@ async function itemCount(
  * They are never reclaimed; a new administrator action is the only path to a
  * new model call.
  */
+/**
+ * A request-scoped sweep/claim reads ONLY that request's rows through the
+ * (request_id, call_id) key. Scanning the status index instead makes
+ * FOR UPDATE lock every other request's processing rows, so parallel Sheet
+ * batches waited on each other's slow persistence until lock-wait timeout.
+ */
+function requestIndexHint(requestId?: string): string {
+  return requestId ? 'FORCE INDEX (uq_billing_reaudit_request_call)' : ''
+}
+
 async function expireInterruptedClaims(
   connection: PoolConnection,
   callIds?: readonly string[],
   recoverAllProcessing = false,
+  requestId?: string,
 ): Promise<void> {
   if (callIds && callIds.length === 0) return
-  const scope = callIds
+  const scope = (callIds
     ? ` AND item.call_id IN (${placeholders(callIds.length)})`
-    : ''
+    : '') + (requestId ? ' AND item.request_id = ?' : '')
   const [interrupted] = await connection.execute<ClaimedItemRow[]>(
     `SELECT item.id AS item_id, item.request_id, item.call_id,
             item.baseline_audit_run_id
-     FROM kaudit_billing_reaudit_item item
+     FROM kaudit_billing_reaudit_item item ${requestIndexHint(requestId)}
      WHERE item.status = 'processing'
        AND NOT EXISTS (
          SELECT 1
@@ -192,7 +218,7 @@ async function expireInterruptedClaims(
      ORDER BY item.created_at, item.id
      LIMIT 100
      FOR UPDATE`,
-    callIds ? [...callIds] : [],
+    [...(callIds ?? []), ...(requestId ? [requestId] : [])],
   )
   for (const row of interrupted) {
     await settleManualReauditItem(connection, {
@@ -454,7 +480,7 @@ export function createMysqlManualReauditRequestRepository(
         }
       } catch (error) {
         await connection.rollback().catch(() => undefined)
-        throw asSafeQueueError(error)
+        throw asSafeQueueError(error, 'enqueue')
       } finally {
         if (held) {
           await connection
@@ -504,7 +530,12 @@ export function createMysqlManualReauditCandidateRepository(
         // selects processing rows below so the spend guard can recover staged
         // output or durably terminalize ambiguous paid state.
         if (repositoryOptions.recoverInterruptedClaims !== true) {
-          await expireInterruptedClaims(connection)
+          await expireInterruptedClaims(
+            connection,
+            undefined,
+            false,
+            repositoryOptions.requestId,
+          )
         }
         const requestScope = repositoryOptions.requestId
           ? ' AND item.request_id = ?'
@@ -513,6 +544,7 @@ export function createMysqlManualReauditCandidateRepository(
           `SELECT item.id AS item_id, item.request_id, item.call_id,
                   item.baseline_audit_run_id
            FROM kaudit_billing_reaudit_item item
+             ${requestIndexHint(repositoryOptions.requestId)}
            WHERE (
              (
                item.status = 'queued'
@@ -536,7 +568,7 @@ export function createMysqlManualReauditCandidateRepository(
       } catch (error) {
         await connection.rollback().catch(() => undefined)
         connection.release()
-        throw asSafeQueueError(error)
+        throw asSafeQueueError(error, 'claim')
       }
       if (selected.length === 0) {
         connection.release()
@@ -633,7 +665,7 @@ export function createMysqlManualReauditCandidateRepository(
         }
         return candidates
       } catch (error) {
-        throw asSafeQueueError(error)
+        throw asSafeQueueError(error, 'loadCandidates')
       } finally {
         connection.release()
       }
