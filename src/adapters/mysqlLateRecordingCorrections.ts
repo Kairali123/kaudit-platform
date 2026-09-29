@@ -127,7 +127,8 @@ interface TotalRow extends RowDataPacket {
  * partially-written pair of batches before that key can decide.
  */
 const COMMIT_LOCK = 'kaudit-late-recording-commit-v1'
-const COMMIT_LOCK_TIMEOUT_SECONDS = 5
+// Sheet batches run in parallel and each holds this briefly; queue, don't refuse.
+const COMMIT_LOCK_TIMEOUT_SECONDS = 20
 
 /** The reference types the import and monitor surfaces already display. */
 const REFERENCE_TYPES = "('task_id','taskId','task')"

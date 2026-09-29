@@ -100,7 +100,8 @@ interface LatestRunRow extends RowDataPacket {
  * into a partially-accepted pair of requests before that key can decide.
  */
 const ENQUEUE_LOCK = 'kaudit-billing-reaudit-enqueue-v1'
-const ENQUEUE_LOCK_TIMEOUT_SECONDS = 5
+// Sheet batches run in parallel and each holds this briefly; queue, don't refuse.
+const ENQUEUE_LOCK_TIMEOUT_SECONDS = 20
 
 /** The reference types the monitor itself displays, in the same order. */
 const REFERENCE_TYPES = "('task_id','taskId','task')"

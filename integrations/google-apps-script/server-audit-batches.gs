@@ -541,6 +541,18 @@ function kauditAuditApplyResponse_(batch, response) {
   try { body = JSON.parse(response.getContentText() || '{}'); } catch (error) {}
   if (statusCode !== 200 || !Array.isArray(body.items)) {
     const code = String(body.code || (body.error && body.error.code) || ('HTTP_' + statusCode));
+    // A *_BUSY refusal happens before the server writes anything, so it is
+    // not an attempt: hand the rows back to the queue for the next run.
+    if (statusCode === 409 && /_BUSY$/.test(code)) {
+      batch.rows.forEach(function(ref) {
+        const attempt = Math.max(0, Number(kauditAuditGet_(ref, 'attempt') || 0) - 1);
+        kauditAuditSet_(ref, 'attempt', attempt);
+        kauditAuditSet_(ref, 'status', attempt > 0 ? 'RETRYABLE' : 'PENDING');
+        kauditAuditSet_(ref, 'error', code);
+        kauditAuditSet_(ref, 'updatedAt', new Date().toISOString());
+      });
+      return;
+    }
     const retryable = statusCode === 0 || statusCode === 408 || statusCode === 425 ||
       statusCode === 429 || statusCode >= 500;
     batch.rows.forEach(function(ref) {
