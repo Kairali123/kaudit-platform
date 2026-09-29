@@ -1527,12 +1527,14 @@ test('a live audit of Saanvi plus unattributed noise charges agent speech only',
   assert.equal(inactive.analysis?.agentSpeechMs, 0)
 })
 
-test('a transcription deadline is retryable and a 4xx refusal names its status', async () => {
+test('deadline and access refusals are retryable; other 4xx refusals name their status', async () => {
   const cases: Array<[Error, string]> = [
     [Object.assign(new Error('synthetic deadline'), { name: 'TimeoutError' }),
       'TRANSCRIPTION_PROVIDER_TIMEOUT'],
-    [Object.assign(new Error('synthetic refusal'), { status: 401, code: 'provider_error' }),
-      'TRANSCRIPTION_HTTP_401'],
+    [Object.assign(new Error('synthetic refusal'), { status: 403, code: 'provider_error' }),
+      'TRANSCRIPTION_PROVIDER_ACCESS_DENIED'],
+    [Object.assign(new Error('synthetic bad file'), { status: 400, code: 'provider_error' }),
+      'TRANSCRIPTION_HTTP_400'],
     [Object.assign(new Error('synthetic page'), { code: 'AUDIO_UNDECODABLE' }),
       'TRANSCRIPTION_AUDIO_UNDECODABLE'],
     [new Error('synthetic unknown failure'), 'TRANSCRIPTION_FAILED'],
