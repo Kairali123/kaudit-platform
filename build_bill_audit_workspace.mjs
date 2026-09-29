@@ -124,7 +124,7 @@ function setWidths(sheet, widths) {
   ];
   body(s, "A15:B21");
   s.getRange("A23:B25").values = [
-    ["Security", "The OpenAI API key is stored in Apps Script Properties. It is never written in a visible cell."],
+    ["Security", "The ElevenLabs and OpenAI API keys are stored in Apps Script Properties. They are never written in visible cells."],
     ["Evidence", "Store recording/transcript evidence in the restricted Evidence folder. Keep only references and SHA-256 hashes in this workbook."],
     ["Billing", "AI records category, evidence and timing. Fixed rules calculate money."],
   ];
@@ -147,8 +147,8 @@ function setWidths(sheet, widths) {
     ["SOURCE_TAB_NAME", "August Data", "Yes", "KServe source tab", "Visible"],
     ["SOURCE_HEADER_ROW", 1, "Yes", "Header row in the KServe source", "Visible"],
     ["SOURCE_START_ROW", 2, "Yes", "First data row", "Visible"],
-    ["AUDIT_MODEL", "gpt-4o-mini-2024-07-18", "No", "Canonical KAudit classification model", "Code-owned"],
-    ["TRANSCRIPTION_MODEL", "whisper-1", "No", "Canonical timestamped KAudit transcription model", "Code-owned"],
+    ["AUDIT_MODEL", "gpt-6-luna", "No", "Canonical KAudit classification model", "Code-owned"],
+    ["TRANSCRIPTION_MODEL", "scribe_v2", "No", "Canonical ElevenLabs timestamped transcription model", "Code-owned"],
     ["OPENAI_API_KEY", "Configured through Bill Audit menu", "No", "Dedicated OpenAI project key", "Apps Script Properties"],
     ["API_BASE_URL", "https://kaudit-platform.vercel.app", "Yes", "Approved server API base URL", "Visible"],
     ["BATCH_SIZE", 5, "Yes", "Maximum recordings claimed per audit batch", "Visible"],
@@ -167,6 +167,7 @@ function setWidths(sheet, widths) {
     ["INVOICE_FOLDER_ID", "1YDc8_l0AhYbg-Rf4_4FoFSYydIM8AapN", "Yes", "August invoice folder", "Visible"],
     ["EXPORT_FOLDER_ID", "1CkiTbBgqAlzIaidDFUpuZhUnXRgOg6my", "Yes", "August export folder", "Visible"],
     ["SQL_SYNC_ENABLED", false, "Yes", "Enable only after server endpoint validation", "Visible"],
+    ["ELEVENLABS_API_KEY", "Configured through Bill Audit menu", "No", "Dedicated ElevenLabs transcription key", "Apps Script Properties"],
   ];
   s.getRange(`A5:E${4 + rows.length}`).values = rows;
   body(s, `A5:E${4 + rows.length}`);
@@ -433,6 +434,7 @@ function setWidths(sheet, widths) {
   header(s, "A4:F4");
   const rows = [
     ["setupWorkspace","Set up workspace","Validate required tabs, settings and Script Properties.","Settings, Run Log",true,"NOT_INSTALLED"],
+    ["setElevenLabsApiKey","Set ElevenLabs key","Prompt the owner and save the key in Apps Script Properties.","Script Properties",true,"NOT_INSTALLED"],
     ["setOpenAiApiKey","Set OpenAI key","Prompt the owner and save the key in Apps Script Properties.","Script Properties",true,"NOT_INSTALLED"],
     ["importKServeMonth","Import KServe month","Read the configured source Sheet and append immutable monthly rows.","Monthly Input",true,"NOT_INSTALLED"],
     ["registerInvoice","Register invoice","Register the selected invoice PDF and extract fields.","Invoice Register",true,"NOT_INSTALLED"],
@@ -487,7 +489,7 @@ console.log(errors.ndjson);
 
 const previewRanges = {
   "Start": "A1:H25",
-  "Settings": "A1:E29",
+  "Settings": "A1:E30",
   "Monthly Input": "A1:U16",
   "Invoice Register": "A1:N16",
   "AI Queue": "A1:M16",
@@ -499,7 +501,7 @@ const previewRanges = {
   "Evidence Index": "A1:K16",
   "Run Log": "A1:N16",
   "Summary": "A1:H18",
-  "Automation": "A1:F14",
+  "Automation": "A1:F15",
 };
 for (const name of sheetNames) {
   const preview = await workbook.render({ sheetName: name, range: previewRanges[name], scale: 1, format: "png" });

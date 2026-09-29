@@ -88,14 +88,22 @@ function onOpen() {
     .createMenu('Bill Audit')
     .addItem('Set up workspace', 'setupWorkspace')
     .addItem('Upgrade to KAudit billing rules', 'upgradeWorkspace')
+    .addItem('Set ElevenLabs key', 'setElevenLabsApiKey')
     .addItem('Set OpenAI key', 'setOpenAiApiKey')
     .addItem('Set SQL sync secret', 'setSqlSyncSecret')
     .addSeparator()
     .addItem('Import KServe month', 'importKServeMonth')
     .addItem('Build audit queue', 'buildAuditQueue')
     .addItem('Start or resume audit', 'runAuditBatch')
+    .addItem('Run selected queue row', 'runSelectedAuditRow')
     .addItem('Retry selected rows', 'retrySelectedRows')
     .addItem('Stop audit', 'stopAudit')
+    .addSeparator()
+    .addItem('Set up Audit Intake tab', 'setupKauditUnifiedIntake')
+    .addItem('Run server audit batches', 'runKauditServerAuditBatches')
+    .addItem('Retry selected server audits', 'retrySelectedKauditServerAudits')
+    .addItem('Install server audit trigger', 'installKauditServerAuditTrigger')
+    .addItem('Stop server audit trigger', 'removeKauditServerAuditTrigger')
     .addSeparator()
     .addItem('Reconcile month', 'reconcileMonth')
     .addItem('Sync pending results', 'syncPendingResults')
@@ -115,7 +123,7 @@ function setupWorkspace() {
   }
   updateAutomationState_('INSTALLED');
   appendRunLog_('setupWorkspace', 0, 0, 0, 0, 'Workspace structure validated');
-  SpreadsheetApp.getUi().alert('Bill Audit workspace is ready. Set the OpenAI key and model names before starting an audit.');
+  SpreadsheetApp.getUi().alert('Bill Audit workspace is ready. Set the ElevenLabs and OpenAI keys before starting an audit.');
 }
 
 function upgradeWorkspace() {
@@ -124,8 +132,8 @@ function upgradeWorkspace() {
     deleteContinuationTriggers_();
     const settingsSheet = sheet_(BILL_AUDIT.sheets.settings);
     upsertSetting_('MIN_CLASSIFICATION_CONFIDENCE', BILLING_POLICY.validationThreshold, 'No', 'Locked automated-consensus confidence floor', 'Code-owned');
-    upsertSetting_('AUDIT_MODEL', 'gpt-4o-mini-2024-07-18', 'No', 'Canonical KAudit classification model', 'Code-owned');
-    upsertSetting_('TRANSCRIPTION_MODEL', 'whisper-1', 'No', 'Canonical timestamped KAudit transcription model', 'Code-owned');
+    upsertSetting_('AUDIT_MODEL', 'gpt-6-luna', 'No', 'Canonical KAudit classification model', 'Code-owned');
+    upsertSetting_('TRANSCRIPTION_MODEL', 'scribe_v2', 'No', 'Canonical ElevenLabs timestamped transcription model', 'Code-owned');
     upsertSetting_('RULESET_VERSION', BILLING_POLICY.classifierVersion, 'No', 'Canonical KAudit classifier ruleset', 'Code-owned');
     upsertSetting_('BILLING_RULESET_VERSION', BILLING_POLICY.rulesetVersion, 'No', 'Locked KServe rate and rounding ruleset', 'Code-owned');
     upsertSetting_('CATEGORY_POLICY_VERSION', BILLING_POLICY.categoryPolicyVersion, 'No', 'Locked category service-end and grace policy', 'Code-owned');
@@ -177,7 +185,7 @@ function upgradeWorkspace() {
     billing.getRange(BILL_AUDIT.firstDataRow, 21, billingCapacity, 1).setNumberFormat('0.0%');
     billing.getRange(BILL_AUDIT.firstDataRow, 15, billingCapacity, 1).setDataValidation(
       SpreadsheetApp.newDataValidation()
-        .requireValueInList(['AUTO_APPROVED','REVIEW_REQUIRED','SUPERSEDED_REAUDIT_REQUIRED'], true)
+        .requireValueInList(['NOT_REVIEWED','APPROVED','REJECTED','BLOCKED','SUPERSEDED_REAUDIT_REQUIRED'], true)
         .setAllowInvalid(false)
         .build(),
     );
@@ -187,17 +195,6 @@ function upgradeWorkspace() {
         .setAllowInvalid(false)
         .build(),
     );
-    const billingRows = dataRowCount_(billing);
-    if (billingRows) {
-      const values = billing.getRange(BILL_AUDIT.firstDataRow, 1, billingRows, 24).getValues();
-      values.forEach(function(row) {
-        if (String(row[13] || '') !== BILLING_POLICY.rulesetVersion || !String(row[18] || '')) {
-          row[14] = 'SUPERSEDED_REAUDIT_REQUIRED';
-          row[23] = 'BLOCKED';
-        }
-      });
-      billing.getRange(BILL_AUDIT.firstDataRow, 1, billingRows, 24).setValues(values);
-    }
     const queue = sheet_(BILL_AUDIT.sheets.queue);
     const queueCapacity = Math.max(1, queue.getMaxRows() - BILL_AUDIT.headerRow);
     queue.getRange(BILL_AUDIT.firstDataRow, 4, queueCapacity, 1).setDataValidation(
@@ -207,24 +204,102 @@ function upgradeWorkspace() {
         .build(),
     );
     const queueRows = dataRowCount_(queue);
-    if (queueRows) {
-      const values = queue.getRange(BILL_AUDIT.firstDataRow, 1, queueRows, 13).getValues();
-      values.forEach(function(row) {
-        if (String(row[8] || '').trim()) {
-          row[3] = BILL_AUDIT.queueStates.pending;
-          row[5] = '';
-          row[6] = '';
-          row[9] = 'REAUDIT_REQUIRED';
-          row[10] = '';
-          row[11] = '';
-          row[12] = new Date();
-        }
-      });
-      queue.getRange(BILL_AUDIT.firstDataRow, 1, queueRows, 13).setValues(values);
-    }
     upgradeSummary_();
-    appendRunLog_('upgradeWorkspace', queueRows, 0, queueRows, 0, 'KAudit policy installed; prior calculations blocked and recording-backed calls queued for re-audit');
-    SpreadsheetApp.getUi().alert('KAudit billing rules are installed. Existing evidence was preserved. Old calculations are blocked; start the audit to rebuild them.');
+    appendRunLog_('upgradeWorkspace', queueRows, 0, 0, 0, 'KAudit policy and ElevenLabs transcription installed; existing audit results and queue states preserved');
+    showUiAlertIfAvailable_('KAudit billing rules and ElevenLabs transcription are installed. Existing completed audits were preserved and were not queued again.');
+  });
+}
+
+function showUiAlertIfAvailable_(message) {
+  try {
+    SpreadsheetApp.getUi().alert(message);
+  } catch (error) {
+    console.log(String(message || ''));
+  }
+}
+
+function restoreCompletedAuditsAfterUpgrade() {
+  return withScriptLock_(function() {
+    const monthly = sheet_(BILL_AUDIT.sheets.monthly);
+    const results = sheet_(BILL_AUDIT.sheets.results);
+    const billing = sheet_(BILL_AUDIT.sheets.billing);
+    const queue = sheet_(BILL_AUDIT.sheets.queue);
+    const monthlyCount = dataRowCount_(monthly);
+    const resultCount = dataRowCount_(results);
+    const billingCount = dataRowCount_(billing);
+    const queueCount = dataRowCount_(queue);
+    const monthlyRows = monthlyCount
+      ? monthly.getRange(BILL_AUDIT.firstDataRow, 1, monthlyCount, 21).getValues()
+      : [];
+    const resultRows = resultCount
+      ? results.getRange(BILL_AUDIT.firstDataRow, 1, resultCount, 43).getValues()
+      : [];
+    const billingRows = billingCount
+      ? billing.getRange(BILL_AUDIT.firstDataRow, 1, billingCount, 24).getValues()
+      : [];
+    const queueRows = queueCount
+      ? queue.getRange(BILL_AUDIT.firstDataRow, 1, queueCount, 13).getValues()
+      : [];
+    const monthlyByTask = {};
+    const completedResults = {};
+    const billingByTask = {};
+    monthlyRows.forEach(function(row) {
+      const taskId = String(row[0] || '').trim();
+      if (taskId) monthlyByTask[taskId] = row;
+    });
+    resultRows.forEach(function(row) {
+      const taskId = String(row[0] || '').trim();
+      if (taskId && String(row[2] || '').trim() && String(row[4] || '').trim()) {
+        completedResults[taskId] = true;
+      }
+    });
+    billingRows.forEach(function(row, index) {
+      const taskId = String(row[0] || '').trim();
+      if (taskId && String(row[18] || '').trim() && String(row[22] || '').trim()) {
+        billingByTask[taskId] = { row: row, index: index };
+      }
+    });
+    const restoredQueueIndexes = [];
+    const restoredTaskIds = {};
+    let flagged = 0;
+    queueRows.forEach(function(row, index) {
+      if (String(row[9] || '') !== 'REAUDIT_REQUIRED') return;
+      flagged += 1;
+      const taskId = String(row[0] || '').trim();
+      const monthlyRow = monthlyByTask[taskId];
+      if (!monthlyRow || String(monthlyRow[16] || '') !== BILL_AUDIT.queueStates.completed ||
+          !completedResults[taskId] || !billingByTask[taskId]) return;
+      row[3] = BILL_AUDIT.queueStates.completed;
+      row[5] = '';
+      row[6] = '';
+      row[9] = 'BILLING_CALCULATED';
+      row[10] = '';
+      row[11] = '';
+      row[12] = new Date();
+      restoredQueueIndexes.push(index);
+      restoredTaskIds[taskId] = true;
+    });
+    writeQueueRows_(queue, queueRows, restoredQueueIndexes);
+    Object.keys(restoredTaskIds).forEach(function(taskId) {
+      const entry = billingByTask[taskId];
+      const rowNumber = BILL_AUDIT.firstDataRow + entry.index;
+      if (String(entry.row[14] || '') === 'SUPERSEDED_REAUDIT_REQUIRED') {
+        billing.getRange(rowNumber, 15).setValue('NOT_REVIEWED');
+      }
+      if (String(entry.row[23] || '') === 'BLOCKED') {
+        const monthlySqlState = String(monthlyByTask[taskId][17] || 'PENDING');
+        const restoredSqlState = ['PENDING','SYNCED','NOT_CONFIGURED'].indexOf(monthlySqlState) >= 0
+          ? monthlySqlState
+          : 'PENDING';
+        billing.getRange(rowNumber, 24).setValue(restoredSqlState);
+      }
+    });
+    const remaining = flagged - restoredQueueIndexes.length;
+    appendRunLog_('restoreCompletedAuditsAfterUpgrade', flagged, restoredQueueIndexes.length, 0, remaining,
+      'Restored only re-audit flags backed by completed Monthly Input, AI Results, and Billing Calculation evidence');
+    const summary = { flagged: flagged, restored: restoredQueueIndexes.length, remaining: remaining };
+    console.log(JSON.stringify(summary));
+    return summary;
   });
 }
 
@@ -345,6 +420,34 @@ function saveOpenAiApiKey(key) {
   appendRunLog_('saveOpenAiApiKey', 0, 0, 0, 0, 'OpenAI key updated');
 }
 
+function setElevenLabsApiKey() {
+  const html = HtmlService.createHtmlOutput(
+    '<div style="font-family:Arial;padding:16px">' +
+      '<h3 style="margin-top:0">Set ElevenLabs API key</h3>' +
+      '<p>The key is stored in Apps Script Properties and is not written into the spreadsheet.</p>' +
+      '<input id="key" type="password" autocomplete="off" style="width:100%;box-sizing:border-box;padding:8px" />' +
+      '<div style="margin-top:14px;text-align:right">' +
+        '<button onclick="google.script.host.close()">Cancel</button> ' +
+        '<button onclick="save()">Save</button>' +
+      '</div>' +
+      '<script>' +
+        'function save(){var k=document.getElementById("key").value.trim();' +
+        'if(!k){alert("Enter a key");return;}' +
+        'google.script.run.withSuccessHandler(function(){google.script.host.close();})' +
+        '.withFailureHandler(function(e){alert(e.message);}).saveElevenLabsApiKey(k);}' +
+      '</script>' +
+    '</div>',
+  ).setWidth(460).setHeight(240);
+  SpreadsheetApp.getUi().showModalDialog(html, 'ElevenLabs configuration');
+}
+
+function saveElevenLabsApiKey(key) {
+  const value = String(key || '').trim();
+  if (value.length < 20) throw new Error('The API key is too short');
+  PropertiesService.getScriptProperties().setProperty('ELEVENLABS_API_KEY', value);
+  appendRunLog_('saveElevenLabsApiKey', 0, 0, 0, 0, 'ElevenLabs key updated');
+}
+
 function setSqlSyncSecret() {
   const ui = SpreadsheetApp.getUi();
   const response = ui.prompt('SQL sync secret', 'Enter the dedicated KAudit GAS audit-sync HMAC secret. It is stored only in Apps Script Properties.', ui.ButtonSet.OK_CANCEL);
@@ -447,8 +550,10 @@ function runAuditBatch() {
     const props = PropertiesService.getScriptProperties();
     props.deleteProperty('BILL_AUDIT_STOPPED');
     const settings = readSettings_();
-    const apiKey = props.getProperty('OPENAI_API_KEY');
-    if (!apiKey) throw new Error('OpenAI key is not configured');
+    const openAiApiKey = props.getProperty('OPENAI_API_KEY');
+    const elevenLabsApiKey = props.getProperty('ELEVENLABS_API_KEY');
+    if (!openAiApiKey) throw new Error('OpenAI key is not configured');
+    if (!elevenLabsApiKey) throw new Error('ElevenLabs key is not configured');
     const auditModel = configuredModel_(settings.AUDIT_MODEL, 'AUDIT_MODEL');
     const transcriptionModel = configuredModel_(settings.TRANSCRIPTION_MODEL, 'TRANSCRIPTION_MODEL');
     const batchSize = Math.min(20, positiveInteger_(settings.BATCH_SIZE, 'BATCH_SIZE'));
@@ -497,7 +602,7 @@ function runAuditBatch() {
         continue;
       }
       try {
-        const result = auditQueueItem_(queue[index], settings, apiKey, auditModel, transcriptionModel, runId);
+        const result = auditQueueItem_(queue[index], settings, openAiApiKey, elevenLabsApiKey, auditModel, transcriptionModel, runId);
         queue[index][3] = result.manualReview ? BILL_AUDIT.queueStates.unresolved : BILL_AUDIT.queueStates.completed;
         queue[index][9] = result.manualReview ? 'AUTHORITY_UNRESOLVED' : 'BILLING_CALCULATED';
         queue[index][10] = '';
@@ -534,7 +639,66 @@ function runAuditBatch() {
   });
 }
 
-function auditQueueItem_(queueRow, settings, apiKey, auditModel, transcriptionModel, runId) {
+function runSelectedAuditRow() {
+  withScriptLock_(function() {
+    const queueSheet = SpreadsheetApp.getActiveSheet();
+    if (queueSheet.getName() !== BILL_AUDIT.sheets.queue) {
+      throw new Error('Select one row in AI Queue first');
+    }
+    const activeRange = queueSheet.getActiveRange();
+    if (!activeRange || activeRange.getRow() < BILL_AUDIT.firstDataRow || activeRange.getNumRows() !== 1) {
+      throw new Error('Select exactly one AI Queue data row');
+    }
+    const rowNumber = activeRange.getRow();
+    const queueRow = queueSheet.getRange(rowNumber, 1, 1, 13).getValues()[0];
+    const state = String(queueRow[3] || '');
+    if ([BILL_AUDIT.queueStates.pending, BILL_AUDIT.queueStates.retry,
+      BILL_AUDIT.queueStates.unresolved, BILL_AUDIT.queueStates.manual].indexOf(state) < 0) {
+      throw new Error('The selected queue row is not ready for a supervised retry');
+    }
+    const props = PropertiesService.getScriptProperties();
+    const settings = readSettings_();
+    const openAiApiKey = props.getProperty('OPENAI_API_KEY');
+    const elevenLabsApiKey = props.getProperty('ELEVENLABS_API_KEY');
+    if (!openAiApiKey) throw new Error('OpenAI key is not configured');
+    if (!elevenLabsApiKey) throw new Error('ElevenLabs key is not configured');
+    const auditModel = configuredModel_(settings.AUDIT_MODEL, 'AUDIT_MODEL');
+    const transcriptionModel = configuredModel_(settings.TRANSCRIPTION_MODEL, 'TRANSCRIPTION_MODEL');
+    const runId = Utilities.getUuid();
+    queueRow[3] = BILL_AUDIT.queueStates.running;
+    queueRow[4] = Number(queueRow[4] || 0) + 1;
+    queueRow[5] = new Date(Date.now() + 25 * 60 * 1000);
+    queueRow[7] = runId;
+    queueRow[12] = new Date();
+    queueSheet.getRange(rowNumber, 1, 1, 13).setValues([queueRow]);
+    let completed = 0;
+    let failed = 0;
+    try {
+      const result = auditQueueItem_(queueRow, settings, openAiApiKey, elevenLabsApiKey,
+        auditModel, transcriptionModel, runId);
+      queueRow[3] = result.manualReview ? BILL_AUDIT.queueStates.unresolved : BILL_AUDIT.queueStates.completed;
+      queueRow[9] = result.manualReview ? 'AUTHORITY_UNRESOLVED' : 'BILLING_CALCULATED';
+      queueRow[10] = '';
+      queueRow[11] = '';
+      completed = result.manualReview ? 0 : 1;
+      failed = result.manualReview ? 1 : 0;
+    } catch (error) {
+      const classified = classifySafeError_(error);
+      queueRow[3] = classified.terminal ? classified.state : BILL_AUDIT.queueStates.unresolved;
+      queueRow[9] = 'AUTHORITY_UNRESOLVED';
+      queueRow[10] = classified.code;
+      queueRow[11] = classified.safeMessage;
+      failed = 1;
+    }
+    queueRow[5] = '';
+    queueRow[6] = '';
+    queueRow[12] = new Date();
+    queueSheet.getRange(rowNumber, 1, 1, 13).setValues([queueRow]);
+    appendRunLog_('runSelectedAuditRow', 1, completed, 0, failed, 'Supervised single-row audit completed');
+  });
+}
+
+function auditQueueItem_(queueRow, settings, openAiApiKey, elevenLabsApiKey, auditModel, transcriptionModel, runId) {
   const taskId = String(queueRow[0] || '').trim();
   const month = String(queueRow[1] || '').trim();
   const recordingUrl = String(queueRow[8] || '').trim();
@@ -556,7 +720,7 @@ function auditQueueItem_(queueRow, settings, apiKey, auditModel, transcriptionMo
   const ext = audioExtension_(blob.getContentType());
   blob.setName(taskId + '-' + evidenceHash.slice(0, 12) + '.' + ext);
   const evidenceFile = saveEvidenceAudio_(settings, blob, taskId, evidenceHash);
-  const transcript = transcribe_(apiKey, transcriptionModel, blob, promptText_('TRANSCRIPTION_GUIDANCE'));
+  const transcript = transcribe_(elevenLabsApiKey, transcriptionModel, blob, bytes);
   const monthly = monthlyRowByTaskId_(taskId);
   const connectedDurationMs = Math.max(0, Math.round(Number(monthly[6] || 0) * 1000));
   const recordedDurationMs = recordedDurationMs_(transcript);
@@ -568,7 +732,7 @@ function auditQueueItem_(queueRow, settings, apiKey, auditModel, transcriptionMo
     durationMismatch: durationMismatch,
   });
   const primary = validateClassification_(
-    classify_(apiKey, auditModel, promptText_('SYSTEM_CLASSIFIER'), context, 'call_audit_primary'),
+    classify_(openAiApiKey, auditModel, promptText_('SYSTEM_CLASSIFIER'), context, 'call_audit_primary'),
     blocks,
     recordedDurationMs,
     durationMismatch,
@@ -581,7 +745,7 @@ function auditQueueItem_(queueRow, settings, apiKey, auditModel, transcriptionMo
   let adjudicationStatus = 'PRIMARY_ONLY';
   {
     second = validateClassification_(
-      classify_(apiKey, auditModel, promptText_('SECOND_REVIEWER'), context, 'call_audit_second'),
+      classify_(openAiApiKey, auditModel, promptText_('SECOND_REVIEWER'), context, 'call_audit_second'),
       blocks,
       recordedDurationMs,
       durationMismatch,
@@ -595,7 +759,7 @@ function auditQueueItem_(queueRow, settings, apiKey, auditModel, transcriptionMo
       consensus.reasons[0] === 'CATEGORY_DISAGREEMENT'
     ) {
       third = validateClassification_(
-        classify_(apiKey, auditModel, promptText_('ADJUDICATOR'), context, 'call_audit_adjudicator'),
+        classify_(openAiApiKey, auditModel, promptText_('ADJUDICATOR'), context, 'call_audit_adjudicator'),
         blocks,
         recordedDurationMs,
         durationMismatch,
@@ -622,46 +786,38 @@ function auditQueueItem_(queueRow, settings, apiKey, auditModel, transcriptionMo
   return { manualReview: manualReview };
 }
 
-function transcribe_(apiKey, model, blob, guidance) {
-  const payload = {
-    model: model,
-    file: blob,
-  };
-  if (model === 'gpt-4o-transcribe-diarize') {
-    payload.response_format = 'diarized_json';
-    payload.chunking_strategy = 'auto';
-  } else if (model === 'whisper-1') {
-    payload.prompt = guidance;
-    payload.response_format = 'verbose_json';
-    payload['timestamp_granularities[]'] = 'segment';
-  } else {
+function transcribe_(apiKey, model, blob, audioBytes) {
+  if (model !== 'scribe_v2') {
     throw safeError_(
       'TIMESTAMPED_TRANSCRIPTION_REQUIRED',
-      'Use gpt-4o-transcribe-diarize or whisper-1 so billing is based on timestamped evidence',
+      'Use ElevenLabs scribe_v2 so billing is based on timestamped evidence',
       true,
       BILL_AUDIT.queueStates.manual,
     );
   }
-  const response = UrlFetchApp.fetch('https://api.openai.com/v1/audio/transcriptions', {
+  // Decode the source file itself. A final transcript timestamp is not the
+  // recording duration because it excludes trailing silence.
+  const durationSeconds = decodedAudioDurationSeconds_(blob, audioBytes);
+  // Creator-plan accounts require standard provider logging. This retention
+  // mode is an explicit operational decision; Zero Retention Mode requires an
+  // eligible ElevenLabs Enterprise workspace.
+  const response = UrlFetchApp.fetch('https://api.elevenlabs.io/v1/speech-to-text?enable_logging=true', {
     method: 'post',
-    headers: { Authorization: 'Bearer ' + apiKey },
-    payload: payload,
+    headers: { 'xi-api-key': apiKey },
+    payload: {
+      model_id: model,
+      file: blob,
+      timestamps_granularity: 'word',
+      tag_audio_events: 'true',
+      diarize: 'false',
+      no_verbatim: 'false',
+    },
     muteHttpExceptions: true,
   });
   const parsed = parseApiResponse_(response, 'TRANSCRIPTION_FAILED');
   const text = String(parsed.text || '').trim();
   if (!text) throw safeError_('TRANSCRIPT_EMPTY', 'Transcription returned no text', false);
-  const rawSegments = Array.isArray(parsed.segments) ? parsed.segments : [];
-  const segments = rawSegments.map(function(segment) {
-    return {
-      start_seconds: Number(segment.start || 0),
-      end_seconds: Number(segment.end || 0),
-      speaker: String(segment.speaker || ''),
-      text: String(segment.text || '').trim(),
-    };
-  }).filter(function(segment) {
-    return segment.text && segment.end_seconds >= segment.start_seconds;
-  });
+  const segments = segmentsFromElevenWords_(parsed.words);
   if (!segments.length) {
     throw safeError_(
       'TRANSCRIPT_TIMESTAMPS_MISSING',
@@ -672,15 +828,202 @@ function transcribe_(apiKey, model, blob, guidance) {
   }
   return {
     text: text,
-    language: String(parsed.language || 'unknown').trim().toLowerCase(),
+    provider: 'elevenlabs',
+    language: String(parsed.language_code || 'unknown').trim().toLowerCase(),
     model: model,
-    duration_seconds: Number(parsed.duration || segments[segments.length - 1].end_seconds || 0),
+    duration_seconds: durationSeconds,
     segments: segments,
     timestamped_text: segments.map(function(segment) {
       const speaker = segment.speaker ? ' ' + segment.speaker : '';
       return '[' + segment.start_seconds + '-' + segment.end_seconds + ']' + speaker + ' ' + segment.text;
     }).join('\n'),
   };
+}
+
+function segmentsFromElevenWords_(value) {
+  const words = Array.isArray(value) ? value : [];
+  const segments = [];
+  let current = null;
+  words.forEach(function(word) {
+    const type = String(word && word.type || 'word');
+    const token = String(word && word.text || '');
+    if (type === 'spacing') {
+      if (current) current.text += token;
+      return;
+    }
+    if (type !== 'word' && type !== 'audio_event') return;
+    const start = Number(word.start);
+    const end = Number(word.end);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end < start || !token.trim()) return;
+    const speaker = String(word.speaker_id || '');
+    const split = current && (
+      start - current.end_seconds >= 1 ||
+      end - current.start_seconds > 15 ||
+      current.text.length + token.length + 1 > 250 ||
+      (speaker && current.speaker && speaker !== current.speaker)
+    );
+    if (!current || split) {
+      if (current) {
+        current.text = current.text.trim();
+        if (current.text) segments.push(current);
+      }
+      current = { start_seconds: start, end_seconds: end, speaker: speaker, text: token };
+    } else {
+      if (!/\s$/.test(current.text) && !/^[,.;:!?)}\]]/.test(token)) current.text += ' ';
+      current.text += token;
+      current.end_seconds = Math.max(current.end_seconds, end);
+    }
+  });
+  if (current) {
+    current.text = current.text.trim();
+    if (current.text) segments.push(current);
+  }
+  return segments;
+}
+
+function decodedAudioDurationSeconds_(blob, suppliedBytes) {
+  const bytes = suppliedBytes && typeof suppliedBytes.length === 'number'
+    ? suppliedBytes
+    : (blob && typeof blob.getBytes === 'function' ? blob.getBytes() : []);
+  const contentType = String(blob && typeof blob.getContentType === 'function' ? blob.getContentType() : '').toLowerCase();
+  let duration = 0;
+  if (contentType.indexOf('wav') >= 0 || asciiAt_(bytes, 0, 'RIFF')) {
+    duration = wavDurationSeconds_(bytes);
+  } else if (contentType.indexOf('ogg') >= 0 || asciiAt_(bytes, 0, 'OggS')) {
+    duration = oggDurationSeconds_(bytes);
+  } else if (contentType.indexOf('mpeg') >= 0 || contentType.indexOf('mp3') >= 0 || asciiAt_(bytes, 0, 'ID3')) {
+    duration = mp3DurationSeconds_(bytes);
+  }
+  if (!Number.isFinite(duration) || duration <= 0) {
+    throw safeError_(
+      'RECORDED_DURATION_UNAVAILABLE',
+      'The recording format does not expose a trustworthy local duration; manual review is required',
+      true,
+      BILL_AUDIT.queueStates.unresolved,
+    );
+  }
+  return duration;
+}
+
+function byteAt_(bytes, index) {
+  return ((Number(bytes[index]) || 0) + 256) % 256;
+}
+
+function asciiAt_(bytes, offset, expected) {
+  if (offset < 0 || offset + expected.length > bytes.length) return false;
+  for (let index = 0; index < expected.length; index += 1) {
+    if (byteAt_(bytes, offset + index) !== expected.charCodeAt(index)) return false;
+  }
+  return true;
+}
+
+function uint16Le_(bytes, offset) {
+  return byteAt_(bytes, offset) + byteAt_(bytes, offset + 1) * 256;
+}
+
+function uint32Le_(bytes, offset) {
+  return byteAt_(bytes, offset) +
+    byteAt_(bytes, offset + 1) * 256 +
+    byteAt_(bytes, offset + 2) * 65536 +
+    byteAt_(bytes, offset + 3) * 16777216;
+}
+
+function wavDurationSeconds_(bytes) {
+  if (!asciiAt_(bytes, 0, 'RIFF') || !asciiAt_(bytes, 8, 'WAVE')) return 0;
+  let byteRate = 0;
+  let dataBytes = 0;
+  let offset = 12;
+  while (offset + 8 <= bytes.length) {
+    const size = uint32Le_(bytes, offset + 4);
+    const body = offset + 8;
+    if (size < 0 || body + size > bytes.length) return 0;
+    if (asciiAt_(bytes, offset, 'fmt ') && size >= 16) byteRate = uint32Le_(bytes, body + 8);
+    if (asciiAt_(bytes, offset, 'data')) dataBytes += size;
+    offset = body + size + (size % 2);
+  }
+  return byteRate > 0 && dataBytes > 0 ? dataBytes / byteRate : 0;
+}
+
+function oggDurationSeconds_(bytes) {
+  let sampleRate = 0;
+  let preSkip = 0;
+  let maximumGranule = 0;
+  let offset = 0;
+  while (offset + 27 <= bytes.length) {
+    if (!asciiAt_(bytes, offset, 'OggS')) return 0;
+    const segmentCount = byteAt_(bytes, offset + 26);
+    if (offset + 27 + segmentCount > bytes.length) return 0;
+    let bodySize = 0;
+    for (let index = 0; index < segmentCount; index += 1) bodySize += byteAt_(bytes, offset + 27 + index);
+    const body = offset + 27 + segmentCount;
+    if (body + bodySize > bytes.length) return 0;
+    const granuleLow = uint32Le_(bytes, offset + 6);
+    const granuleHigh = uint32Le_(bytes, offset + 10);
+    if (!(granuleLow === 4294967295 && granuleHigh === 4294967295)) {
+      maximumGranule = Math.max(maximumGranule, granuleHigh * 4294967296 + granuleLow);
+    }
+    if (!sampleRate && asciiAt_(bytes, body, 'OpusHead') && bodySize >= 12) {
+      sampleRate = 48000;
+      preSkip = uint16Le_(bytes, body + 10);
+    } else if (!sampleRate && byteAt_(bytes, body) === 1 && asciiAt_(bytes, body + 1, 'vorbis') && bodySize >= 16) {
+      sampleRate = uint32Le_(bytes, body + 12);
+    }
+    offset = body + bodySize;
+  }
+  return sampleRate > 0 && maximumGranule > preSkip ? (maximumGranule - preSkip) / sampleRate : 0;
+}
+
+function mp3DurationSeconds_(bytes) {
+  const bitrateV1 = {
+    1: [0,32,40,48,56,64,80,96,112,128,160,192,224,256,320],
+    2: [0,32,48,56,64,80,96,112,128,160,192,224,256,320,384],
+    3: [0,32,64,96,128,160,192,224,256,288,320,352,384,416,448],
+  };
+  const bitrateV2 = {
+    1: [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160],
+    2: [0,8,16,24,32,40,48,56,64,80,96,112,128,144,160],
+    3: [0,32,48,56,64,80,96,112,128,144,160,176,192,224,256],
+  };
+  let offset = 0;
+  if (asciiAt_(bytes, 0, 'ID3') && bytes.length >= 10) {
+    offset = 10 + ((byteAt_(bytes, 6) & 127) * 2097152) + ((byteAt_(bytes, 7) & 127) * 16384) +
+      ((byteAt_(bytes, 8) & 127) * 128) + (byteAt_(bytes, 9) & 127);
+    if (byteAt_(bytes, 5) & 16) offset += 10;
+  }
+  let duration = 0;
+  let frames = 0;
+  while (offset + 4 <= bytes.length) {
+    const first = byteAt_(bytes, offset);
+    const second = byteAt_(bytes, offset + 1);
+    if (first !== 255 || (second & 224) !== 224) {
+      offset += 1;
+      continue;
+    }
+    const versionBits = (second >> 3) & 3;
+    const layerBits = (second >> 1) & 3;
+    const third = byteAt_(bytes, offset + 2);
+    const bitrateIndex = (third >> 4) & 15;
+    const sampleIndex = (third >> 2) & 3;
+    if (versionBits === 1 || layerBits === 0 || bitrateIndex === 0 || bitrateIndex === 15 || sampleIndex === 3) {
+      offset += 1;
+      continue;
+    }
+    const version = versionBits === 3 ? 1 : (versionBits === 2 ? 2 : 2.5);
+    const layer = layerBits === 3 ? 3 : (layerBits === 2 ? 2 : 1);
+    const baseRates = [44100, 48000, 32000];
+    const sampleRate = baseRates[sampleIndex] / (version === 1 ? 1 : (version === 2 ? 2 : 4));
+    const bitrate = (version === 1 ? bitrateV1[layer] : bitrateV2[layer])[bitrateIndex] * 1000;
+    const padding = (third >> 1) & 1;
+    const samples = layer === 3 ? 384 : (layer === 2 ? 1152 : (version === 1 ? 1152 : 576));
+    const frameLength = layer === 3
+      ? Math.floor(12 * bitrate / sampleRate + padding) * 4
+      : Math.floor((layer === 1 && version !== 1 ? 72 : 144) * bitrate / sampleRate + padding);
+    if (!Number.isFinite(frameLength) || frameLength < 4 || offset + frameLength > bytes.length) break;
+    duration += samples / sampleRate;
+    frames += 1;
+    offset += frameLength;
+  }
+  return frames > 0 ? duration : 0;
 }
 
 function classify_(apiKey, model, instructions, input, schemaName) {
@@ -737,6 +1080,7 @@ function responseJson_(apiKey, model, instructions, input, schemaName, schema) {
     headers: { Authorization: 'Bearer ' + apiKey },
     payload: JSON.stringify({
       model: model,
+      reasoning: { effort: 'none' },
       instructions: instructions,
       input: input,
       store: false,
@@ -782,12 +1126,7 @@ function buildAuditContext_(taskId, month, queueRow, transcript, blocks, timing)
 }
 
 function recordedDurationMs_(transcript) {
-  const segments = Array.isArray(transcript.segments) ? transcript.segments : [];
-  const finalEnd = segments.reduce(function(maximum, segment) {
-    return Math.max(maximum, Math.round(Number(segment.end_seconds || 0) * 1000));
-  }, 0);
-  const declared = Math.round(Number(transcript.duration_seconds || 0) * 1000);
-  const duration = Math.max(finalEnd, declared);
+  const duration = Math.round(Number(transcript.duration_seconds || 0) * 1000);
   if (!Number.isSafeInteger(duration) || duration <= 0) {
     throw safeError_('RECORDED_DURATION_INVALID', 'Decoded recording duration is unavailable', true, BILL_AUDIT.queueStates.unresolved);
   }
@@ -1224,7 +1563,10 @@ function saveEvidenceAudio_(settings, blob, taskId, evidenceHash) {
 
 function writeEvidenceJson_(settings, taskId, evidenceHash, runId, transcript, primary, second, third, finalResult, consensus) {
   const folder = DriveApp.getFolderById(requiredSetting_(settings, 'EVIDENCE_FOLDER_ID'));
-  const name = taskId + '-' + evidenceHash.slice(0, 12) + '.audit.json';
+  // A re-audit of identical audio is a new immutable decision package. Include
+  // the run ID so switching providers never causes a prior package to be read
+  // back as the current result.
+  const name = taskId + '-' + evidenceHash.slice(0, 12) + '-' + runId + '.audit.json';
   if (folder.getFilesByName(name).hasNext()) return;
   folder.createFile(name, JSON.stringify({
     task_id: taskId,
@@ -1396,7 +1738,7 @@ function syncPendingResults() {
       const monthly = monthlyRowByTaskId_(taskId);
       const evidenceHash = String(row[21] || monthly[20] || '');
       const audit = basis === 'independent_category_service_end'
-        ? readEvidenceJson_(settings, taskId, evidenceHash)
+        ? readEvidenceJson_(settings, taskId, evidenceHash, String(monthly[19] || ''))
         : null;
       items.push({
         task_id: taskId,
@@ -1466,9 +1808,9 @@ function syncPendingResults() {
   });
 }
 
-function readEvidenceJson_(settings, taskId, evidenceHash) {
+function readEvidenceJson_(settings, taskId, evidenceHash, runId) {
   const folder = DriveApp.getFolderById(requiredSetting_(settings, 'EVIDENCE_FOLDER_ID'));
-  const name = taskId + '-' + evidenceHash.slice(0, 12) + '.audit.json';
+  const name = taskId + '-' + evidenceHash.slice(0, 12) + '-' + runId + '.audit.json';
   const files = folder.getFilesByName(name);
   if (!files.hasNext()) throw safeError_('EVIDENCE_JSON_MISSING', 'Restricted audit evidence package is missing', true, BILL_AUDIT.queueStates.unresolved);
   return JSON.parse(files.next().getBlob().getDataAsString('UTF-8'));

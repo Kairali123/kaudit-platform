@@ -11,6 +11,10 @@
     "api/monthly-report-csv.ts": {
       "maxDuration": 180,
       "includeFiles": "{apps/web/dist,src}/**"
+    },
+    "api/reconciliation-batch.ts": {
+      "maxDuration": 300,
+      "includeFiles": "{apps/web/dist,src}/**"
     }
   },
   "routes": [
@@ -18,6 +22,10 @@
     {
       "src": "/api/v1/reports/monthly.csv",
       "dest": "/api/monthly-report-csv"
+    },
+    {
+      "src": "/api/v1/reconciliation/batch",
+      "dest": "/api/reconciliation-batch"
     },
     { "src": "/(.*)", "dest": "/api" }
   ]

@@ -96,6 +96,11 @@ import {
   type GasAuditSyncRequest,
   type GasAuditSyncReceipt,
 } from '../integrations/gasAuditResultSync.ts'
+import {
+  RECONCILIATION_BATCH_ROUTE,
+  type ReconciliationBatchRequest,
+  type ReconciliationBatchReceipt,
+} from '../integrations/reconciliationBatch.ts'
 import type { RuntimeConfig } from '../config/runtime.ts'
 import {
   collectBilling,
@@ -289,6 +294,9 @@ interface Dependencies {
   gasAuditSyncRateCardId?: string
   gasAuditResultSync?: {
     sync(input: GasAuditSyncRequest): Promise<GasAuditSyncReceipt>
+  }
+  reconciliationBatch?: {
+    process(input: ReconciliationBatchRequest): Promise<ReconciliationBatchReceipt>
   }
   importAnalysis?: ImportAnalysisService
   recordingFetcher?: UrlFetcher
@@ -501,6 +509,7 @@ const USER_ADMIN_WRITE_ROUTES = new Set([
 const MAX_USER_ADMIN_BODY_BYTES = 16 * 1024
 const MAX_AUDIT_WORKER_BODY_BYTES = 2 * 1024
 const MAX_GAS_AUDIT_SYNC_BODY_BYTES = 5 * 1024 * 1024
+const MAX_RECONCILIATION_BATCH_BODY_BYTES = 64 * 1024
 
 /**
  * The two public GETs of the authorization-code browser flow.
@@ -712,13 +721,17 @@ function authenticateGasUsageImport(
 }
 
 const GAS_AUDIT_SYNC_ROUTE = '/api/v1/imports/gas-audit-results'
+const GAS_AUDIT_SYNC_ROUTES = new Set([
+  GAS_AUDIT_SYNC_ROUTE,
+  RECONCILIATION_BATCH_ROUTE,
+])
 
 function authenticateGasAuditSync(
   request: IncomingMessage,
   pathname: string,
   dependencies: Dependencies,
 ): AuthContext | null {
-  if (request.method !== 'POST' || pathname !== GAS_AUDIT_SYNC_ROUTE) {
+  if (request.method !== 'POST' || !GAS_AUDIT_SYNC_ROUTES.has(pathname)) {
     return null
   }
   const signature = requestHeaderValue(
@@ -759,7 +772,10 @@ function authenticateGasAuditSync(
       roles: ['admin'],
     },
     issuer: 'kaudit-gas-audit-sync',
-    subject: 'audit-result-sync',
+    subject:
+      pathname === RECONCILIATION_BATCH_ROUTE
+        ? 'reconciliation-batch'
+        : 'audit-result-sync',
   }
 }
 
@@ -2515,7 +2531,7 @@ export function createEnterpriseDashboardServer(
       LATE_RECORDING_WRITE_ROUTES.has(url.pathname)
     const isGasAuditSyncPost =
       request.method === 'POST' &&
-      url.pathname === GAS_AUDIT_SYNC_ROUTE
+      GAS_AUDIT_SYNC_ROUTES.has(url.pathname)
     if (
       request.method === 'GET' &&
       (IMPORT_WRITE_ROUTES.has(url.pathname) ||
@@ -2635,7 +2651,7 @@ export function createEnterpriseDashboardServer(
       IMPORT_WRITE_ROUTES.has(url.pathname) ||
       IMPORT_ANALYSIS_ROUTES.has(url.pathname) ||
       LATE_RECORDING_WRITE_ROUTES.has(url.pathname) ||
-      url.pathname === GAS_AUDIT_SYNC_ROUTE ||
+      GAS_AUDIT_SYNC_ROUTES.has(url.pathname) ||
       MONTHLY_REPORT_DOWNLOADS.has(url.pathname) ||
       url.pathname === RESTRICTED_EXPORT_ROUTE ||
       APP_ROUTES.has(url.pathname) ||
@@ -3504,6 +3520,70 @@ export function createEnterpriseDashboardServer(
           'audit_operations',
         )
         if (committing) apiCache.clear()
+        sendJson(response, correlation, receipt)
+        return
+      }
+      if (
+        request.method === 'POST' &&
+        url.pathname === RECONCILIATION_BATCH_ROUTE
+      ) {
+        requirePermission(context, 'import:write')
+        if (context.issuer !== 'kaudit-gas-audit-sync') {
+          throw new AuthFailure(
+            401,
+            'AUTH_INVALID',
+            'Authentication token is invalid',
+          )
+        }
+        if (!dependencies.reconciliationBatch) {
+          throw Object.assign(new Error('Reconciliation is unavailable'), {
+            code: 'RECONCILIATION_NOT_CONFIGURED',
+            status: 503,
+          })
+        }
+        const bytes = await readRequestBody(
+          request,
+          MAX_RECONCILIATION_BATCH_BODY_BYTES,
+        )
+        const bodySha256 = requestHeaderValue(
+          request,
+          'x-kaudit-content-sha256',
+        )
+        if (sha256Hex(bytes) !== bodySha256) {
+          throw new AuthFailure(
+            401,
+            'AUTH_INVALID',
+            'Authentication token is invalid',
+          )
+        }
+        let body: unknown
+        try {
+          body = JSON.parse(bytes.toString('utf8'))
+        } catch {
+          throw Object.assign(new Error('Reconciliation JSON is invalid'), {
+            code: 'INVALID_RECONCILIATION_BATCH',
+            status: 400,
+          })
+        }
+        const receipt = await dependencies.reconciliationBatch.process({
+          batchId: requestHeaderValue(request, 'x-kaudit-batch-id'),
+          billMonth: requestHeaderValue(request, 'x-kaudit-bill-month'),
+          bodySha256,
+          body,
+          correlationId: correlation,
+        })
+        await auditAccess(
+          dependencies,
+          request,
+          context,
+          correlation,
+          'success',
+          'reconciliation.batch',
+          'billing_cycle',
+          requestHeaderValue(request, 'x-kaudit-bill-month'),
+          'audit_operations',
+        )
+        apiCache.clear()
         sendJson(response, correlation, receipt)
         return
       }

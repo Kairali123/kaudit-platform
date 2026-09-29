@@ -33,6 +33,7 @@ const VERCEL = JSON.parse(VERCEL_JSON_TEXT) as {
 }
 const API_ENTRY = read('api/index.ts')
 const CSV_ENTRY = read('api/monthly-report-csv.ts')
+const RECONCILIATION_ENTRY = read('api/reconciliation-batch.ts')
 const FUNCTION_SOURCE = read('src/vercel/dashboardFunction.ts')
 const ADAPTER_SOURCE = read('src/vercel/serverlessAdapter.ts')
 const PACKAGE = JSON.parse(read('package.json')) as {
@@ -50,6 +51,7 @@ function code(source: string): string {
 
 const API_ENTRY_CODE = code(API_ENTRY)
 const CSV_ENTRY_CODE = code(CSV_ENTRY)
+const RECONCILIATION_ENTRY_CODE = code(RECONCILIATION_ENTRY)
 const FUNCTION_CODE = code(FUNCTION_SOURCE)
 
 function routes(): Array<{ src: string; dest?: string }> {
@@ -73,7 +75,13 @@ test('only Vite hashed assets are served without the function', () => {
     const isCsvExport =
       route.src === '/api/v1/reports/monthly.csv' &&
       route.dest === '/api/monthly-report-csv'
-    assert.ok(isAsset || isCsvExport, 'every route must reach a reviewed edge')
+    const isReconciliationBatch =
+      route.src === '/api/v1/reconciliation/batch' &&
+      route.dest === '/api/reconciliation-batch'
+    assert.ok(
+      isAsset || isCsvExport || isReconciliationBatch,
+      'every route must reach a reviewed edge',
+    )
   }
 })
 
@@ -160,7 +168,7 @@ test('the function duration is sized for a web request, not a batch', () => {
   assert.ok(maxDuration >= 5)
 })
 
-test('only the streamed monthly CSV has an extended request window', () => {
+test('the streamed monthly CSV has its bounded extended request window', () => {
   const fn = VERCEL.functions?.['api/monthly-report-csv.ts']
   assert.ok(fn, 'the monthly CSV function must be configured')
   assert.equal(fn.maxDuration, 180)
@@ -170,6 +178,19 @@ test('only the streamed monthly CSV has an extended request window', () => {
   assert.match(CSV_ENTRY_CODE, /\/api\/v1\/reports\/monthly\.csv/)
   for (const forbidden of [/audit:worker/, /callaudit:worker/, /listen\(/]) {
     assert.doesNotMatch(CSV_ENTRY_CODE, forbidden)
+  }
+})
+
+test('the 1–3 item reconciliation endpoint has a dedicated bounded window', () => {
+  const fn = VERCEL.functions?.['api/reconciliation-batch.ts']
+  assert.ok(fn, 'the reconciliation function must be configured')
+  assert.equal(fn.maxDuration, 300)
+  assert.match(String(fn.includeFiles), /apps\/web\/dist/)
+  assert.match(String(fn.includeFiles), /(^|[{,/])src([},/]|$)/)
+  assert.match(RECONCILIATION_ENTRY_CODE, /createVercelDashboardHandler/)
+  assert.match(RECONCILIATION_ENTRY_CODE, /\/api\/v1\/reconciliation\/batch/)
+  for (const forbidden of [/audit:worker/, /callaudit:worker/, /listen\(/]) {
+    assert.doesNotMatch(RECONCILIATION_ENTRY_CODE, forbidden)
   }
 })
 

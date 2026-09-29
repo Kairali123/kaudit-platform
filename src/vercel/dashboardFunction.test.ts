@@ -28,7 +28,8 @@ function syntheticRuntime(): DashboardRuntime {
       callAuditRuleTest: false,
       recordingProxy: false,
       oidcBrowserFlow: false,
-    restrictedExport: false,
+      reconciliationBatches: false,
+      restrictedExport: false,
     },
   }
 }

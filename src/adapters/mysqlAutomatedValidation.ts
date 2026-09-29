@@ -96,6 +96,25 @@ function blockNumbers(value: unknown): number[] {
     : []
 }
 
+function primaryModelReference(
+  signals: Record<string, unknown>,
+): ModelClassification['model'] {
+  const raw = signals.model
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const model = raw as Record<string, unknown>
+    const name = typeof model.name === 'string' ? model.name : ''
+    const version = typeof model.version === 'string' ? model.version : ''
+    if (model.provider === 'openai' && name && version) {
+      return { provider: 'openai', name, version }
+    }
+  }
+  return {
+    provider: 'openai',
+    name: 'gpt-4o-mini-2024-07-18',
+    version: 'gpt-4o-mini-2024-07-18',
+  }
+}
+
 /**
  * The persisted primary's AGENT_FAILURE facts, re-derived rather than trusted.
  *
@@ -229,12 +248,32 @@ export async function collectAutomatedValidationCandidates(
      * array selects nothing rather than everything.
      */
     callIds?: readonly string[]
+    /** Intentional reconciliation re-audits supersede a current calculation. */
+    allowExistingCalculation?: boolean
   },
 ): Promise<AutomatedValidationCandidate[]> {
   if (options.callIds?.length === 0) return []
   const callScope = options.callIds
     ? ` AND c.id IN (${options.callIds.map(() => '?').join(',')})`
     : ''
+  const currentCalculationScope = options.allowExistingCalculation
+    ? ''
+    : `
+       AND NOT EXISTS (
+         SELECT 1
+         FROM kaudit_billing_calculation calculation
+         WHERE calculation.call_id = c.id
+           AND calculation.status = 'final'
+          AND calculation.calculation_basis IN (
+                'independent_conversation_end',
+                'independent_category_service_end'
+              )
+           AND NOT EXISTS (
+             SELECT 1
+             FROM kaudit_billing_calculation newer
+             WHERE newer.supersedes_calculation_id = calculation.id
+           )
+       )`
   const [rows] = await pool.execute<CandidateRow[]>(
     `SELECT
        c.id AS call_id,
@@ -287,21 +326,7 @@ export async function collectAutomatedValidationCandidates(
       AND vendor_minutes.is_final = 1
      WHERE c.billing_period_date BETWEEN ? AND ?${callScope}
        AND c.latest_audit_run_id IS NOT NULL
-       AND NOT EXISTS (
-         SELECT 1
-         FROM kaudit_billing_calculation calculation
-         WHERE calculation.call_id = c.id
-           AND calculation.status = 'final'
-          AND calculation.calculation_basis IN (
-                'independent_conversation_end',
-                'independent_category_service_end'
-              )
-           AND NOT EXISTS (
-             SELECT 1
-             FROM kaudit_billing_calculation newer
-             WHERE newer.supersedes_calculation_id = calculation.id
-           )
-       )
+       ${currentCalculationScope}
        AND t.id = (
          SELECT latest_t.id
          FROM kaudit_transcript latest_t
@@ -332,6 +357,7 @@ export async function collectAutomatedValidationCandidates(
   const result: AutomatedValidationCandidate[] = []
   for (const row of rows) {
     const metrics = metricsRecord(row.metrics_json)
+    const signals = metricsRecord(row.signal_values_json)
     const serviceEndMs = optionalMs(metrics.chargeableServiceEndMs)
     const [segmentRows] = await pool.execute<SegmentRow[]>(
       `SELECT start_ms, end_ms, text
@@ -367,11 +393,7 @@ export async function collectAutomatedValidationCandidates(
           ? null
           : Number(row.claimed_duration_ms),
       primary: {
-        model: {
-          provider: 'openai',
-          name: 'gpt-4o-mini-2024-07-18',
-          version: 'gpt-4o-mini-2024-07-18',
-        },
+        model: primaryModelReference(signals),
         category: row.category,
         confidence: row.confidence,
         customerBlockNumbers: [],
@@ -395,7 +417,7 @@ export async function collectAutomatedValidationCandidates(
         ...persistedAgentFailureFacts({
           category: row.category,
           metrics,
-          signals: metricsRecord(row.signal_values_json),
+          signals,
           segments,
           recordedDurationMs,
         }),

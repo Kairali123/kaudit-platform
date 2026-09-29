@@ -59,6 +59,7 @@ export type OptionalFeatureId =
   | 'recordingProxy'
   | 'oidcBrowserFlow'
   | 'gasAuditSync'
+  | 'reconciliationBatches'
   | 'auditWorkerDispatch'
   | 'persistentAuditWorkers'
 
@@ -104,6 +105,7 @@ export const PREFLIGHT_CHECKS = [
   'google-drive-import-storage',
   'gas-usage-import-auth',
   'gas-audit-result-sync',
+  'reconciliation-batches',
   'call-audit-rule-test',
   'recording-proxy',
   'audit-worker-dispatch',
@@ -189,6 +191,10 @@ export const REPORTABLE_VARIABLES: readonly string[] = Object.freeze([
   'KAUDIT_GAS_IMPORT_SECRET',
   'KAUDIT_GAS_AUDIT_SYNC_SECRET',
   'KAUDIT_GAS_AUDIT_SYNC_RATE_CARD_ID',
+  'KAUDIT_RECONCILIATION_ENABLED',
+  'KAUDIT_TRANSCRIPTION_PROVIDER',
+  'ELEVENLABS_API_KEY',
+  'KAUDIT_ELEVENLABS_ENABLE_LOGGING',
   'KAUDIT_CALL_AUDIT_RULE_TEST_ENABLED',
   'KAUDIT_UNPOD_PROXY_BASE',
   'KAUDIT_ALLOWED_RECORDING_HOSTS',
@@ -455,6 +461,34 @@ export function evaluateVercelReleasePreflight(
       fail('FEATURE_CONFIG_INCOMPLETE', ...invalid)
     } else {
       optionalFeatures.push('gasAuditSync')
+    }
+  }
+
+  const reconciliationFlag =
+    env.KAUDIT_RECONCILIATION_ENABLED?.trim().toLowerCase()
+  if (
+    reconciliationFlag &&
+    reconciliationFlag !== 'true' &&
+    reconciliationFlag !== 'false'
+  ) {
+    fail('FEATURE_FLAG_INVALID', 'KAUDIT_RECONCILIATION_ENABLED')
+  } else if (reconciliationFlag === 'true') {
+    const transcriptionProvider =
+      env.KAUDIT_TRANSCRIPTION_PROVIDER?.trim().toLowerCase() || 'elevenlabs'
+    const required = [
+      'KAUDIT_GAS_AUDIT_SYNC_SECRET',
+      'KAUDIT_GAS_AUDIT_SYNC_RATE_CARD_ID',
+      'KAUDIT_UNPOD_PROXY_BASE',
+      'KAUDIT_ALLOWED_RECORDING_HOSTS',
+      'OPENAI_API_KEY',
+      ...(transcriptionProvider === 'elevenlabs' ? ['ELEVENLABS_API_KEY'] : []),
+    ].filter((name) => !set(env, name))
+    if (!['elevenlabs', 'openai'].includes(transcriptionProvider)) {
+      fail('FEATURE_CONFIG_INCOMPLETE', 'KAUDIT_TRANSCRIPTION_PROVIDER')
+    } else if (required.length > 0) {
+      fail('FEATURE_CONFIG_INCOMPLETE', ...required)
+    } else {
+      optionalFeatures.push('reconciliationBatches')
     }
   }
 

@@ -4,7 +4,7 @@ import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.t
 import { createMysqlReauditReadRepo } from '../adapters/mysqlReauditReadRepo.ts'
 import { createMysqlManualReauditCandidateRepository } from '../adapters/mysqlManualReauditQueue.ts'
 import { createMysqlReauditWriteRepo } from '../adapters/mysqlReauditWriteRepo.ts'
-import { createOpenAiReaudit } from '../adapters/openaiReaudit.ts'
+import { createConfiguredReauditAi } from '../adapters/configuredReaudit.ts'
 import { createMysqlAuditWorkerControl } from '../adapters/mysqlAuditWorkerControl.ts'
 import { createMysqlBillingSpendGuard } from '../adapters/mysqlBillingSpendLease.ts'
 import { tagPoolAcquisitionFailures } from '../adapters/mysqlPoolAcquisition.ts'
@@ -309,7 +309,7 @@ async function main(): Promise<void> {
     const fetcher = createProxyResolvingFetcher(
       required('KAUDIT_UNPOD_PROXY_BASE'),
     )
-    const ai = createOpenAiReaudit(required('OPENAI_API_KEY'))
+    const ai = createConfiguredReauditAi(process.env)
     let completed = 0
     let selected = 0
     let failedOutcomes = 0

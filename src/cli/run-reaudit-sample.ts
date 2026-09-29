@@ -1,7 +1,7 @@
 import mysql from 'mysql2/promise'
 import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.ts'
 import { createMysqlReauditReadRepo } from '../adapters/mysqlReauditReadRepo.ts'
-import { createOpenAiReaudit } from '../adapters/openaiReaudit.ts'
+import { createConfiguredReauditAi } from '../adapters/configuredReaudit.ts'
 import { auditOneCall } from '../reaudit/core.ts'
 
 function required(name: string): string {
@@ -42,7 +42,7 @@ async function main(): Promise<void> {
     const fetcher = createProxyResolvingFetcher(
       required('KAUDIT_UNPOD_PROXY_BASE'),
     )
-    const ai = createOpenAiReaudit(required('OPENAI_API_KEY'))
+    const ai = createConfiguredReauditAi(process.env)
     const counts: Record<string, number> = {}
     const categories: Record<string, number> = {}
     const languages: Record<string, number> = {}

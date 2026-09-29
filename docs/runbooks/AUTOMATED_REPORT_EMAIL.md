@@ -110,8 +110,8 @@ Migration `0007_ai_usage_telemetry.sql` enables append-only usage capture:
 
 - GPT classification passes: exact input, output, and total tokens returned by
   OpenAI;
-- Whisper-1: exact billed audio seconds returned by OpenAI (Whisper does not
-  report text-token usage for this API response); and
+- ElevenLabs Scribe v2: audio seconds derived from the independently decoded
+  recording duration (the provider bills speech-to-text by audio duration); and
 - model/provider/version, operation/pass, audit run, call, request id, and
   timestamp.
 

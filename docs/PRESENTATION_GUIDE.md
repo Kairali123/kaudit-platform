@@ -199,20 +199,20 @@ Possible evidence outcomes:
 
 ### Stage 5 — Transcribe the call
 
-The current auditor sends the audio to OpenAI Whisper:
+The current auditor sends the audio to ElevenLabs Speech to Text:
 
-- provider: `openai`;
-- model: `whisper-1`;
-- output: verbose JSON with segment timestamps;
+- provider: `elevenlabs`;
+- model: `scribe_v2`;
+- output: word timestamps normalized into stable segments;
 - detected language: normalized to lower case;
-- recorded duration: decoded duration reported by Whisper;
+- recorded duration: decoded locally from the exact fetched audio bytes;
 - speech duration: sum of transcript segment durations.
 
 The raw transcript is not displayed in the aggregate dashboard.
 
 ### Stage 6 — Merge transcript segments into natural blocks
 
-Whisper segments are merged into numbered speech blocks. A new block starts
+Scribe timestamp segments are merged into numbered speech blocks. A new block starts
 when any of these is true:
 
 - the pause from the previous block is at least **1,000 ms**;
@@ -227,11 +227,12 @@ This produces a concise timestamped structure such as:
 #3 [9.5–14.2] Saanvi follow-up...
 ```
 
-No speaker labels are supplied by Whisper in this flow.
+Speaker labels are deliberately not trusted as billing evidence in this flow;
+the classifier attributes Saanvi and customer blocks from conversational context.
 
 ### Stage 7 — Classify the conversation
 
-`gpt-4o-mini-2024-07-18` receives:
+`gpt-6-luna` receives:
 
 - detected language;
 - vendor connected duration, when available;
@@ -383,7 +384,7 @@ reason label; it is not a price multiplier.
 
 ### Language
 
-The language detected by Whisper, for example `english`, `hindi`,
+The language detected by Scribe v2, for example `eng`, `hin`,
 `malayalam`, or another returned value.
 
 This matters because model performance can differ by language and
@@ -410,14 +411,14 @@ human-labeled calibration set.
 The independently decoded recording duration:
 
 ```text
-recordedDurationMs = Whisper/decoder duration of the fetched audio bytes
+recordedDurationMs = local decoder duration of the fetched audio bytes
 ```
 
 This is not taken from KServe's spreadsheet.
 
 ### Speech
 
-The sum of the durations of timestamped Whisper segments:
+The sum of the durations of normalized timestamped Scribe segments:
 
 ```text
 speechDurationMs =
@@ -541,7 +542,7 @@ the vendor-hosted file will remain available forever.
 
 ### Model / engine
 
-The main label is the ASR model, currently `whisper-1`.
+The main label is the ASR model, currently `scribe_v2`.
 
 The secondary label is the audit-engine or outcome-taxonomy version, for
 example:
@@ -576,8 +577,8 @@ not live yet.
 | Vendor connected duration | KServe's answer-to-end claim | CSV `Duration (Seconds) Without Ringing` |
 | Vendor billed minutes | KServe's task-level minute quantity | CSV `Duration (Minutes) - Actual Billing Mins` |
 | Vendor billed amount | KServe's task-level money claim | CSV `Actual Billing Amount` |
-| Recorded duration | Length of fetched and decoded audio | Independent Whisper/decoder output |
-| Speech duration | Sum of timestamped speech segments | Whisper timestamps |
+| Recorded duration | Length of fetched and decoded audio | Independent local decoder output |
+| Speech duration | Sum of timestamped speech segments | Scribe v2 timestamps |
 | Customer speech | Sum of blocks attributed to customer | Classifier speaker attribution |
 | Agent speech | Sum of non-customer, non-unclear blocks | Classifier speaker attribution |
 | Customer end | End timestamp of last meaningful customer exchange | Classifier |
@@ -652,7 +653,7 @@ The persistent worker also creates infrastructure findings:
 | `SOURCE_MISSING` | Recording cannot be fetched | Retried until attempt limit |
 | `EVIDENCE_ALTERED` | Current bytes do not match baseline SHA-256 | Terminal, visible finding |
 | `UNSAFE_SOURCE_URL` | URL violates approved-source policy | Terminal, visible finding |
-| `TRANSCRIPTION_FAILED` | Whisper processing failed | Retried |
+| `TRANSCRIPTION_FAILED` | Speech-to-text processing failed | Retried |
 | `CLASSIFICATION_FAILED` | Structured classification failed | Retried |
 
 A call with no recording URL is retained as an explicitly unauditable call; it
@@ -1350,7 +1351,7 @@ Use the Audit Monitor's strict count when presenting “AI-audited calls.”
 - AI-assisted editable invoice extraction;
 - SQL normalization and file/task deduplication;
 - KServe URL retrieval and SHA-256 verification;
-- Whisper timestamp transcription;
+- ElevenLabs Scribe v2 timestamp transcription;
 - 12-category GPT classification;
 - conversation-end and 60-second grace calculation;
 - persistent skip-completed worker with retries;
@@ -1395,7 +1396,7 @@ Current intentional overrides:
 - no K2/K3-specific processing barrier;
 - Kairali-only single-company application, not multi-tenant;
 - vendor-hosted recording URLs instead of independent Kairali object storage;
-- OpenAI Whisper/GPT data flow approved by leadership.
+- ElevenLabs Scribe/OpenAI GPT data flow approved by leadership.
 
 Controls that were **not** removed:
 
@@ -1458,7 +1459,7 @@ Show vendor claim → independent evidence → contractual result.
 CSV + invoice
 → SQL ingestion
 → recording retrieval + hash
-→ Whisper transcript
+→ Scribe v2 transcript
 → GPT category/customer end
 → 60-second grace
 → deterministic rate/rounding

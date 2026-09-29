@@ -923,6 +923,176 @@ export function projectVerifiedCharge(
   }
 }
 
+export async function auditTranscriptEvidence(options: {
+  candidate: ReauditCandidate
+  classifier: Pick<ReauditAi, 'classify'>
+  transcript: TranscriptionResult
+  evidenceSha256: string
+  reusedTranscriptId?: string
+}): Promise<ReauditItemResult> {
+  const {
+    candidate,
+    classifier,
+    transcript,
+    evidenceSha256,
+    reusedTranscriptId,
+  } = options
+  const durationMismatch =
+    candidate.connectedDurationMs != null &&
+    Math.abs(candidate.connectedDurationMs - transcript.durationMs) >
+      DURATION_TOLERANCE_MS
+
+  let analysis: ReauditAnalysis
+  let modelClassification: ModelClassification | null = null
+  if (transcript.segments.length === 0 || !transcript.text.trim()) {
+    const categoryCharge = resolveCategoryCharge({
+      category: 'INACTIVE_CALL',
+      recordedDurationMs: transcript.durationMs,
+      lastCustomerExchangeMs: null,
+      lastAgentExchangeMs: null,
+      lastVoicemailExchangeMs: null,
+      lastBusinessRelevantCustomerExchangeMs: null,
+      lastVerifiedInteractionMs: null,
+    })
+    analysis = {
+      category: 'INACTIVE_CALL',
+      confidence: '1.00000000',
+      language: transcript.language || 'unknown',
+      recordedDurationMs: transcript.durationMs,
+      speechDurationMs: transcript.speechMs,
+      conversationAssessment: 'no_meaningful_exchange',
+      lastMeaningfulCustomerExchangeMs: null,
+      customerSpeechMs: 0,
+      agentSpeechMs: 0,
+      chargeableServiceEndMs: categoryCharge.serviceEndMs,
+      appliedBillingGraceMs: categoryCharge.graceMs,
+      categoryChargePolicyCode: categoryCharge.policyCode,
+      durationMismatch,
+      evidenceSha256,
+      remarks: 'No detectable speech; no independently verified conversation.',
+      disputeRecommended:
+        (candidate.connectedDurationMs ?? candidate.claimedDurationMs ?? 0) > 0,
+    }
+  } else {
+    const blocks = mergeTranscriptSegments(transcript.segments)
+    let rawClassification: ModelClassification
+    try {
+      rawClassification = await classifier.classify({
+        blocks,
+        language: transcript.language || 'unknown',
+        recordedDurationMs: transcript.durationMs,
+        speechDurationMs: transcript.speechMs,
+        connectedDurationMs: candidate.connectedDurationMs,
+        durationMismatch,
+      })
+    } catch (error) {
+      return {
+        callId: candidate.callId,
+        artifactId: candidate.artifactId,
+        outcome: 'classification_failed',
+        errorCode: providerFailureCode('CLASSIFICATION', error) ??
+          'CLASSIFICATION_MODEL_FAILED',
+      }
+    }
+    let classification: ModelClassification
+    try {
+      classification = validateClassification(
+        rawClassification,
+        blocks,
+        transcript.durationMs,
+        { durationMismatch },
+      )
+    } catch {
+      try {
+        classification = validateClassification(
+          repairClassification(rawClassification, blocks, {
+            durationMismatch,
+          }),
+          blocks,
+          transcript.durationMs,
+          { durationMismatch },
+        )
+      } catch {
+        return {
+          callId: candidate.callId,
+          artifactId: candidate.artifactId,
+          outcome: 'classification_failed',
+          errorCode: 'CLASSIFICATION_OUTPUT_UNRECOVERABLE',
+        }
+      }
+    }
+    modelClassification = classification
+    const roleSpeech = speechByRole(blocks, classification)
+    const categoryCharge = resolveCategoryCharge({
+      category: classification.category,
+      recordedDurationMs: transcript.durationMs,
+      lastCustomerExchangeMs:
+        classification.lastMeaningfulCustomerExchangeMs,
+      lastAgentExchangeMs:
+        classification.lastMeaningfulAgentExchangeMs ?? null,
+      lastVoicemailExchangeMs:
+        classification.lastVoicemailExchangeMs ?? null,
+      lastBusinessRelevantCustomerExchangeMs:
+        classification.lastBusinessRelevantCustomerExchangeMs ?? null,
+      lastVerifiedInteractionMs:
+        classification.lastVerifiedInteractionMs ?? null,
+      agentFailureMode: classification.agentFailureMode ?? null,
+      meaningfulServiceBeforeFailure:
+        classification.meaningfulServiceBeforeFailure === true,
+      failureStartMs: classification.failureStartMs ?? null,
+    })
+    analysis = {
+      category: classification.category,
+      confidence: classification.confidence,
+      language: transcript.language || 'unknown',
+      recordedDurationMs: transcript.durationMs,
+      speechDurationMs: transcript.speechMs,
+      conversationAssessment: classification.customerSpoke
+        ? 'established'
+        : 'no_meaningful_exchange',
+      lastMeaningfulCustomerExchangeMs:
+        classification.lastMeaningfulCustomerExchangeMs,
+      ...roleSpeech,
+      chargeableServiceEndMs: categoryCharge.serviceEndMs,
+      appliedBillingGraceMs: categoryCharge.graceMs,
+      categoryChargePolicyCode: categoryCharge.policyCode,
+      durationMismatch,
+      evidenceSha256,
+      remarks: classification.remarks,
+      disputeRecommended: classification.disputeRecommended,
+    }
+  }
+
+  return {
+    callId: candidate.callId,
+    artifactId: candidate.artifactId,
+    outcome: 'projected',
+    analysis,
+    transcription: transcript,
+    classification:
+      transcript.segments.length === 0 || !transcript.text.trim()
+        ? {
+            model: {
+              provider: 'openai',
+              name: 'deterministic-no-speech',
+              version: REAUDIT_ENGINE_VERSION,
+            },
+            category: 'INACTIVE_CALL',
+            confidence: '1.00000000',
+            customerBlockNumbers: [],
+            unclearBlockNumbers: [],
+            agentBlockNumbers: [],
+            customerSpoke: false,
+            lastMeaningfulCustomerExchangeMs: null,
+            remarks: analysis.remarks,
+            disputeRecommended: analysis.disputeRecommended,
+          }
+        : (modelClassification as ModelClassification),
+    projection: projectVerifiedCharge(analysis),
+    ...(reusedTranscriptId ? { reusedTranscriptId } : {}),
+  }
+}
+
 export async function auditOneCall(options: {
   candidate: ReauditCandidate
   fetcher: UrlFetcher
@@ -1021,159 +1191,10 @@ export async function auditOneCall(options: {
       // audit.
     }
   }
-  const durationMismatch =
-    candidate.connectedDurationMs != null &&
-    Math.abs(candidate.connectedDurationMs - transcript.durationMs) >
-      DURATION_TOLERANCE_MS
-
-  let analysis: ReauditAnalysis
-  let modelClassification: ModelClassification | null = null
-  if (transcript.segments.length === 0 || !transcript.text.trim()) {
-    const categoryCharge = resolveCategoryCharge({
-      category: 'INACTIVE_CALL',
-      recordedDurationMs: transcript.durationMs,
-      lastCustomerExchangeMs: null,
-      lastAgentExchangeMs: null,
-      lastVoicemailExchangeMs: null,
-      lastBusinessRelevantCustomerExchangeMs: null,
-      lastVerifiedInteractionMs: null,
-    })
-    analysis = {
-      category: 'INACTIVE_CALL',
-      confidence: '1.00000000',
-      language: transcript.language || 'unknown',
-      recordedDurationMs: transcript.durationMs,
-      speechDurationMs: transcript.speechMs,
-      conversationAssessment: 'no_meaningful_exchange',
-      lastMeaningfulCustomerExchangeMs: null,
-      customerSpeechMs: 0,
-      agentSpeechMs: 0,
-      chargeableServiceEndMs: categoryCharge.serviceEndMs,
-      appliedBillingGraceMs: categoryCharge.graceMs,
-      categoryChargePolicyCode: categoryCharge.policyCode,
-      durationMismatch,
-      evidenceSha256,
-      remarks: 'No detectable speech; no independently verified conversation.',
-      disputeRecommended:
-        (candidate.connectedDurationMs ?? candidate.claimedDurationMs ?? 0) > 0,
-    }
-  } else {
-    const blocks = mergeTranscriptSegments(transcript.segments)
-    let rawClassification: ModelClassification
-    try {
-      rawClassification = await ai.classify({
-        blocks,
-        language: transcript.language || 'unknown',
-        recordedDurationMs: transcript.durationMs,
-        speechDurationMs: transcript.speechMs,
-        connectedDurationMs: candidate.connectedDurationMs,
-        durationMismatch,
-      })
-    } catch (error) {
-      return {
-        callId: candidate.callId,
-        artifactId: candidate.artifactId,
-        outcome: 'classification_failed',
-        errorCode: providerFailureCode('CLASSIFICATION', error) ??
-          'CLASSIFICATION_MODEL_FAILED',
-      }
-    }
-    let classification: ModelClassification
-    try {
-      classification = validateClassification(
-        rawClassification,
-        blocks,
-        transcript.durationMs,
-        { durationMismatch },
-      )
-    } catch {
-      try {
-        classification = validateClassification(
-          repairClassification(rawClassification, blocks, {
-            durationMismatch,
-          }),
-          blocks,
-          transcript.durationMs,
-          { durationMismatch },
-        )
-      } catch {
-        return {
-          callId: candidate.callId,
-          artifactId: candidate.artifactId,
-          outcome: 'classification_failed',
-          errorCode: 'CLASSIFICATION_OUTPUT_UNRECOVERABLE',
-        }
-      }
-    }
-    modelClassification = classification
-    const roleSpeech = speechByRole(blocks, classification)
-    const categoryCharge = resolveCategoryCharge({
-      category: classification.category,
-      recordedDurationMs: transcript.durationMs,
-      lastCustomerExchangeMs:
-        classification.lastMeaningfulCustomerExchangeMs,
-      lastAgentExchangeMs:
-        classification.lastMeaningfulAgentExchangeMs ?? null,
-      lastVoicemailExchangeMs:
-        classification.lastVoicemailExchangeMs ?? null,
-      lastBusinessRelevantCustomerExchangeMs:
-        classification.lastBusinessRelevantCustomerExchangeMs ?? null,
-      lastVerifiedInteractionMs:
-        classification.lastVerifiedInteractionMs ?? null,
-      // Engine-decided, never the model's claim. The policy still fails closed
-      // on its own if any of the three contradict each other.
-      agentFailureMode: classification.agentFailureMode ?? null,
-      meaningfulServiceBeforeFailure:
-        classification.meaningfulServiceBeforeFailure === true,
-      failureStartMs: classification.failureStartMs ?? null,
-    })
-    analysis = {
-      category: classification.category,
-      confidence: classification.confidence,
-      language: transcript.language || 'unknown',
-      recordedDurationMs: transcript.durationMs,
-      speechDurationMs: transcript.speechMs,
-      conversationAssessment: classification.customerSpoke
-        ? 'established'
-        : 'no_meaningful_exchange',
-      lastMeaningfulCustomerExchangeMs:
-        classification.lastMeaningfulCustomerExchangeMs,
-      ...roleSpeech,
-      chargeableServiceEndMs: categoryCharge.serviceEndMs,
-      appliedBillingGraceMs: categoryCharge.graceMs,
-      categoryChargePolicyCode: categoryCharge.policyCode,
-      durationMismatch,
-      evidenceSha256,
-      remarks: classification.remarks,
-      disputeRecommended: classification.disputeRecommended,
-    }
-  }
-
-  return {
-    callId: candidate.callId,
-    artifactId: candidate.artifactId,
-    outcome: 'projected',
-    analysis,
-    transcription: transcript,
-    classification:
-      transcript.segments.length === 0 || !transcript.text.trim()
-        ? {
-            model: {
-              provider: 'openai',
-              name: 'deterministic-no-speech',
-              version: REAUDIT_ENGINE_VERSION,
-            },
-            category: 'INACTIVE_CALL',
-            confidence: '1.00000000',
-            customerBlockNumbers: [],
-            unclearBlockNumbers: [],
-            agentBlockNumbers: [],
-            customerSpoke: false,
-            lastMeaningfulCustomerExchangeMs: null,
-            remarks: analysis.remarks,
-            disputeRecommended: analysis.disputeRecommended,
-          }
-        : (modelClassification as ModelClassification),
-    projection: projectVerifiedCharge(analysis),
-  }
+  return auditTranscriptEvidence({
+    candidate,
+    classifier: ai,
+    transcript,
+    evidenceSha256,
+  })
 }

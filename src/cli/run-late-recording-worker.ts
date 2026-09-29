@@ -1,6 +1,7 @@
 import mysql, { type RowDataPacket } from 'mysql2/promise'
 import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.ts'
 import { createMysqlReauditWriteRepo } from '../adapters/mysqlReauditWriteRepo.ts'
+import { createConfiguredReauditAi } from '../adapters/configuredReaudit.ts'
 import { createOpenAiReaudit } from '../adapters/openaiReaudit.ts'
 import { createMysqlBillingSpendGuard } from '../adapters/mysqlBillingSpendLease.ts'
 import { createMysqlTranscriptionCache } from '../adapters/mysqlTranscriptionCache.ts'
@@ -433,7 +434,7 @@ async function main(): Promise<void> {
     const fetcher = createProxyResolvingFetcher(
       required('KAUDIT_UNPOD_PROXY_BASE'),
     )
-    const ai = createOpenAiReaudit(required('OPENAI_API_KEY'))
+    const ai = createConfiguredReauditAi(process.env)
     // The second and third opinions of the approved validation policy. The
     // adjudicator is the primary classifier re-run, exactly as the month-wide
     // validation runner uses it.

@@ -108,7 +108,7 @@ test('database auth may retain dormant OIDC settings for one-variable rollback',
 test('success output is a small fixed JSON object', () => {
   assert.equal(
     formatPreflightReport(evaluate(productionEnv())),
-    '{"preflight":"vercel-release","result":"pass","checks":17,"optionalFeatures":[]}',
+    '{"preflight":"vercel-release","result":"pass","checks":18,"optionalFeatures":[]}',
   )
 })
 
@@ -554,6 +554,55 @@ test('GAS audit sync is enabled only with its secret and rate card together', ()
     variablesFor(incomplete, 'FEATURE_CONFIG_INCOMPLETE'),
     ['KAUDIT_GAS_AUDIT_SYNC_RATE_CARD_ID'],
   )
+})
+
+test('reconciliation batches require the complete ElevenLabs server path', () => {
+  const incomplete = evaluate({
+    ...productionEnv(),
+    KAUDIT_RECONCILIATION_ENABLED: 'true',
+    KAUDIT_GAS_AUDIT_SYNC_SECRET:
+      'synthetic-audit-sync-secret-32-characters',
+    KAUDIT_GAS_AUDIT_SYNC_RATE_CARD_ID: 'rcv-2026-02-28-v1',
+  })
+  assert.deepEqual(
+    variablesFor(incomplete, 'FEATURE_CONFIG_INCOMPLETE'),
+    [
+      'KAUDIT_UNPOD_PROXY_BASE',
+      'KAUDIT_ALLOWED_RECORDING_HOSTS',
+      'OPENAI_API_KEY',
+      'ELEVENLABS_API_KEY',
+    ],
+  )
+
+  const enabled = evaluate({
+    ...productionEnv(),
+    KAUDIT_RECONCILIATION_ENABLED: 'true',
+    KAUDIT_TRANSCRIPTION_PROVIDER: 'elevenlabs',
+    KAUDIT_GAS_AUDIT_SYNC_SECRET:
+      'synthetic-audit-sync-secret-32-characters',
+    KAUDIT_GAS_AUDIT_SYNC_RATE_CARD_ID: 'rcv-2026-02-28-v1',
+    KAUDIT_UNPOD_PROXY_BASE: 'https://proxy.invalid.test',
+    KAUDIT_ALLOWED_RECORDING_HOSTS: 'recordings.invalid.test',
+    OPENAI_API_KEY: 'sk-synthetic-openai',
+    ELEVENLABS_API_KEY: 'synthetic-elevenlabs',
+  })
+  assert.equal(enabled.ok, true)
+  assert.deepEqual(enabled.optionalFeatures, [
+    'gasAuditSync',
+    'reconciliationBatches',
+    'recordingProxy',
+  ])
+})
+
+test('reconciliation rejects an unknown transcription provider', () => {
+  const report = evaluate({
+    ...productionEnv(),
+    KAUDIT_RECONCILIATION_ENABLED: 'true',
+    KAUDIT_TRANSCRIPTION_PROVIDER: 'unknown-provider',
+  })
+  assert.deepEqual(variablesFor(report, 'FEATURE_CONFIG_INCOMPLETE'), [
+    'KAUDIT_TRANSCRIPTION_PROVIDER',
+  ])
 })
 
 // ---------------------------------------------------------------------------

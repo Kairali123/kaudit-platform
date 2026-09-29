@@ -1,14 +1,16 @@
 const NANODOLLARS_PER_DOLLAR = 1_000_000_000n
 
-// Pricing snapshot from https://developers.openai.com/api/docs/pricing,
-// retrieved 2026-07-29. This is an estimate before tax, credits, negotiated
-// pricing, regional uplift, or card/FX charges.
-export const OPENAI_AUDIT_PRICING_VERSION =
-  'openai-standard-2026-07-29'
-export const OPENAI_AUDIT_PRICING_BASIS =
-  'GPT-4o-mini: $0.15/1M input + $0.60/1M output; Whisper: $0.006/min'
+// Pricing snapshot from the OpenAI and ElevenLabs official API pricing pages,
+// retrieved 2026-09-25. This is an estimate before tax, credits, negotiated
+// pricing, regional uplift, optional feature surcharges, or card/FX charges.
+export const AI_AUDIT_PRICING_VERSION =
+  'openai-elevenlabs-standard-2026-09-29'
+export const AI_AUDIT_PRICING_BASIS =
+  'GPT-6 Luna: $0.10/1M input + $0.50/1M output; ' +
+  'Whisper: $0.006/min; ElevenLabs Scribe v2: $0.22/hour'
 
-export interface OpenAiUsageCostInput {
+export interface AiUsageCostInput {
+  providerName: string
   modelName: string
   inputTokens: number
   outputTokens: number
@@ -40,8 +42,8 @@ function dollars(nanodollars: bigint): string {
   return fraction ? `${whole}.${fraction}` : String(whole)
 }
 
-export function calculateOpenAiAuditCost(
-  rows: OpenAiUsageCostInput[],
+export function calculateAiAuditCost(
+  rows: AiUsageCostInput[],
 ): {
   estimatedUsd: string
   pricedRows: number
@@ -53,25 +55,38 @@ export function calculateOpenAiAuditCost(
   let pricedRows = 0
   let unpricedRows = 0
   for (const row of rows) {
+    const provider = row.providerName.toLowerCase()
     const model = row.modelName.toLowerCase()
     if (
-      model === 'gpt-4o-mini' ||
-      model.startsWith('gpt-4o-mini-')
+      provider === 'openai' &&
+      model === 'gpt-6-luna'
     ) {
-      // $0.15 and $0.60 per 1M tokens equal 150 and 600
+      // $0.10 and $0.50 per 1M tokens equal 100 and 500
       // nanodollars per token.
       nanodollars +=
-        nonNegativeInteger(row.inputTokens, 'inputTokens') * 150n +
-        nonNegativeInteger(row.outputTokens, 'outputTokens') * 600n
+        nonNegativeInteger(row.inputTokens, 'inputTokens') * 100n +
+        nonNegativeInteger(row.outputTokens, 'outputTokens') * 500n
       pricedRows += 1
       continue
     }
-    if (model === 'whisper' || model === 'whisper-1') {
+    if (
+      provider === 'openai' &&
+      (model === 'whisper' || model === 'whisper-1')
+    ) {
       // $0.006/minute = $0.0001/second = 100,000
       // nanodollars/second.
       nanodollars +=
         (decimalThousandths(row.audioSeconds) * 100_000n) /
         1_000n
+      pricedRows += 1
+      continue
+    }
+    if (provider === 'elevenlabs' && model === 'scribe_v2') {
+      // $0.22/hour, priced from exact audio milliseconds. Optional keyterm,
+      // entity, or role-detection surcharges are not enabled by this adapter.
+      nanodollars +=
+        (decimalThousandths(row.audioSeconds) * 220_000_000n) /
+        3_600_000n
       pricedRows += 1
       continue
     }
@@ -81,7 +96,7 @@ export function calculateOpenAiAuditCost(
     estimatedUsd: dollars(nanodollars),
     pricedRows,
     unpricedRows,
-    pricingVersion: OPENAI_AUDIT_PRICING_VERSION,
-    pricingBasis: OPENAI_AUDIT_PRICING_BASIS,
+    pricingVersion: AI_AUDIT_PRICING_VERSION,
+    pricingBasis: AI_AUDIT_PRICING_BASIS,
   }
 }

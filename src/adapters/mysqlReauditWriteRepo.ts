@@ -496,7 +496,7 @@ export function createMysqlReauditWriteRepo(
         const transcript = result.transcription
         const classification = result.classification
         const mediaAnalysisId = randomUUID()
-        const transcriptId = randomUUID()
+        const transcriptId = result.reusedTranscriptId ?? randomUUID()
         // Requested re-audits deliberately reuse the artifact, evidence, and
         // analyzer version. Bind the schema's fourth uniqueness component to
         // this append-only run so prior media history is retained.
@@ -515,7 +515,7 @@ export function createMysqlReauditWriteRepo(
             at,
           ],
         )
-        if (transcript.usage) {
+        if (!result.reusedTranscriptId && transcript.usage) {
           await insertAiUsageEvent(connection, {
             auditRunId,
             callId: candidate.callId,
@@ -590,37 +590,39 @@ export function createMysqlReauditWriteRepo(
             }),
           ],
         )
-        await connection.execute(
-          `INSERT INTO kaudit_transcript
-             (id, call_id, call_artifact_id, source_type, provider_name,
-              model_name, model_version, language, status, input_sha256)
-           VALUES (?, ?, ?, 'independent_asr', ?, ?, ?, ?, 'completed', ?)`,
-          [
-            transcriptId,
-            candidate.callId,
-            candidate.artifactId,
-            transcript.model.provider,
-            transcript.model.name,
-            transcript.model.version,
-            transcript.language,
-            analysis.evidenceSha256,
-          ],
-        )
-        for (const segment of transcript.segments) {
+        if (!result.reusedTranscriptId) {
           await connection.execute(
-            `INSERT INTO kaudit_transcript_segment
-               (id, transcript_id, start_ms, end_ms, text, language,
-                is_redacted)
-             VALUES (?, ?, ?, ?, ?, ?, 0)`,
+            `INSERT INTO kaudit_transcript
+               (id, call_id, call_artifact_id, source_type, provider_name,
+                model_name, model_version, language, status, input_sha256)
+             VALUES (?, ?, ?, 'independent_asr', ?, ?, ?, ?, 'completed', ?)`,
             [
-              randomUUID(),
               transcriptId,
-              segment.startMs,
-              segment.endMs,
-              segment.text,
+              candidate.callId,
+              candidate.artifactId,
+              transcript.model.provider,
+              transcript.model.name,
+              transcript.model.version,
               transcript.language,
+              analysis.evidenceSha256,
             ],
           )
+          for (const segment of transcript.segments) {
+            await connection.execute(
+              `INSERT INTO kaudit_transcript_segment
+                 (id, transcript_id, start_ms, end_ms, text, language,
+                  is_redacted)
+               VALUES (?, ?, ?, ?, ?, ?, 0)`,
+              [
+                randomUUID(),
+                transcriptId,
+                segment.startMs,
+                segment.endMs,
+                segment.text,
+                transcript.language,
+              ],
+            )
+          }
         }
         await connection.execute(
           `INSERT INTO kaudit_audit_finding
