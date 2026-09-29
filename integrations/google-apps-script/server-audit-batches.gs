@@ -179,7 +179,10 @@ function kauditAuditSetupTab_(spreadsheet, name, expected) {
 
   const statusColumn = expected.indexOf(h.status) + 1;
   const statusRange = sheet.getRange(2, statusColumn, dataRows, 1);
-  const colours = { COMPLETED: '#d9ead3', FAILED: '#f4cccc', RETRYABLE: '#fff2cc', RUNNING: '#cfe2f3' };
+  const colours = {
+    COMPLETED: '#d9ead3', FAILED: '#f4cccc', RETRYABLE: '#fff2cc',
+    RUNNING: '#cfe2f3', NEEDS_REVIEW: '#fce5cd',
+  };
   const rules = sheet.getConditionalFormatRules().filter(function(rule) {
     return !rule.getRanges().some(function(range) { return range.getColumn() === statusColumn; });
   });
@@ -576,8 +579,13 @@ function kauditAuditApplyResponse_(batch, response) {
       kauditAuditSet_(ref, 'error', 'RECEIPT_ITEM_MISSING');
     } else {
       const outcome = String(receipt.status || '').toLowerCase();
+      // A billing refusal (e.g. low model confidence) is saved as unresolved
+      // for a person to decide; retrying would only pay for the same answer.
+      const needsReview = outcome === 'failed' && receipt.stage === 'billing' &&
+        receipt.code && receipt.code !== 'AUDIT_RESULT_NOT_READY';
       kauditAuditSet_(ref, 'status',
         outcome === 'completed' || outcome === 'duplicate' ? 'COMPLETED' :
+        needsReview ? 'NEEDS_REVIEW' :
         outcome === 'retryable' && Number(kauditAuditGet_(ref, 'attempt') || 0) < 2
           ? 'RETRYABLE' : 'FAILED');
       kauditAuditSet_(ref, 'stage', String(receipt.stage || 'classification'));
