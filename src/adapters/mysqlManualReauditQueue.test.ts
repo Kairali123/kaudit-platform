@@ -749,3 +749,24 @@ test('an empty page asks the queue nothing at all', async () => {
   assert.equal((await readManualReauditRowStatuses(fake.pool, [])).size, 0)
   assert.equal(fake.statements.length, 0)
 })
+
+test('a request-scoped claim reads only that request through its key', async () => {
+  const scoped = fakePool([])
+  await createMysqlManualReauditCandidateRepository(scoped.pool, {
+    requestId: 'request-synthetic',
+  }).listCandidates({ limit: 3, includePreviouslyClassified: true })
+  const reads = scoped.statements.filter(({ sql }) =>
+    /FROM kaudit_billing_reaudit_item item/.test(sql) && /FOR UPDATE/.test(sql))
+  assert.equal(reads.length, 2) // stale-claim sweep, then the claim
+  for (const { sql, parameters } of reads) {
+    assert.match(sql, /FORCE INDEX \(uq_billing_reaudit_request_call\)/)
+    assert.match(sql, /item\.request_id = \?/)
+    assert.ok(parameters.includes('request-synthetic'))
+  }
+
+  // The unscoped hosted worker keeps its queue-wide sweep.
+  const global = fakePool([])
+  await createMysqlManualReauditCandidateRepository(global.pool)
+    .listCandidates({ limit: 3, includePreviouslyClassified: true })
+  assert.ok(global.statements.every(({ sql }) => !/FORCE INDEX/.test(sql)))
+})

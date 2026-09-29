@@ -180,19 +180,30 @@ async function itemCount(
  * They are never reclaimed; a new administrator action is the only path to a
  * new model call.
  */
+/**
+ * A request-scoped sweep/claim reads ONLY that request's rows through the
+ * (request_id, call_id) key. Scanning the status index instead makes
+ * FOR UPDATE lock every other request's processing rows, so parallel Sheet
+ * batches waited on each other's slow persistence until lock-wait timeout.
+ */
+function requestIndexHint(requestId?: string): string {
+  return requestId ? 'FORCE INDEX (uq_billing_reaudit_request_call)' : ''
+}
+
 async function expireInterruptedClaims(
   connection: PoolConnection,
   callIds?: readonly string[],
   recoverAllProcessing = false,
+  requestId?: string,
 ): Promise<void> {
   if (callIds && callIds.length === 0) return
-  const scope = callIds
+  const scope = (callIds
     ? ` AND item.call_id IN (${placeholders(callIds.length)})`
-    : ''
+    : '') + (requestId ? ' AND item.request_id = ?' : '')
   const [interrupted] = await connection.execute<ClaimedItemRow[]>(
     `SELECT item.id AS item_id, item.request_id, item.call_id,
             item.baseline_audit_run_id
-     FROM kaudit_billing_reaudit_item item
+     FROM kaudit_billing_reaudit_item item ${requestIndexHint(requestId)}
      WHERE item.status = 'processing'
        AND NOT EXISTS (
          SELECT 1
@@ -207,7 +218,7 @@ async function expireInterruptedClaims(
      ORDER BY item.created_at, item.id
      LIMIT 100
      FOR UPDATE`,
-    callIds ? [...callIds] : [],
+    [...(callIds ?? []), ...(requestId ? [requestId] : [])],
   )
   for (const row of interrupted) {
     await settleManualReauditItem(connection, {
@@ -519,7 +530,12 @@ export function createMysqlManualReauditCandidateRepository(
         // selects processing rows below so the spend guard can recover staged
         // output or durably terminalize ambiguous paid state.
         if (repositoryOptions.recoverInterruptedClaims !== true) {
-          await expireInterruptedClaims(connection)
+          await expireInterruptedClaims(
+            connection,
+            undefined,
+            false,
+            repositoryOptions.requestId,
+          )
         }
         const requestScope = repositoryOptions.requestId
           ? ' AND item.request_id = ?'
@@ -528,6 +544,7 @@ export function createMysqlManualReauditCandidateRepository(
           `SELECT item.id AS item_id, item.request_id, item.call_id,
                   item.baseline_audit_run_id
            FROM kaudit_billing_reaudit_item item
+             ${requestIndexHint(repositoryOptions.requestId)}
            WHERE (
              (
                item.status = 'queued'
