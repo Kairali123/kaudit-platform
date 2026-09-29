@@ -125,3 +125,20 @@ test('provider failures expose only bounded status metadata', async () => {
     },
   )
 })
+
+test('bytes that are not audio fail with a bounded code before any paid request', async () => {
+  let requested = false
+  const transcriber = createElevenLabsTranscriber('synthetic-key', {
+    fetchImpl: (async () => {
+      requested = true
+      return new Response('{}', { status: 200 })
+    }) as typeof fetch,
+  })
+  await assert.rejects(
+    transcriber.transcribe(Buffer.from('<html>synthetic error page</html>'), {
+      contentType: 'text/html',
+    }),
+    (error: unknown) => (error as { code?: string }).code === 'AUDIO_UNDECODABLE',
+  )
+  assert.equal(requested, false)
+})
