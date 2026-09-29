@@ -84,7 +84,11 @@ function providerFailureCode(
   if (name === 'TimeoutError' || name === 'AbortError') {
     return `${phase}_PROVIDER_TIMEOUT`
   }
-  // Other 4xx refusals (bad key, unsupported file) stay terminal but visible.
+  // A key or plan refusal is fixed in configuration, and a refused request is
+  // not billed: keep it retryable so it neither burns the call's one paid
+  // attempt nor needs a manual reset once the setting is corrected.
+  if (status === 401 || status === 403) return `${phase}_PROVIDER_ACCESS_DENIED`
+  // Other 4xx refusals (e.g. an unsupported file) stay terminal but visible.
   if (status >= 400 && status < 500) return `${phase}_HTTP_${status}`
   if (code === 'AUDIO_UNDECODABLE') return `${phase}_AUDIO_UNDECODABLE`
   return null
