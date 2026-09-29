@@ -11,7 +11,7 @@ import type { TranscriptionResult } from '../reaudit/types.ts'
  *
  * Transcription is 93% of what an audit costs, and a classification failure
  * used to discard the transcript entirely -- the failure path writes only a
- * failed audit run -- so every retry paid Whisper again for identical bytes.
+ * failed audit run -- so every retry paid the ASR provider again for identical bytes.
  *
  * The key is a hash of the audio itself, so only byte-identical audio can
  * reuse a transcript. That is the same hash the audit already computes to

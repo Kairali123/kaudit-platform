@@ -23,8 +23,8 @@ independently verified population.
 ## Safe sample
 
 `reaudit:sample` is a read-only shadow runner. It fetches recording bytes through
-the configured proxy, hashes them, transcribes with `whisper-1`, classifies with
-the pinned `gpt-4o-mini-2024-07-18` snapshot, applies the deterministic 60-second
+the configured proxy, hashes them, transcribes with ElevenLabs `scribe_v2`,
+classifies with the pinned `gpt-6-luna` model, applies the deterministic 60-second
 wrap-up grace and billing rounding, and prints aggregate results only.
 
 It writes no recording, transcript, finding, decision, or bill to MySQL.
@@ -42,11 +42,19 @@ This worker belongs entirely to `kaudit-platform`. It reads only shared MySQL
 `kaudit_*` rows and `kaudit_call_artifact.source_url`; it never reads the KCRM
 folder.
 
-Store the real `OPENAI_API_KEY` outside the repository in
+Store the real `ELEVENLABS_API_KEY` and `OPENAI_API_KEY` outside the repository in
 `$HOME/.kcrm-audit/.env.local`. Both re-audit commands load that ignored
 external file after the project-local non-secret configuration.
 
-Never place the key in `.env.example`, source code, browser storage, or a
+`KAUDIT_TRANSCRIPTION_PROVIDER` defaults to `elevenlabs`. The OpenAI key remains
+required for structured classification. `KAUDIT_ELEVENLABS_ENABLE_LOGGING`
+defaults to `false`, which requests ElevenLabs zero-retention mode and requires
+an account that supports it. Do not enable provider logging without explicit
+data-governance approval. `openai` remains an emergency, supervised rollback
+value for the transcription-provider setting while that deprecated adapter is
+still available.
+
+Never place either key in `.env.example`, source code, browser storage, or a
 Git-tracked file. If a key appears in terminal output or a tracked file, rotate
 it before starting paid work.
 
@@ -98,7 +106,7 @@ The worker remains a separate process even in this convenience command. It
 does not run merely because a user opens the dashboard.
 
 The candidate query excludes every already-audited call, including the 224
-legacy results. Success persists the evidence hash, Whisper and classifier
+legacy results. Success persists the evidence hash, transcription and classifier
 model/version, classifier ruleset hash/version, confidence, timestamp,
 transcript segments, media metrics, finding, and completed audit run. Failures
 receive bounded exponential retries; altered evidence and unsafe URLs are
@@ -145,10 +153,11 @@ Do not launch a full paid run until all of the following are true:
 3. A named finance approver publishes a new immutable rate-card version. Never
    convert the legacy draft card in place.
 4. Per-language/per-finding calibration has produced approved thresholds.
-5. The OpenAI spend and concurrency envelope is approved. The current URL-backed
-   population has roughly 13,160 vendor-connected audio minutes; Whisper alone is
-   approximately USD 79 at USD 0.006/minute, before classifier usage and before
-   any recording-duration overage.
+5. The ElevenLabs/OpenAI spend and concurrency envelope is approved. The current
+   URL-backed population has roughly 13,160 vendor-connected audio minutes;
+   Scribe v2 is approximately USD 48.25 at the 2026-09-25 public base price of
+   USD 0.22/hour, before classifier usage, taxes, plan differences, and any
+   recording-duration overage.
 
 Until these gates clear, only a **provisional shadow projection** is permitted.
 It must not supersede the 43,245 legacy calculations or be called an authoritative

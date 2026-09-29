@@ -52,9 +52,9 @@ export interface AiUsage {
 
 export interface TranscriptionResult {
   model: {
-    provider: 'openai'
-    name: 'whisper-1'
-    version: 'whisper-1'
+    provider: string
+    name: string
+    version: string
   }
   language: string
   durationMs: number
@@ -274,6 +274,12 @@ export interface ReauditItemResult {
   transcription?: TranscriptionResult
   classification?: ModelClassification
   projection?: ReauditProjection
+  /**
+   * A completed immutable transcript already stored for this exact artifact.
+   * Transcript-only management re-audits reference it instead of inserting a
+   * second copy of the same customer speech.
+   */
+  reusedTranscriptId?: string
   errorCode?: string
 }
 

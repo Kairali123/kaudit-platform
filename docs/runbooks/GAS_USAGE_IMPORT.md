@@ -43,3 +43,9 @@ details.
 
 See `docs/runbooks/USAGE_IMPORT_RELIABILITY.md` for row-validation behavior and
 operator recovery.
+
+To audit each successfully imported Task ID without the GitHub worker, also add
+`integrations/google-apps-script/server-audit-batches.gs` and follow
+`docs/runbooks/GAS_SERVER_AUDIT_BATCHES.md`. The audit controller waits for
+`Import Status = Submitted`, sends 1–3 calls per request in parallel, records
+each stage on the Sheet, and performs one final idempotent retry pass.

@@ -9,17 +9,23 @@ decision trace.
 ## One-time setup
 
 1. Publish `integrations/google-apps-script/bill-audit-workspace.gs` to the
-   bound Apps Script project.
+   bound Apps Script project. For server-side monthly and reconciliation
+   batches, also publish `server-audit-batches.gs` and follow
+   `GAS_SERVER_AUDIT_BATCHES.md`.
 2. Run `upgradeWorkspace` once. It stops continuation triggers, preserves
-   evidence, installs the 12-category policy, blocks old calculations, and
-   requeues recording-backed calls. It does **not** start an AI batch.
-3. In Vercel, configure both variables together:
+   all completed audit results and queue states, installs the 12-category
+   policy, and locks `TRANSCRIPTION_MODEL` to ElevenLabs `scribe_v2`. It does
+   **not** re-audit completed calls or start an AI batch.
+3. In the Sheet, use **Bill Audit → Set ElevenLabs key** for transcription and
+   **Bill Audit → Set OpenAI key** for classification. Both keys are stored in
+   Apps Script Properties, never in cells.
+4. In Vercel, configure both variables together:
    - `KAUDIT_GAS_AUDIT_SYNC_SECRET`: a dedicated 32–256 character HMAC secret.
    - `KAUDIT_GAS_AUDIT_SYNC_RATE_CARD_ID`: the exact published Kaudit rate-card
      version used for server-side billing.
-4. In the Sheet, use **Bill Audit → Set SQL sync secret** and enter the same
+5. In the Sheet, use **Bill Audit → Set SQL sync secret** and enter the same
    HMAC secret. Never put the secret in a cell.
-5. Set `SQL_SYNC_ENABLED` to `true` only after the deployed endpoint passes a
+6. Set `SQL_SYNC_ENABLED` to `true` only after the deployed endpoint passes a
    signed test request.
 
 ## Monthly operation
@@ -27,8 +33,9 @@ decision trace.
 1. Set `ACTIVE_BILL_MONTH` to `YYYY-MM` and point the source settings at the
    immutable KServe monthly snapshot.
 2. Use **Import KServe month**, then **Build audit queue**.
-3. Review the queue counts. Starting **Run audit batch** spends OpenAI credits;
-   do so only after the monthly input and recording URLs are confirmed.
+3. Review the queue counts. Starting **Run audit batch** spends ElevenLabs
+   transcription credits and OpenAI classification credits; do so only after
+   the monthly input and recording URLs are confirmed.
 4. The script checkpoints before the configured safe runtime, then schedules a
    bounded continuation until no `PENDING`, `RUNNING`, or `RETRY_WAITING` rows
    remain.
@@ -54,6 +61,14 @@ decision trace.
 ## Recovery
 
 - **Stop audit** removes continuation triggers and prevents new claims.
-- Existing audio and audit JSON evidence is immutable and reused by hash.
+- Existing audio is immutable and reused by hash; each audit JSON package is
+  append-only and identified by its run ID.
 - A failed or rejected SQL item remains unsynced and keeps settlement blocked.
-- Never copy an OpenAI key or HMAC secret into the workbook or repository.
+- Never copy an ElevenLabs key, OpenAI key, or HMAC secret into the workbook or
+  repository.
+
+This workspace uses ElevenLabs Creator-plan transcription with
+`enable_logging=true`. ElevenLabs may retain uploaded call audio and transcript
+content under its standard retention terms. Moving this workflow to
+`enable_logging=false` requires an eligible Enterprise workspace with Zero
+Retention Mode enabled.

@@ -215,8 +215,12 @@ async function expireInterruptedClaims(
 async function resolveSelection(
   connection: PoolConnection,
   callReferences: readonly string[],
+  period?: { start: string; end: string },
 ): Promise<ResolvedCallRow[]> {
   const list = placeholders(callReferences.length)
+  const periodScope = period
+    ? ' AND c.billing_period_date BETWEEN ? AND ?'
+    : ''
   const [rows] = await connection.execute<ResolvedCallRow[]>(
     `SELECT c.logical_call_key AS call_reference,
             c.id AS call_id,
@@ -226,6 +230,7 @@ async function resolveSelection(
        ON latest.id = c.latest_audit_run_id
       AND latest.status = 'completed'
      WHERE c.logical_call_key IN (${list})
+       ${periodScope}
        AND EXISTS (
          SELECT 1
          FROM kaudit_invoice invoice
@@ -260,6 +265,7 @@ async function resolveSelection(
              invoice.period_start AND invoice.period_end
          AND invoice.status IN ('received','matched','approved')
      )
+       ${periodScope}
        AND EXISTS (
        SELECT 1
        FROM kaudit_call_artifact artifact
@@ -268,7 +274,12 @@ async function resolveSelection(
          AND artifact.is_final = 1
          AND artifact.source_url IS NOT NULL
      )`,
-    [...callReferences, ...callReferences],
+    [
+      ...callReferences,
+      ...(period ? [period.start, period.end] : []),
+      ...callReferences,
+      ...(period ? [period.start, period.end] : []),
+    ],
   )
   return rows
 }
@@ -318,6 +329,7 @@ export function selectedCalls(
 
 export function createMysqlManualReauditRequestRepository(
   pool: Pool,
+  options: { period?: { start: string; end: string } } = {},
 ): ManualReauditRequestPort {
   return {
     async enqueue(input) {
@@ -364,7 +376,11 @@ export function createMysqlManualReauditRequestRepository(
 
         const calls = selectedCalls(
           input.callReferences,
-          await resolveSelection(connection, input.callReferences),
+          await resolveSelection(
+            connection,
+            input.callReferences,
+            options.period,
+          ),
         )
         // A stale claim is no longer displayed as live. Settle it before the
         // active-call uniqueness check so this explicit click can authorize a
@@ -464,7 +480,10 @@ export function createMysqlManualReauditRequestRepository(
  */
 export function createMysqlManualReauditCandidateRepository(
   pool: Pool,
-  repositoryOptions: { recoverInterruptedClaims?: boolean } = {},
+  repositoryOptions: {
+    recoverInterruptedClaims?: boolean
+    requestId?: string
+  } = {},
 ): ReauditCandidateRepository {
   return {
     async listCandidates(options) {
@@ -486,20 +505,30 @@ export function createMysqlManualReauditCandidateRepository(
         if (repositoryOptions.recoverInterruptedClaims !== true) {
           await expireInterruptedClaims(connection)
         }
+        const requestScope = repositoryOptions.requestId
+          ? ' AND item.request_id = ?'
+          : ''
         const [rows] = await connection.execute<ClaimedItemRow[]>(
           `SELECT item.id AS item_id, item.request_id, item.call_id,
                   item.baseline_audit_run_id
            FROM kaudit_billing_reaudit_item item
            WHERE (
-             item.status = 'queued'
-             AND item.attempt_count < ${MAX_MANUAL_REAUDIT_ATTEMPTS}
+             (
+               item.status = 'queued'
+               AND item.attempt_count < ${MAX_MANUAL_REAUDIT_ATTEMPTS}
+             )
+             ${repositoryOptions.recoverInterruptedClaims === true
+               ? "OR item.status = 'processing'"
+               : ''}
            )
-           ${repositoryOptions.recoverInterruptedClaims === true
-             ? "OR item.status = 'processing'"
-             : ''}
+           ${requestScope}
            ORDER BY item.created_at, item.id
-           LIMIT 1
+           LIMIT ?
            FOR UPDATE`,
+          [
+            ...(repositoryOptions.requestId ? [repositoryOptions.requestId] : []),
+            options.limit,
+          ],
         )
         selected = rows
         await connection.commit()

@@ -13,6 +13,14 @@
 
 ## Unreleased
 
+- Switched Billing Audit transcription to ElevenLabs Scribe v2 by default while
+  retaining OpenAI for structured classification. Added zero-retention requests
+  for the server worker and explicit Creator-plan logging for Google Apps Script,
+  independently decoded recording duration, provider-aware transcript caching
+  and spend reporting, a supervised Whisper rollback setting, and synthetic
+  adapter/configuration tests. The Google Apps Script audit runner now uses the
+  same provider split, stores its ElevenLabs key only in Script Properties, and
+  versions immutable audit packages by run ID.
 - Corrected the USER_SILENCE / INACTIVE_CALL split. No meaningful customer
   speech with at least one valid Saanvi block is now USER_SILENCE whatever the
   model proposed; INACTIVE_CALL is reserved for a transcript with neither.

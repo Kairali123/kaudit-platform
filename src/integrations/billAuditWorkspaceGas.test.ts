@@ -13,25 +13,36 @@ async function loadFunctions() {
     ),
     'utf8',
   )
-  const fetchPayloads: Array<Record<string, unknown>> = []
+  const fetchRequests: Array<{
+    url: string
+    headers: Record<string, string>
+    payload: Record<string, unknown>
+  }> = []
   const context = vm.createContext({
     console,
     UrlFetchApp: {
-      fetch: (_url: string, params: { payload: Record<string, unknown> }) => {
-        fetchPayloads.push(params.payload)
+      fetch: (url: string, params: {
+        headers: Record<string, string>
+        payload: Record<string, unknown>
+      }) => {
+        fetchRequests.push({ url, headers: params.headers, payload: params.payload })
         return {
           getResponseCode: () => 200,
           getContentText: () => JSON.stringify({
             text: 'synthetic',
-            language: 'hi',
-            segments: [{ start: 0, end: 1, speaker: 'A', text: 'synthetic' }],
+            language_code: 'hin',
+            words: [
+              { type: 'word', start: 0, end: 0.4, text: 'synthetic' },
+              { type: 'spacing', text: ' ' },
+              { type: 'word', start: 0.5, end: 1, text: 'call' },
+            ],
           }),
         }
       },
     },
   })
   vm.runInContext(
-    `${source}\nglobalThis.__billAuditTest = { validateRecordingUrl_, ensureSheetCapacity_, transcribe_, billingDecision_, categoryChargeDecision_, roundKserveDuration_, evaluateConsensus_, dataRowCount_, auditResultHeaders_, billingHeaders_, canonicalRuleRows_ };`,
+    `${source}\nglobalThis.__billAuditTest = { validateRecordingUrl_, ensureSheetCapacity_, transcribe_, decodedAudioDurationSeconds_, recordedDurationMs_, billingDecision_, categoryChargeDecision_, roundKserveDuration_, evaluateConsensus_, dataRowCount_, auditResultHeaders_, billingHeaders_, canonicalRuleRows_ };`,
     context,
   )
   const functions = context.__billAuditTest as {
@@ -46,10 +57,15 @@ async function loadFunctions() {
       row: number,
       column: number,
     ) => void
-    transcribe_: (apiKey: string, model: string, blob: object, guidance: string) => {
+    transcribe_: (apiKey: string, model: string, blob: object, audioBytes?: number[]) => {
       language: string
       model: string
+      provider: string
+      duration_seconds: number
+      segments: Array<{ text: string; start_seconds: number; end_seconds: number }>
     }
+    decodedAudioDurationSeconds_: (blob: object) => number
+    recordedDurationMs_: (transcript: Record<string, unknown>) => number
     billingDecision_: (result: Record<string, unknown>, recordedDurationMs: number) => {
       charge: { policyCode: string; serviceEndMs: number; graceMs: number; adjustedChargeableDurationMs: number }
       rounded: { billableDurationMs: number; billableMinutes: number; amountPaise: number; ruleCode: string }
@@ -68,7 +84,64 @@ async function loadFunctions() {
     billingHeaders_: () => string[]
     canonicalRuleRows_: () => unknown[][]
   }
-  return { functions, fetchPayloads }
+  return { functions, fetchRequests, source }
+}
+
+function syntheticWav(durationSeconds = 2) {
+  const sampleRate = 8_000
+  const channels = 1
+  const bitsPerSample = 16
+  const dataSize = durationSeconds * sampleRate * channels * (bitsPerSample / 8)
+  const bytes = Buffer.alloc(44 + dataSize)
+  bytes.write('RIFF', 0)
+  bytes.writeUInt32LE(36 + dataSize, 4)
+  bytes.write('WAVE', 8)
+  bytes.write('fmt ', 12)
+  bytes.writeUInt32LE(16, 16)
+  bytes.writeUInt16LE(1, 20)
+  bytes.writeUInt16LE(channels, 22)
+  bytes.writeUInt32LE(sampleRate, 24)
+  bytes.writeUInt32LE(sampleRate * channels * (bitsPerSample / 8), 28)
+  bytes.writeUInt16LE(channels * (bitsPerSample / 8), 32)
+  bytes.writeUInt16LE(bitsPerSample, 34)
+  bytes.write('data', 36)
+  bytes.writeUInt32LE(dataSize, 40)
+  return {
+    getBytes: () => Array.from(bytes),
+    getContentType: () => 'audio/wav',
+  }
+}
+
+function syntheticOpusOgg(durationSeconds = 2) {
+  const preSkip = 312
+  const page = (sequence: number, granule: number, body: Buffer) => {
+    const bytes = Buffer.alloc(28 + body.length)
+    bytes.write('OggS', 0)
+    bytes.writeUInt8(sequence === 0 ? 2 : 4, 5)
+    bytes.writeUInt32LE(granule >>> 0, 6)
+    bytes.writeUInt32LE(Math.floor(granule / 0x1_0000_0000), 10)
+    bytes.writeUInt32LE(1, 14)
+    bytes.writeUInt32LE(sequence, 18)
+    bytes.writeUInt8(1, 26)
+    bytes.writeUInt8(body.length, 27)
+    body.copy(bytes, 28)
+    return bytes
+  }
+  const opusHead = Buffer.alloc(19)
+  opusHead.write('OpusHead', 0)
+  opusHead.writeUInt8(1, 8)
+  opusHead.writeUInt8(1, 9)
+  opusHead.writeUInt16LE(preSkip, 10)
+  opusHead.writeUInt32LE(48_000, 12)
+  const endGranule = preSkip + durationSeconds * 48_000
+  const bytes = Buffer.concat([
+    page(0, 0, opusHead),
+    page(1, endGranule, Buffer.from([0])),
+  ])
+  return {
+    getBytes: () => Array.from(bytes),
+    getContentType: () => 'audio/ogg',
+  }
 }
 
 test('accepts the Unpod signed-URL endpoint used by KServe recordings', async () => {
@@ -121,28 +194,72 @@ test('grows output sheets in chunks before writes exceed their grids', async () 
   assert.equal(columns, 25)
 })
 
-test('does not send the unsupported prompt field to the diarization model', async () => {
-  const { functions, fetchPayloads } = await loadFunctions()
-
-  functions.transcribe_('synthetic-key', 'gpt-4o-transcribe-diarize', {}, 'guidance')
-
-  assert.equal(fetchPayloads.length, 1)
-  assert.equal(fetchPayloads[0].model, 'gpt-4o-transcribe-diarize')
-  assert.equal(fetchPayloads[0].response_format, 'diarized_json')
-  assert.equal(fetchPayloads[0].chunking_strategy, 'auto')
-  assert.equal('prompt' in fetchPayloads[0], false)
+test('workspace upgrade preserves completed audits and accepts their approval states', async () => {
+  const { source } = await loadFunctions()
+  const upgrade = source.match(/function upgradeWorkspace\(\) \{[\s\S]*?\n\}\n\nfunction upsertSetting_/)?.[0]
+  assert.ok(upgrade)
+  assert.match(upgrade, /'NOT_REVIEWED','APPROVED','REJECTED','BLOCKED','SUPERSEDED_REAUDIT_REQUIRED'/)
+  assert.doesNotMatch(upgrade, /row\[3\]\s*=\s*BILL_AUDIT\.queueStates\.pending/)
+  assert.doesNotMatch(upgrade, /row\[14\]\s*=\s*'SUPERSEDED_REAUDIT_REQUIRED'/)
+  assert.match(upgrade, /showUiAlertIfAvailable_/)
 })
 
-test('keeps prompt guidance for whisper transcription', async () => {
-  const { functions, fetchPayloads } = await loadFunctions()
+test('upgrade repair restores only rows backed by three completed evidence tables', async () => {
+  const { source } = await loadFunctions()
+  const repair = source.match(/function restoreCompletedAuditsAfterUpgrade\(\) \{[\s\S]*?\n\}\n\nfunction upsertSetting_/)?.[0]
+  assert.ok(repair)
+  assert.match(repair, /String\(row\[9\] \|\| ''\) !== 'REAUDIT_REQUIRED'/)
+  assert.match(repair, /monthlyRow\[16\].*BILL_AUDIT\.queueStates\.completed/)
+  assert.match(repair, /!completedResults\[taskId\] \|\| !billingByTask\[taskId\]/)
+  assert.match(repair, /row\[3\] = BILL_AUDIT\.queueStates\.completed/)
+  assert.match(repair, /row\[9\] = 'BILLING_CALCULATED'/)
+})
 
-  const result = functions.transcribe_('synthetic-key', 'whisper-1', {}, 'guidance')
+test('selected-row audit is isolated from the pending queue', async () => {
+  const { source } = await loadFunctions()
+  const selectedRunner = source.match(/function runSelectedAuditRow\(\) \{[\s\S]*?\n\}\n\nfunction auditQueueItem_/)?.[0]
+  assert.ok(selectedRunner)
+  assert.match(selectedRunner, /activeRange\.getNumRows\(\) !== 1/)
+  assert.match(selectedRunner, /queueSheet\.getRange\(rowNumber, 1, 1, 13\)/)
+  assert.match(selectedRunner, /auditQueueItem_\(queueRow/)
+  assert.doesNotMatch(selectedRunner, /runAuditBatch\(/)
+  assert.doesNotMatch(selectedRunner, /scheduleContinuation_\(/)
+})
 
-  assert.equal(fetchPayloads.length, 1)
-  assert.equal(fetchPayloads[0].prompt, 'guidance')
-  assert.equal(fetchPayloads[0].response_format, 'verbose_json')
-  assert.equal(result.language, 'hi')
-  assert.equal(result.model, 'whisper-1')
+test('sends Scribe v2 audio with Creator-plan provider logging enabled', async () => {
+  const { functions, fetchRequests } = await loadFunctions()
+  const blob = syntheticWav()
+
+  const result = functions.transcribe_('synthetic-elevenlabs-key', 'scribe_v2', blob)
+
+  assert.equal(fetchRequests.length, 1)
+  assert.equal(fetchRequests[0].url, 'https://api.elevenlabs.io/v1/speech-to-text?enable_logging=true')
+  assert.equal(fetchRequests[0].headers['xi-api-key'], 'synthetic-elevenlabs-key')
+  assert.equal(fetchRequests[0].payload.model_id, 'scribe_v2')
+  assert.equal(fetchRequests[0].payload.file, blob)
+  assert.equal(fetchRequests[0].payload.timestamps_granularity, 'word')
+  assert.equal(fetchRequests[0].payload.diarize, 'false')
+  assert.equal('prompt' in fetchRequests[0].payload, false)
+  assert.equal(result.provider, 'elevenlabs')
+  assert.equal(result.language, 'hin')
+  assert.equal(result.model, 'scribe_v2')
+  assert.equal(result.duration_seconds, 2)
+  assert.equal(result.segments[0].text, 'synthetic call')
+})
+
+test('uses decoded source duration instead of the final transcript timestamp', async () => {
+  const { functions } = await loadFunctions()
+  const durationSeconds = functions.decodedAudioDurationSeconds_(syntheticWav(2))
+  assert.equal(durationSeconds, 2)
+  assert.equal(functions.recordedDurationMs_({
+    duration_seconds: durationSeconds,
+    segments: [{ start_seconds: 0, end_seconds: 1, text: 'synthetic' }],
+  }), 2_000)
+})
+
+test('decodes the full duration of the OGG/Opus format used by call recordings', async () => {
+  const { functions } = await loadFunctions()
+  assert.equal(functions.decodedAudioDurationSeconds_(syntheticOpusOgg(2)), 2)
 })
 
 test('locks the canonical output shapes and all twelve categories', async () => {

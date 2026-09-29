@@ -586,6 +586,7 @@ test('summary usage totals and per-model costs share one rollup scan', async () 
       match: 'COUNT(DISTINCT usage_event.audit_run_id)',
       rows: [
         {
+          provider_name: 'openai',
           model_name: 'gpt-4o-mini',
           tracked_audit_runs: 2,
           input_tokens: 120,
@@ -594,6 +595,7 @@ test('summary usage totals and per-model costs share one rollup scan', async () 
           audio_seconds: 0,
         },
         {
+          provider_name: 'openai',
           model_name: 'whisper-1',
           tracked_audit_runs: 2,
           input_tokens: 0,
@@ -602,6 +604,7 @@ test('summary usage totals and per-model costs share one rollup scan', async () 
           audio_seconds: 45,
         },
         {
+          provider_name: null,
           model_name: null,
           tracked_audit_runs: 2,
           input_tokens: 120,
@@ -617,7 +620,7 @@ test('summary usage totals and per-model costs share one rollup scan', async () 
 
   assert.equal(data.summary.aiUsage.trackedAuditRuns, 2)
   assert.equal(data.summary.aiUsage.gptTotalTokens, 150)
-  assert.equal(data.summary.aiUsage.whisperAudioSeconds, '45.000')
+  assert.equal(data.summary.aiUsage.transcriptionAudioSeconds, '45.000')
   const usageQueries = fake.statements.filter((sql) =>
     sql.includes('kaudit_ai_usage_event'),
   )

@@ -342,7 +342,7 @@ export interface AuditMonitorData {
       gptInputTokens: number
       gptOutputTokens: number
       gptTotalTokens: number
-      whisperAudioSeconds: string
+      transcriptionAudioSeconds: string
       historicalUsageRecorded: boolean
     }
     auditedFinancials: {

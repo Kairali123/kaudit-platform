@@ -20,6 +20,7 @@ import { createGoogleDriveImportObjectStore } from '../adapters/googleDriveImpor
 import { createImportAnalysisService } from '../imports/analysis.ts'
 import { configuredGasImportSecret } from '../imports/gasImportAuth.ts'
 import { configuredGasAuditSyncSecret } from '../integrations/gasAuditSyncAuth.ts'
+import { createReconciliationBatchService } from '../integrations/reconciliationBatch.ts'
 import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.ts'
 import { createOpenAiCallAuditModel } from '../adapters/openaiCallAuditClient.ts'
 import { resolveDatabaseTls, type CaFileReader } from './databaseTls.ts'
@@ -82,6 +83,7 @@ export interface DashboardCapabilities {
   recordingProxy: boolean
   /** Whether this deployment runs the OIDC authorization-code browser flow. */
   oidcBrowserFlow: boolean
+  reconciliationBatches: boolean
   /** Whether transcripts and recording locations may be exported as a file. */
   restrictedExport: boolean
 }
@@ -177,6 +179,17 @@ export function createDashboardRuntime(
   const gasAuditSyncSecret = configuredGasAuditSyncSecret(env) ?? undefined
   const gasAuditSyncRateCardId =
     env.KAUDIT_GAS_AUDIT_SYNC_RATE_CARD_ID?.trim() || undefined
+  const reconciliationEnabled =
+    env.KAUDIT_RECONCILIATION_ENABLED?.trim().toLowerCase() === 'true'
+  const reconciliationBatch = reconciliationEnabled
+    ? createReconciliationBatchService({
+        pool,
+        env,
+        rateCardId: gasAuditSyncRateCardId || '',
+        allowedRecordingHosts,
+        proxyBaseUrl: env.KAUDIT_UNPOD_PROXY_BASE?.trim() || '',
+      })
+    : undefined
   const importObjectStore =
     options.cycleImports === 'local-disk'
       ? createLocalImportObjectStore(
@@ -287,6 +300,7 @@ export function createDashboardRuntime(
     gasImportSecret,
     gasAuditSyncSecret,
     gasAuditSyncRateCardId,
+    reconciliationBatch,
     importAnalysis,
     recordingFetcher,
     allowedRecordingHosts,
@@ -311,6 +325,7 @@ export function createDashboardRuntime(
       recordingProxy: Boolean(recordingFetcher),
       restrictedExport: restrictedExportEnabled,
       oidcBrowserFlow: Boolean(oidcAuthorizationClient),
+      reconciliationBatches: Boolean(reconciliationBatch),
     },
   }
 }

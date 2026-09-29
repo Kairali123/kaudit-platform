@@ -224,7 +224,7 @@ in authenticated modes.
   evidence/rate-card gates apply uniformly to every call.
 - Reports remain `provisional` until billing calculations are authoritative and
   `KAUDIT_REPORTING_APPROVED=true`.
-- Audit Monitor reports exact GPT input/output/total tokens and Whisper billed
+- Audit Monitor reports exact GPT input/output/total tokens and transcription
   audio minutes from migration 0007 onward. Historical audits remain labeled
   `Not recorded`.
 

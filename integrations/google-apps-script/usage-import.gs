@@ -2,6 +2,11 @@ const KAUDIT_USAGE_IMPORT = Object.freeze({
   headerRow: 1,
   sourceColumnCount: 10,
   statusColumn: 11,
+  // Unified "Audit Intake" tab: only new_month (or blank, for legacy sheets)
+  // rows are base-data uploads. Late-recording and transcript re-audit rows
+  // share the tab but are handled by server-audit-batches.gs.
+  modeColumn: 12,
+  modeHeader: 'Kaudit Audit Mode',
   batchSize: 500,
   maxBatchesPerRun: 8,
   submittedStatus: 'Submitted',
@@ -64,6 +69,7 @@ function submitPendingKauditUsage() {
     const data = sourceRange.getDisplayValues();
     const rawData = sourceRange.getValues();
     const spreadsheetTimeZone = SpreadsheetApp.getActive().getSpreadsheetTimeZone();
+    attachKauditUsageModes_(sheet, data, rowCount);
 
     let submitted = 0;
     let needsReview = 0;
@@ -419,7 +425,26 @@ function readKauditUsageConfig_() {
     periodEnd: periodEnd, sheetName: sheetName };
 }
 
+/** Appends each row's audit mode at modeColumn - 1; status writes ignore it. */
+function attachKauditUsageModes_(sheet, data, rowCount) {
+  const column = KAUDIT_USAGE_IMPORT.modeColumn;
+  let modes = null;
+  if (sheet.getLastColumn() >= column &&
+      String(sheet.getRange(KAUDIT_USAGE_IMPORT.headerRow, column).getDisplayValue() || '')
+        .trim().toLowerCase() === KAUDIT_USAGE_IMPORT.modeHeader.toLowerCase()) {
+    modes = sheet.getRange(KAUDIT_USAGE_IMPORT.headerRow + 1, column, rowCount, 1)
+      .getDisplayValues();
+  }
+  data.forEach(function(row, index) {
+    row[column - 1] = modes
+      ? String(modes[index][0] || '').trim().toLowerCase().replace(/\s+/g, '_')
+      : '';
+  });
+}
+
 function isPendingKauditRow_(row) {
+  const mode = row[KAUDIT_USAGE_IMPORT.modeColumn - 1];
+  if (mode && mode !== 'new_month') return false;
   const status = String(
     row[KAUDIT_USAGE_IMPORT.statusColumn - 1] || '',
   ).trim();

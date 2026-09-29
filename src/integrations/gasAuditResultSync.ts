@@ -160,7 +160,7 @@ function signals(raw: Raw): ClassificationDecisionSignals {
 function classificationFromGas(rawValue: unknown): ModelClassification {
   const raw = record(rawValue, 'classification')
   const confidence = number(raw.confidence, 'confidence')
-  const model = optionalText(raw.model, 128) ?? 'gpt-4o-mini-2024-07-18'
+  const model = optionalText(raw.model, 128) ?? 'gpt-6-luna'
   return {
     model: { provider: 'openai', name: model, version: model },
     category: text(raw.category_code, 'category_code') as ModelClassification['category'],
@@ -342,8 +342,14 @@ function buildPrimaryResult(options: {
     remarks: classification.remarks,
     disputeRecommended: classification.disputeRecommended,
   }
+  const transcriptionProvider = optionalText(transcriptRaw.provider, 80) ?? 'elevenlabs'
+  const transcriptionModel = optionalText(transcriptRaw.model, 128) ?? 'scribe_v2'
   const transcription: TranscriptionResult = {
-    model: { provider: 'openai', name: 'whisper-1', version: 'whisper-1' },
+    model: {
+      provider: transcriptionProvider,
+      name: transcriptionModel,
+      version: transcriptionModel,
+    },
     language: analysis.language,
     durationMs: recordedDurationMs,
     speechMs: speechDurationMs,

@@ -133,6 +133,9 @@ jobs:
       DB_TLS_MODE: ${{ secrets.DB_TLS_MODE }}
       DB_SSL_CA_PEM: ${{ secrets.DB_SSL_CA_PEM }}
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ELEVENLABS_API_KEY: ${{ secrets.ELEVENLABS_API_KEY }}
+      KAUDIT_TRANSCRIPTION_PROVIDER: elevenlabs
+      KAUDIT_ELEVENLABS_ENABLE_LOGGING: "false"
       KAUDIT_ALLOWED_RECORDING_HOSTS: ${{ secrets.KAUDIT_ALLOWED_RECORDING_HOSTS }}
       KAUDIT_UNPOD_PROXY_BASE: ${{ secrets.KAUDIT_UNPOD_PROXY_BASE }}
       KAUDIT_TARGETED_REAUDIT_SCOPE_B64: ${{ secrets.KAUDIT_TARGETED_REAUDIT_SCOPE_B64 }}
@@ -178,7 +181,7 @@ jobs:
               KAUDIT_DIAGNOSTIC_MONTH="$DIAGNOSTIC_MONTH_INPUT" \
               node scripts/report-audit-monitor-health.mjs
             elif [[ "$AUDIT_MODE" == "diagnose-billing-performance" ]]; then
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_DATABASE_SESSION_SECRET
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
@@ -191,7 +194,7 @@ jobs:
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "RESET_JUNE_SIGNED_URL_RETRIES" ]]; then
                 exit 2
               fi
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -201,7 +204,7 @@ jobs:
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "REQUEUE_JUNE_NESTED_URL_RETRIES" ]]; then
                 exit 2
               fi
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -211,7 +214,7 @@ jobs:
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "RESET_JUNE_278_PENDING_REVIEWS" ]]; then
                 exit 2
               fi
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -222,7 +225,7 @@ jobs:
               # settle. It writes no calculation, decision, or component: it
               # reports the rate-card binding and the candidate counts so the
               # money run is never the first time either is checked.
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -235,14 +238,14 @@ jobs:
             elif [[ "$AUDIT_MODE" == "diagnose-rate-cards" ]]; then
               # Read-only. Reports every rate card version and which D-03
               # conditions it does and does not satisfy. Changes nothing.
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
               node scripts/publish-kserve-rate-card.mjs
             elif [[ "$AUDIT_MODE" == "diagnose-june-no-recording" ]]; then
               # Read-only preview of the no-recording cohort at zero.
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -259,7 +262,7 @@ jobs:
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "FINALIZE_JUNE_NO_RECORDING_ZERO" ]]; then
                 exit 2
               fi
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -272,7 +275,7 @@ jobs:
             elif [[ "$AUDIT_MODE" == "diagnose-audited-projection" ]]; then
               # Read-only preview of settling audited calls from their OWN
               # audited duration. No model, no recording re-read.
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -290,7 +293,7 @@ jobs:
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "FINALIZE_AUDITED_PROJECTION" ]]; then
                 exit 2
               fi
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -314,7 +317,7 @@ jobs:
               # entirely no-recording and settles at zero. Two months are swept
               # rather than one so a late import is still picked up, and an
               # already-settled call is simply not a candidate.
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -351,7 +354,7 @@ jobs:
               # whose calls have not been uploaded or whose audit has not
               # finished, because an ended month can be empty, half-loaded, or
               # unaudited and a calendar cannot tell those apart.
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -375,7 +378,7 @@ jobs:
               # Read-only column shapes for the tables a fallback writes. The
               # base billing schema predates this repo's migrations, so widths
               # are otherwise only learned one failed write at a time.
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -395,7 +398,7 @@ jobs:
                 echo "::error::publish-rate-card requires rate_card_id"
                 exit 2
               fi
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -407,7 +410,7 @@ jobs:
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "FINALIZE_JUNE_BILL_AUDIT" ]]; then
                 exit 2
               fi
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -428,7 +431,7 @@ jobs:
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0013" ]]; then
                 exit 2
               fi
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -442,7 +445,7 @@ jobs:
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0018" ]]; then
                 exit 2
               fi
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -459,7 +462,7 @@ jobs:
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0019" ]]; then
                 exit 2
               fi
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64
@@ -475,7 +478,7 @@ jobs:
               if [[ "$MIGRATION_CONFIRMATION_INPUT" != "APPLY_0020" ]]; then
                 exit 2
               fi
-              unset OPENAI_API_KEY
+              unset OPENAI_API_KEY ELEVENLABS_API_KEY
               unset KAUDIT_ALLOWED_RECORDING_HOSTS
               unset KAUDIT_UNPOD_PROXY_BASE
               unset KAUDIT_TARGETED_REAUDIT_SCOPE_B64

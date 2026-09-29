@@ -81,7 +81,8 @@ every call that already has a completed audit. The worker:
 
 1. fetches the KServe recording through the unpod proxy;
 2. hashes the returned audio and checks the stored baseline;
-3. transcribes with timestamped Whisper output;
+3. transcribes with timestamped ElevenLabs Scribe v2 output while independently
+   decoding the full recording duration;
 4. merges natural speech blocks and classifies the call;
 5. records model/version, classifier/ruleset, confidence, evidence hashes, and
    timestamps;

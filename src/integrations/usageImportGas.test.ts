@@ -26,6 +26,7 @@ interface SheetCellSpec {
 function makeSandbox(options: {
   rows: string[][]
   rawRows?: unknown[][]
+  modes?: string[]
   fetch: (url: string, params: {
     payload: string
     headers: Record<string, string>
@@ -48,7 +49,14 @@ function makeSandbox(options: {
   const headerCell: SheetCellSpec = { display: '' }
   const sheet = {
     getLastRow: () => rowCount + 1,
+    getLastColumn: () => (options.modes ? 13 : 11),
     getRange: (...args: number[]) => {
+      if (args.length === 2 && args[0] === 1 && args[1] === 12) {
+        return { getDisplayValue: () => 'Kaudit Audit Mode' }
+      }
+      if (args.length === 4 && args[0] === 2 && args[1] === 12 && options.modes) {
+        return { getDisplayValues: () => options.modes!.map((mode) => [mode]) }
+      }
       if (
         args.length === 4 && args[0] === 2 && args[2] === rowCount &&
         ((args[1] === 1 && args[3] === 11) ||
@@ -439,5 +447,31 @@ test('an impossible calendar datetime is marked Needs review before send', async
   assert.equal(
     sandbox.logs.find((log) => log.event === 'kaudit_usage_row_invalid')?.code,
     'DATETIME_INVALID',
+  )
+})
+
+test('unified intake uploads only new_month rows and leaves late/re-audit rows untouched', async () => {
+  const sentBodies: string[] = []
+  const sandbox = makeSandbox({
+    rows: [
+      validRow('task-new'),
+      ['task-late', '', '', '', '', '', '', '', '', 'https://recordings.example.test/b.ogg'],
+      ['task-reaudit', '', '', '', '', '', '', '', '', ''],
+      validRow('task-blank-mode'),
+    ],
+    modes: ['new_month', 'late_recording', 'Transcript Reaudit', ''],
+    fetch: (_url, params) => {
+      sentBodies.push(params.payload)
+      return { status: 200, body: importedReceipt(2) }
+    },
+  })
+  await runImport(sandbox)
+  assert.equal(sentBodies.length, 1)
+  assert.match(sentBodies[0], /task-new/)
+  assert.match(sentBodies[0], /task-blank-mode/)
+  assert.doesNotMatch(sentBodies[0], /task-late|task-reaudit/)
+  assert.equal(
+    JSON.stringify(sandbox.writtenStatuses()),
+    JSON.stringify([['Submitted'], [''], [''], ['Submitted']]),
   )
 })

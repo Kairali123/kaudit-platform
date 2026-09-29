@@ -11,7 +11,7 @@ import type {
 import { REAUDIT_CATEGORIES } from '../reaudit/types.ts'
 
 export const REAUDIT_TRANSCRIPTION_MODEL = 'whisper-1'
-export const REAUDIT_CLASSIFICATION_MODEL = 'gpt-4o-mini-2024-07-18'
+export const REAUDIT_CLASSIFICATION_MODEL = 'gpt-6-luna'
 
 const CATEGORY_RULEBOOK: Record<ReauditCategory, string> = {
   TIME_DURATION:
@@ -517,6 +517,7 @@ export function createOpenAiReaudit(apiKey: string): ReauditAi {
         .slice(0, 60_000)
       const completion = await client.chat.completions.create({
         model: REAUDIT_CLASSIFICATION_MODEL,
+        reasoning_effort: 'none',
         temperature: 0,
         response_format: {
           type: 'json_schema',

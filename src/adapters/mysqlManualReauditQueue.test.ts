@@ -466,7 +466,8 @@ test('selection carries the baseline without claiming work state early', async (
   )
   assert.match(String(claim?.sql), /FOR UPDATE/)
   assert.match(String(claim?.sql), /attempt_count < 1/)
-  assert.match(String(claim?.sql), /LIMIT 1/)
+  assert.match(String(claim?.sql), /LIMIT \?/)
+  assert.equal(claim?.parameters.at(-1), 25)
   assert.doesNotMatch(String(claim?.sql), /status = 'processing'/)
   assert.equal(fake.find(/UPDATE kaudit_billing_reaudit_item/), undefined)
   // The claim locks only the queue's own rows.

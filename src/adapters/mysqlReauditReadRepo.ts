@@ -29,6 +29,7 @@ export function createMysqlReauditReadRepo(
   config: {
     externalTaskIds?: readonly string[]
     allowPreviouslyClassified?: boolean
+    period?: { start: string; end: string }
   } = {},
 ) {
   const taskIds = config.externalTaskIds
@@ -47,6 +48,12 @@ export function createMysqlReauditReadRepo(
               )
             )`
     : ''
+  const periodSql = config.period
+    ? 'AND c.billing_period_date BETWEEN ? AND ?'
+    : ''
+  const periodParameters = config.period
+    ? [config.period.start, config.period.end]
+    : []
   return {
     async listCandidates(options: {
       limit: number
@@ -82,6 +89,7 @@ export function createMysqlReauditReadRepo(
           AND ca.is_final = 1
          LEFT JOIN kaudit_provider_cost pc ON pc.call_id = c.id
          WHERE ca.source_url IS NOT NULL
+           ${periodSql}
            AND EXISTS (
              SELECT 1
              FROM kaudit_invoice invoice
@@ -144,6 +152,7 @@ export function createMysqlReauditReadRepo(
          ORDER BY COALESCE(ca.audio_attempt_count, 0), c.billing_period_date, c.id
          LIMIT ?`,
         [
+          ...periodParameters,
           options.includePreviouslyClassified ? 1 : 0,
           options.includePreviouslyClassified ? 1 : 0,
           ...(options.includePreviouslyClassified
@@ -193,6 +202,7 @@ export function createMysqlReauditReadRepo(
           AND ca.artifact_type = 'recording'
           AND ca.is_final = 1
          WHERE ca.source_url IS NOT NULL
+           ${periodSql}
            AND EXISTS (
              SELECT 1
              FROM kaudit_invoice invoice
@@ -227,7 +237,7 @@ export function createMysqlReauditReadRepo(
              )
            )
            ${scopeSql}`,
-        [...taskIds, ...taskIds],
+        [...periodParameters, ...taskIds, ...taskIds],
       )
       const microseconds = rows[0]?.due_in_us
       if (microseconds == null) return null

@@ -211,6 +211,7 @@ export function createOpenAiConsensusReviewer(apiKey: string): {
         .slice(0, 60_000)
       const completion = await client.chat.completions.create({
         model: REAUDIT_CLASSIFICATION_MODEL,
+        reasoning_effort: 'none',
         temperature: 0,
         response_format: {
           type: 'json_schema',

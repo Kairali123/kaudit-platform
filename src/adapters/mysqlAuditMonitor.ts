@@ -3,7 +3,7 @@ import {
   KSERVE_MINUTE_MS,
   KSERVE_SHORT_CALL_CUTOFF_MS,
 } from '../billing/kserveRules.ts'
-import { calculateOpenAiAuditCost } from '../usage/openAiCost.ts'
+import { calculateAiAuditCost } from '../usage/openAiCost.ts'
 import type { ManualReauditRowStatus } from '../reaudit/manualRequests.ts'
 import { readManualReauditRowStatuses } from './mysqlManualReauditQueue.ts'
 import {
@@ -110,7 +110,7 @@ export interface AuditMonitorData {
       gptInputTokens: number
       gptOutputTokens: number
       gptTotalTokens: number
-      whisperAudioSeconds: string
+      transcriptionAudioSeconds: string
       historicalUsageRecorded: boolean
     }
     auditedFinancials: {
@@ -231,6 +231,8 @@ interface OverallSummaryRow extends RowDataPacket {
 }
 
 interface UsageSummaryRow extends RowDataPacket {
+  provider_name: string | null
+  model_name: string | null
   tracked_audit_runs: number | string
   input_tokens: number | string | null
   output_tokens: number | string | null
@@ -239,13 +241,17 @@ interface UsageSummaryRow extends RowDataPacket {
 }
 
 interface UsageCostRow extends RowDataPacket {
+  provider_name: string | null
   model_name: string | null
   input_tokens: number | string | null
   output_tokens: number | string | null
   audio_seconds: number | string | null
 }
 
-type UsageModelCostRow = UsageCostRow & { model_name: string }
+type UsageModelCostRow = UsageCostRow & {
+  provider_name: string
+  model_name: string
+}
 
 interface AuditedFinancialSummaryRow extends RowDataPacket {
   audited_calls: number | string
@@ -621,6 +627,7 @@ export function legacyAuditedCountAndUsageSql(filters: { sql: string }): {
        ${AUDITED_JOIN}
        ${filters.sql}`,
     usage: `SELECT
+           usage_event.provider_name,
            usage_event.model_name,
            COUNT(DISTINCT usage_event.audit_run_id)
              AS tracked_audit_runs,
@@ -640,7 +647,7 @@ export function legacyAuditedCountAndUsageSql(filters: { sql: string }): {
          ) audited
           ON audited.call_id = usage_event.call_id
           AND audited.audit_run_id = usage_event.audit_run_id
-         GROUP BY usage_event.model_name WITH ROLLUP`,
+         GROUP BY usage_event.provider_name, usage_event.model_name WITH ROLLUP`,
   }
 }
 
@@ -658,6 +665,7 @@ export function auditedCountAndUsageSql(filters: { sql: string }): {
            ${eligibleAuditedCallsSql(filters)}
          )
          SELECT
+           usage_event.provider_name,
            usage_event.model_name,
            COUNT(DISTINCT usage_event.audit_run_id)
              AS tracked_audit_runs,
@@ -674,7 +682,7 @@ export function auditedCountAndUsageSql(filters: { sql: string }): {
          JOIN kaudit_ai_usage_event usage_event
            ON usage_event.call_id = c.id
           AND usage_event.audit_run_id = ar.id
-         GROUP BY usage_event.model_name WITH ROLLUP`,
+         GROUP BY usage_event.provider_name, usage_event.model_name WITH ROLLUP`,
   }
 }
 
@@ -1571,9 +1579,12 @@ export async function collectAuditMonitor(
         auditedCountAndUsageSql(filters).usage,
         filters.params,
       )
-      usage = usageResult.find((row) => row.model_name == null) ?? null
+      usage = usageResult.find(
+        (row) => row.provider_name == null && row.model_name == null,
+      ) ?? null
       usageCostRows = usageResult.filter(
         (row): row is UsageSummaryRow & UsageModelCostRow =>
+          typeof row.provider_name === 'string' &&
           typeof row.model_name === 'string',
       )
     } catch {
@@ -1591,10 +1602,11 @@ export async function collectAuditMonitor(
     )
     : [[] as AuditedFinancialSummaryRow[]]
   const financial = financialRows[0]
-  const aiCost = calculateOpenAiAuditCost(
+  const aiCost = calculateAiAuditCost(
     usageCostRows
       .filter((row) => typeof row.model_name === 'string')
       .map((row) => ({
+        providerName: row.provider_name,
         modelName: row.model_name,
         inputTokens: Number(row.input_tokens || 0),
         outputTokens: Number(row.output_tokens || 0),
@@ -1626,7 +1638,7 @@ export async function collectAuditMonitor(
     gptInputTokens: Number(usage?.input_tokens || 0),
     gptOutputTokens: Number(usage?.output_tokens || 0),
     gptTotalTokens: Number(usage?.total_tokens || 0),
-    whisperAudioSeconds: Number(usage?.audio_seconds || 0).toFixed(3),
+    transcriptionAudioSeconds: Number(usage?.audio_seconds || 0).toFixed(3),
     historicalUsageRecorded: usage != null,
   }
   const aiSpend: AuditMonitorUsageSummaryData['aiSpend'] = {

@@ -509,17 +509,17 @@ export function AuditMonitorPage() {
             ? 'good'
             : 'pending',
       }, {
-        label: 'Whisper audio processed',
+        label: 'Transcription audio processed',
         value: usage.aiUsage.historicalUsageRecorded
           ? `${(
-              Number(usage.aiUsage.whisperAudioSeconds) / 60
+              Number(usage.aiUsage.transcriptionAudioSeconds) / 60
             ).toLocaleString('en-IN', {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
             })} min`
           : 'Not recorded',
         sub:
-          'Whisper-1 reports billed audio duration, not text tokens',
+          'Scribe v2 reports audio-duration usage, not text tokens',
         status:
           usage.aiUsage.historicalUsageRecorded
             ? 'good'
@@ -939,7 +939,7 @@ export function AuditMonitorPage() {
                     <small className="cell-sub">
                       {row.aiUsage.totalTokens == null
                         ? 'Tracking begins with migration 0007'
-                        : `${row.aiUsage.inputTokens?.toLocaleString('en-IN') ?? 0} input · ${row.aiUsage.outputTokens?.toLocaleString('en-IN') ?? 0} output · ${row.aiUsage.audioSeconds ?? '0.000'}s Whisper`}
+                        : `${row.aiUsage.inputTokens?.toLocaleString('en-IN') ?? 0} input · ${row.aiUsage.outputTokens?.toLocaleString('en-IN') ?? 0} output · ${row.aiUsage.audioSeconds ?? '0.000'}s transcription`}
                     </small>
                   </td>
                   <td>{rowStatus(row)}</td>
