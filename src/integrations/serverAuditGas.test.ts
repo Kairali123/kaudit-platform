@@ -114,3 +114,30 @@ test('one run takes turns between tabs and each tab keeps its own mode', () => {
   assert.equal(fresh.rows[1]?.[4], 'FAILED')
   assert.equal(fresh.rows[1]?.[6], 'BILL_MONTH_MISSING')
 })
+
+test('a busy refusal hands rows back without spending an attempt', () => {
+  const context = vm.createContext({ console })
+  new vm.Script(source).runInContext(context)
+  const dispatcher = context as unknown as {
+    kauditAuditApplyResponse_: (batch: unknown, response: unknown) => void
+    kauditAuditInitialBatches_: (contexts: unknown[], limit: number) => unknown[]
+  }
+  const sheet = tab('Late Recording', [['late-1', '2026-06'], ['late-2', '2026-06']])
+  sheet.rows[0]![4] = 'RUNNING'
+  sheet.rows[0]![7] = 'gas-first'
+  sheet.rows[0]![8] = '1'
+  sheet.rows[1]![4] = 'RUNNING'
+  sheet.rows[1]![7] = 'gas-retry'
+  sheet.rows[1]![8] = '2'
+  const busy = {
+    getResponseCode: () => 409,
+    getContentText: () => JSON.stringify({ code: 'LATE_RECORDING_BUSY' }),
+  }
+  dispatcher.kauditAuditApplyResponse_({ rows: [{ context: sheet, index: 0 }] }, busy)
+  dispatcher.kauditAuditApplyResponse_({ rows: [{ context: sheet, index: 1 }] }, busy)
+  assert.deepEqual([sheet.rows[0]?.[4], sheet.rows[0]?.[8]], ['PENDING', 0])
+  assert.deepEqual([sheet.rows[1]?.[4], sheet.rows[1]?.[8]], ['RETRYABLE', 1])
+  assert.equal(sheet.rows[0]?.[6], 'LATE_RECORDING_BUSY')
+  // The first-attempt row is queued again on the next run.
+  assert.equal(dispatcher.kauditAuditInitialBatches_([sheet], 4).length, 1)
+})
