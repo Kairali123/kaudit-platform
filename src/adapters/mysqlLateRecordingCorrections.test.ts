@@ -1033,3 +1033,17 @@ test('a storage failure logs only the operation and driver identifiers', async (
   }])
   assert.doesNotMatch(written.join(''), /secret|SELECT|Unknown column/)
 })
+
+test('row_number is always quoted: it is a reserved word in MySQL 8', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const adapter = await readFile(
+    new URL('./mysqlLateRecordingCorrections.ts', import.meta.url),
+    'utf8',
+  )
+  // Unquoted `row_number` in SQL is ER_PARSE_ERROR (1064) on MySQL 8. The
+  // TypeScript row property (`row_number:` / `.row_number)`) is exempt.
+  const unquoted = adapter
+    .split('\n')
+    .filter((line) => /(?<!\\`|\w)row_number(?!\\`|:|\))/.test(line))
+  assert.deepEqual(unquoted, [])
+})

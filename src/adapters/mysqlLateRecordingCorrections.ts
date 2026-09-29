@@ -684,7 +684,7 @@ export async function commitLateRecordingBatch(
       await connection.execute(
         `INSERT INTO kaudit_late_recording_item
            (id, batch_id, call_id, call_artifact_id, task_reference,
-            row_number, canonical_url_sha256, previous_amount,
+            \`row_number\`, canonical_url_sha256, previous_amount,
             superseded_calculation_id, state, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'accepted', ?)`,
         [
@@ -789,7 +789,7 @@ export function createMysqlLateRecordingCandidateRepository(
                  )
                )
              )
-           ORDER BY item.row_number, item.id
+           ORDER BY item.\`row_number\`, item.id
            LIMIT ${limit}
            FOR UPDATE`,
           [batchId],
@@ -1417,13 +1417,13 @@ export async function readLateRecordingBatchProgress(
     const batch = batchRows[0]
     if (!batch) return null
     const [items] = await pool.execute<ProgressRow[]>(
-      `SELECT task_reference, row_number, state,
+      `SELECT task_reference, \`row_number\`, state,
               CAST(previous_amount AS CHAR) AS previous_amount,
               CAST(revised_amount AS CHAR) AS revised_amount,
               last_error_code, completed_at
        FROM kaudit_late_recording_item
        WHERE batch_id = ?
-       ORDER BY row_number, id`,
+       ORDER BY \`row_number\`, id`,
       [batchId],
     )
     const [corrections] = await pool.execute<RowDataPacket[]>(
@@ -1531,7 +1531,7 @@ export async function listLateRecordingItemsAwaitingCorrection(
       `SELECT id, call_id, task_reference
        FROM kaudit_late_recording_item
        WHERE batch_id = ? AND state = 'auditing'
-       ORDER BY row_number, id
+       ORDER BY \`row_number\`, id
        LIMIT ${MAX_LATE_RECORDING_ROWS}`,
       [batchId],
     )
@@ -1723,7 +1723,7 @@ export async function listLateRecordingCorrectionFacts(
          )
        WHERE item.batch_id = ?
          AND item.state = 'auditing'
-       ORDER BY item.row_number, item.id
+       ORDER BY item.\`row_number\`, item.id
        LIMIT ${MAX_LATE_RECORDING_ROWS}`,
       [batchId],
     )
