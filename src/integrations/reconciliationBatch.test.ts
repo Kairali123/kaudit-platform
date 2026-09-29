@@ -148,3 +148,30 @@ test('task lookup is scoped to the exact bill month and the submitted Task IDs',
     ['task-3', 'failed', 'TASK_NOT_FOUND_OR_AMBIGUOUS'],
   ])
 })
+
+test('a swallowed billing failure logs only bounded identifiers', async () => {
+  const { logReconciliationBillingFailure } = await import('./reconciliationBatch.ts')
+  const written: string[] = []
+  const original = process.stderr.write.bind(process.stderr)
+  process.stderr.write = ((chunk: string) => {
+    written.push(String(chunk))
+    return true
+  }) as typeof process.stderr.write
+  try {
+    logReconciliationBillingFailure('validate_and_bill', Object.assign(
+      new Error("Duplicate entry 'https://recordings.example.test/x.ogg'"),
+      { code: 'ER_DUP_ENTRY', errno: 1062, sql: 'INSERT secret' },
+    ))
+  } finally {
+    process.stderr.write = original
+  }
+  assert.deepEqual(JSON.parse(written.join('')), {
+    event: 'reconciliation_billing_failed',
+    operation: 'validate_and_bill',
+    name: 'Error',
+    code: 'ER_DUP_ENTRY',
+    errno: 1062,
+    status: null,
+  })
+  assert.doesNotMatch(written.join(''), /recordings|secret|Duplicate/)
+})
