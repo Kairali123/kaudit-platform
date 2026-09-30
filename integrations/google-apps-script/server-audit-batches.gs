@@ -13,6 +13,10 @@ const KAUDIT_SERVER_AUDIT = Object.freeze({
   defaultParallelBatches: 4,
   maxParallelBatches: 8,
   triggerMinutes: 1,
+  // Apps Script stops a run at 6 minutes; a server batch may take up to 5.
+  // A run that has not sent within this budget gives up and leaves its rows
+  // for the next run instead of being killed mid-flight.
+  sendBudgetMs: 60000,
   // Tab name picks the mode (see kauditAuditMode_), so rows need no mode cell.
   tabs: Object.freeze({
     newMonth: 'New Month',
@@ -46,9 +50,12 @@ function runKauditServerAuditBatches() {
     console.log(JSON.stringify({ event: 'kaudit_server_audit_skipped', reason: 'locked' }));
     return;
   }
+  const startedAt = Date.now();
+  const timing = {};
   try {
     const config = kauditAuditConfig_();
     const contexts = kauditAuditContexts_(config);
+    timing.readMs = Date.now() - startedAt;
     if (!contexts.length) return;
 
     const plan = kauditAuditPlanBatches_(contexts, config.parallelBatches);
@@ -56,7 +63,13 @@ function runKauditServerAuditBatches() {
     const pass = plan.pass;
     if (!batches.length) {
       kauditAuditFlush_(contexts);
-      console.log(JSON.stringify({ event: 'kaudit_server_audit_complete' }));
+      console.log(JSON.stringify({ event: 'kaudit_server_audit_complete', timing: timing }));
+      return;
+    }
+    if (Date.now() - startedAt > KAUDIT_SERVER_AUDIT.sendBudgetMs) {
+      console.log(JSON.stringify({
+        event: 'kaudit_server_audit_skipped', reason: 'send_budget_exceeded', timing: timing,
+      }));
       return;
     }
 
@@ -75,6 +88,7 @@ function runKauditServerAuditBatches() {
     });
     kauditAuditFlush_(contexts);
     SpreadsheetApp.flush();
+    timing.claimedMs = Date.now() - startedAt;
 
     let responses;
     try {
@@ -93,12 +107,14 @@ function runKauditServerAuditBatches() {
       return;
     }
 
+    timing.serverMs = Date.now() - startedAt - timing.claimedMs;
     responses.forEach(function(response, index) {
       kauditAuditApplyResponse_(batches[index], response);
     });
     kauditAuditFlush_(contexts);
+    timing.totalMs = Date.now() - startedAt;
     console.log(JSON.stringify({
-      event: 'kaudit_server_audit_run', pass: pass,
+      event: 'kaudit_server_audit_run', pass: pass, timing: timing,
       batches: batches.length,
       rows: batches.reduce(function(total, batch) { return total + batch.rows.length; }, 0),
     }));
@@ -332,10 +348,41 @@ function kauditAuditContext_(sheet, config) {
     });
   });
   const rowCount = Math.max(0, sheet.getLastRow() - headerRow);
-  const rows = rowCount
-    ? sheet.getRange(headerRow + 1, 1, rowCount, sheet.getLastColumn()).getDisplayValues()
-    : [];
+  const rows = kauditAuditReadColumns_(sheet, headerRow, rowCount, columns);
   return { sheet: sheet, headerRow: headerRow, rows: rows, columns: columns, config: config };
+}
+
+/**
+ * Reads only the columns this script uses, as raw values. Reading every
+ * column as display text took minutes on a month-sized tab and held the
+ * script lock, so later triggers skipped. Dates that Sheets auto-converted
+ * are turned back into the text the rest of the script expects.
+ */
+function kauditAuditReadColumns_(sheet, headerRow, rowCount, columns) {
+  const rows = [];
+  for (let index = 0; index < rowCount; index += 1) rows.push([]);
+  if (!rowCount) return rows;
+  const timeZone = SpreadsheetApp.getActive().getSpreadsheetTimeZone();
+  Object.keys(columns).forEach(function(key) {
+    const column = columns[key];
+    if (column < 0) return;
+    const values = sheet.getRange(headerRow + 1, column + 1, rowCount, 1).getValues();
+    for (let index = 0; index < rowCount; index += 1) {
+      rows[index][column] = kauditAuditCellText_(values[index][0], key, timeZone);
+    }
+  });
+  return rows;
+}
+
+function kauditAuditCellText_(value, key, timeZone) {
+  if (value === null || value === undefined) return '';
+  if (Object.prototype.toString.call(value) === '[object Date]') {
+    if (isNaN(value.getTime())) return '';
+    return key === 'billMonth'
+      ? Utilities.formatDate(value, timeZone, 'yyyy-MM')
+      : value.toISOString();
+  }
+  return String(value);
 }
 
 function kauditAuditHeaderRow_(sheet) {

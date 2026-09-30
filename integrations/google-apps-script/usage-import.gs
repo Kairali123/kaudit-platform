@@ -59,6 +59,13 @@ function submitPendingKauditUsage() {
       printKauditUsageStatus_('complete', 0, 0, 0);
       return;
     }
+    // Cheap pre-check before the full two-pass read: most runs after an
+    // import find every row already Submitted, and reading a month-sized tab
+    // twice held the shared script lock for minutes.
+    if (!hasPendingKauditUsage_(sheet, rowCount)) {
+      printKauditUsageStatus_('complete', 0, 0, 0);
+      return;
+    }
 
     const sourceRange = sheet.getRange(
       KAUDIT_USAGE_IMPORT.headerRow + 1,
@@ -440,6 +447,18 @@ function attachKauditUsageModes_(sheet, data, rowCount) {
       ? String(modes[index][0] || '').trim().toLowerCase().replace(/\s+/g, '_')
       : '';
   });
+}
+
+/**
+ * True when any row inside the used range has no Import Status yet. Only
+ * that one column is read; the full pass then decides what is pending
+ * exactly as before (including rows with data but a blank Task ID).
+ */
+function hasPendingKauditUsage_(sheet, rowCount) {
+  const statuses = sheet.getRange(
+    KAUDIT_USAGE_IMPORT.headerRow + 1, KAUDIT_USAGE_IMPORT.statusColumn, rowCount, 1,
+  ).getValues();
+  return statuses.some(function(row) { return String(row[0] || '').trim() === ''; });
 }
 
 function isPendingKauditRow_(row) {
