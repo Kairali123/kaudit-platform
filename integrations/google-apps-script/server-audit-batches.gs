@@ -37,8 +37,8 @@ const KAUDIT_SERVER_AUDIT = Object.freeze({
 });
 
 /**
- * Processes a bounded set of Sheet rows. First attempts always drain before
- * final retries, so failures are re-hit only after the remaining base rows.
+ * Processes a bounded set of Sheet rows. Retries an operator requested go
+ * first; automatic final retries wait until every first attempt has drained.
  */
 function runKauditServerAuditBatches() {
   const lock = LockService.getScriptLock();
@@ -51,12 +51,9 @@ function runKauditServerAuditBatches() {
     const contexts = kauditAuditContexts_(config);
     if (!contexts.length) return;
 
-    let batches = kauditAuditInitialBatches_(contexts, config.parallelBatches);
-    let pass = 'initial';
-    if (!batches.length) {
-      batches = kauditAuditRetryBatches_(contexts, config.parallelBatches);
-      pass = 'final_retry';
-    }
+    const plan = kauditAuditPlanBatches_(contexts, config.parallelBatches);
+    const batches = plan.batches;
+    const pass = plan.pass;
     if (!batches.length) {
       kauditAuditFlush_(contexts);
       console.log(JSON.stringify({ event: 'kaudit_server_audit_complete' }));
@@ -112,6 +109,20 @@ function runKauditServerAuditBatches() {
 
 /** Make selected failed rows eligible for one supervised retry. */
 function retrySelectedKauditServerAudits() {
+  // Never edit rows under a run in flight: its write-back owns those cells.
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    throw new Error('An audit run is in progress. Try Retry selected again in a minute.');
+  }
+  try {
+    kauditAuditRequestRetry_();
+  } finally {
+    lock.releaseLock();
+  }
+  runKauditServerAuditBatches();
+}
+
+function kauditAuditRequestRetry_() {
   const sheet = SpreadsheetApp.getActiveSheet();
   const range = sheet.getActiveRange();
   if (!range) throw new Error('Select one or more failed audit rows first');
@@ -126,12 +137,12 @@ function retrySelectedKauditServerAudits() {
     // change; the trigger never retries it on its own.
     if (['FAILED', 'RETRYABLE', 'NEEDS_REVIEW'].indexOf(status) < 0) continue;
     const hasBatch = String(kauditAuditGet_(ref, 'batchId') || '').trim() !== '';
-    kauditAuditSet_(ref, 'status', hasBatch ? 'RETRYABLE' : 'PENDING');
+    // RETRY_REQUESTED jumps the queue; automatic retries still wait.
+    kauditAuditSet_(ref, 'status', hasBatch ? 'RETRY_REQUESTED' : 'PENDING');
     kauditAuditSet_(ref, 'attempt', hasBatch ? 1 : 0);
     kauditAuditSet_(ref, 'error', '');
   }
   kauditAuditFlush_([context]);
-  runKauditServerAuditBatches();
 }
 
 /**
@@ -183,7 +194,7 @@ function kauditAuditSetupTab_(spreadsheet, name, expected) {
   const statusRange = sheet.getRange(2, statusColumn, dataRows, 1);
   const colours = {
     COMPLETED: '#d9ead3', FAILED: '#f4cccc', RETRYABLE: '#fff2cc',
-    RUNNING: '#cfe2f3', NEEDS_REVIEW: '#fce5cd',
+    RUNNING: '#cfe2f3', NEEDS_REVIEW: '#fce5cd', RETRY_REQUESTED: '#d9d2e9',
   };
   const rules = sheet.getConditionalFormatRules().filter(function(rule) {
     return !rule.getRanges().some(function(range) { return range.getColumn() === statusColumn; });
@@ -346,18 +357,33 @@ function kauditAuditGet_(ref, key) {
 
 function kauditAuditSet_(ref, key, value) {
   ref.context.rows[ref.index][ref.context.columns[key]] = value;
+  if (!ref.context.dirty) ref.context.dirty = {};
+  ref.context.dirty[ref.index] = true;
 }
 
+/**
+ * Writes back only rows this run changed, in contiguous blocks. Writing every
+ * row would replace edits made on the sheet while the run was in flight
+ * (a Retry selected click, a status typed by hand) with this run's snapshot.
+ */
 function kauditAuditFlush_(contexts) {
   const outputKeys = ['status', 'stage', 'error', 'batchId', 'attempt', 'updatedAt', 'amount'];
   contexts.forEach(function(context) {
-    if (!context.rows.length) return;
-    outputKeys.forEach(function(key) {
-      const column = context.columns[key];
-      context.sheet.getRange(
-        context.headerRow + 1, column + 1, context.rows.length, 1,
-      ).setValues(context.rows.map(function(row) { return [row[column]]; }));
-    });
+    const indexes = Object.keys(context.dirty || {})
+      .map(Number).sort(function(left, right) { return left - right; });
+    context.dirty = {};
+    for (let start = 0; start < indexes.length;) {
+      let end = start;
+      while (end + 1 < indexes.length && indexes[end + 1] === indexes[end] + 1) end += 1;
+      const block = context.rows.slice(indexes[start], indexes[end] + 1);
+      outputKeys.forEach(function(key) {
+        const column = context.columns[key];
+        context.sheet.getRange(
+          context.headerRow + 1 + indexes[start], column + 1, block.length, 1,
+        ).setValues(block.map(function(row) { return [row[column]]; }));
+      });
+      start = end + 1;
+    }
   });
 }
 
@@ -466,7 +492,19 @@ function kauditAuditInitialBatches_(contexts, limit) {
   return batches;
 }
 
-function kauditAuditRetryBatches_(contexts, limit) {
+function kauditAuditPlanBatches_(contexts, limit) {
+  const requested = kauditAuditRetryBatches_(contexts, limit, ['RETRY_REQUESTED']);
+  const batches = requested.concat(requested.length < limit
+    ? kauditAuditInitialBatches_(contexts, limit - requested.length)
+    : []);
+  if (batches.length) {
+    return { batches: batches, pass: requested.length ? 'requested_retry' : 'initial' };
+  }
+  return { batches: kauditAuditRetryBatches_(contexts, limit), pass: 'final_retry' };
+}
+
+function kauditAuditRetryBatches_(contexts, limit, statuses) {
+  const eligible = statuses || ['RETRYABLE', 'RUNNING', 'FAILED'];
   const groups = {};
   contexts.forEach(function(context) {
     context.rows.forEach(function(row, index) {
@@ -484,7 +522,7 @@ function kauditAuditRetryBatches_(contexts, limit) {
     const retry = rows.some(function(ref) {
       const status = String(kauditAuditGet_(ref, 'status') || '').trim().toUpperCase();
       const attempt = Number(kauditAuditGet_(ref, 'attempt') || 0);
-      return ['RETRYABLE', 'RUNNING', 'FAILED'].indexOf(status) >= 0 && attempt < 2;
+      return eligible.indexOf(status) >= 0 && attempt < 2;
     });
     if (!retry) return false;
     batches.push({

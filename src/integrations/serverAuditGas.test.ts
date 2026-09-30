@@ -40,7 +40,7 @@ test('every row records a bounded server lifecycle and one final retry', () => {
   ]) {
     assert.match(source, new RegExp(header))
   }
-  assert.match(source, /pass = 'final_retry'/)
+  assert.match(source, /pass: 'final_retry'/)
   assert.match(source, /attempt < 2/)
   assert.match(source, /\['RETRYABLE', 'RUNNING', 'FAILED'\]/)
 })
@@ -177,4 +177,54 @@ test('a low-confidence billing refusal is parked for review, not retried', () =>
 test('NEEDS_REVIEW rows can be retried on request, never by the trigger', () => {
   assert.match(source, /\['FAILED', 'RETRYABLE', 'NEEDS_REVIEW'\]\.indexOf\(status\)/)
   assert.match(source, /\['RETRYABLE', 'RUNNING', 'FAILED'\]/)
+})
+
+test('an operator-requested retry runs before new rows; automatic retries still wait', () => {
+  const context = vm.createContext({ console })
+  new vm.Script(source).runInContext(context)
+  const dispatcher = context as unknown as {
+    kauditAuditPlanBatches_: (contexts: unknown[], limit: number) => {
+      pass: string
+      batches: Array<{ batchId: string; rows: unknown[] }>
+    }
+  }
+  const sheet = tab('Re-audit', [
+    ['re-new-1', '2026-06'], ['re-new-2', '2026-06'], ['re-new-3', '2026-06'],
+    ['re-new-4', '2026-06'], ['re-asked', '2026-06'], ['re-auto', '2026-06'],
+  ])
+  sheet.rows[4]![4] = 'RETRY_REQUESTED'
+  sheet.rows[4]![7] = 'gas-asked'
+  sheet.rows[4]![8] = '1'
+  sheet.rows[5]![4] = 'RETRYABLE'
+  sheet.rows[5]![7] = 'gas-auto'
+  sheet.rows[5]![8] = '1'
+  const plan = dispatcher.kauditAuditPlanBatches_([sheet], 2)
+  assert.equal(plan.pass, 'requested_retry')
+  assert.deepEqual([...plan.batches].map((batch) => batch.batchId), ['gas-asked', ''])
+  // The automatic retry is not in this run: first attempts still drain first.
+  assert.ok([...plan.batches].every((batch) => batch.batchId !== 'gas-auto'))
+})
+
+test('a run writes back only the rows it changed, in contiguous blocks', () => {
+  const context = vm.createContext({ console })
+  new vm.Script(source).runInContext(context)
+  const dispatcher = context as unknown as {
+    kauditAuditSet_: (ref: unknown, key: string, value: unknown) => void
+    kauditAuditFlush_: (contexts: unknown[]) => void
+  }
+  const writes: Array<[number, number, number]> = []
+  const sheet = tab('Re-audit', Array.from({ length: 6 }, (_, n) =>
+    [`re-${n}`, '2026-06'] as [string, string]))
+  ;(sheet.sheet as unknown as { getRange: unknown }).getRange =
+    (row: number, column: number, rows: number) => ({
+      setValues: () => writes.push([row, column, rows]),
+    })
+  for (const index of [1, 2, 4]) {
+    dispatcher.kauditAuditSet_({ context: sheet, index }, 'status', 'RUNNING')
+  }
+  dispatcher.kauditAuditFlush_([sheet])
+  // Two blocks (rows 1-2 and row 4) x seven output columns; rows 0, 3, 5
+  // are never rewritten, so edits made meanwhile survive.
+  assert.equal(writes.length, 14)
+  assert.deepEqual([...new Set(writes.map(([row, , rows]) => `${row}:${rows}`))], ['3:2', '6:1'])
 })
