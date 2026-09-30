@@ -453,3 +453,78 @@ test('an unrepairable second opinion stops with a terminal code', async () => {
       (error as { code?: string }).code === 'CONSENSUS_OUTPUT_UNRECOVERABLE',
   )
 })
+
+// ---- End to end through the REAL classifier-output parser --------------------
+// Earlier tests fed hand-built ModelClassifications, so they could not see that
+// the reviewer's own schema lacked agent blocks and failure boundaries. Every
+// pass here goes through parseClassifierOutput, as in production.
+
+function modelJson(overrides: Record<string, unknown>): string {
+  return JSON.stringify({
+    category: 'OK', confidence: 0.9,
+    customer_block_numbers: [], unclear_block_numbers: [], agent_block_numbers: [],
+    voicemail_evidence_block_numbers: [], automation_evidence_block_numbers: [],
+    junk_evidence_block_numbers: [], business_relevant_customer_block_numbers: [],
+    counterparty_type: 'human', agent_handling: 'normal',
+    conversation_outcome: 'no_outcome', duration_outcome: 'unclear',
+    stop_intent: 'none', post_stop_behavior: 'not_applicable',
+    successful_outcome: 'none', voicemail_evidence: 'none',
+    automation_evidence: 'none', junk_evidence: 'none',
+    agent_failure_mode: 'none', meaningful_service_before_failure: false,
+    agent_failure_start_block_number: 0,
+    remarks: 'synthetic', dispute_recommended: false,
+    ...overrides,
+  })
+}
+
+async function runParsed(json: string, blocks = BLOCKS, segments = SEGMENTS, recordedMs = RECORDED_MS) {
+  const { parseClassifierOutput } = await import('../adapters/openaiReaudit.ts')
+  const parsed = () => parseClassifierOutput(json, blocks, {
+    provider: 'openai', name: 'gpt-6-luna', version: 'gpt-6-luna',
+  })
+  const pass = { async classify() { return parsed() } }
+  return runAutomatedValidation(untouchablePool, {
+    candidate: {
+      ...candidate(validateClassification(parsed(), blocks, recordedMs)),
+      segments,
+      recordedDurationMs: recordedMs,
+    },
+    reviewer: pass,
+    adjudicator: pass,
+    rateCard: RATE_CARD,
+    correlationId: null,
+    decidedAt: '2026-06-30T10:00:00.000Z',
+    dryRun: true,
+  })
+}
+
+test('parsed passes price a mid-conversation AGENT_FAILURE, not zero', async () => {
+  const outcome = await runParsed(modelJson({
+    category: 'AGENT_FAILURE',
+    customer_block_numbers: [2, 4, 6, 7],
+    agent_block_numbers: [1, 3, 5],
+    agent_handling: 'failed',
+    agent_failure_mode: 'mid_conversation',
+    meaningful_service_before_failure: true,
+    agent_failure_start_block_number: 6,
+  }))
+  assert.equal(outcome.status, 'accepted')
+  assert.equal(outcome.policyCode, 'AGENT_FAILURE_MID_CONVERSATION_PLUS_30S')
+  assert.equal(outcome.amount, '19.00000000')
+})
+
+test('parsed passes price USER_SILENCE through the last agent turn plus grace', async () => {
+  const segments = [
+    { startMs: 0, endMs: 8_000, text: 'Namaste, this is Saanvi from Kairali.' },
+    { startMs: 12_000, endMs: 20_000, text: 'Is this a good time for a quick conversation?' },
+  ]
+  const blocks = mergeTranscriptSegments(segments)
+  const outcome = await runParsed(modelJson({
+    category: 'USER_SILENCE',
+    agent_block_numbers: blocks.map((block) => block.number),
+    counterparty_type: 'no_response',
+  }), blocks, segments, 60_000)
+  assert.equal(outcome.status, 'accepted')
+  assert.equal(outcome.policyCode, 'USER_SILENCE_AGENT_PLUS_GRACE')
+  assert.notEqual(outcome.amount, '0.00000000')
+})

@@ -1,12 +1,22 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { createOpenAiConsensusReviewer } from './openaiConsensus.ts'
+import {
+  CONSENSUS_REVIEWER_OUTPUT_SCHEMA,
+  createOpenAiConsensusReviewer,
+} from './openaiConsensus.ts'
+import {
+  REAUDIT_CLASSIFIER_OUTPUT_SCHEMA,
+  REAUDIT_KAIRALI_REFERENCE_RULES,
+} from './openaiReaudit.ts'
 
 /**
  * The v2 reviewer request shape, captured from a stubbed fetch. No network,
  * no real key, synthetic transcript.
  */
-async function captureRequest(reasoningEffort?: 'none' | 'low' | 'medium') {
+async function captureRequest(
+  reasoningEffort?: 'none' | 'low' | 'medium',
+  overrides: Record<string, unknown> = {},
+) {
   const bodies: Record<string, unknown>[] = []
   const original = globalThis.fetch
   globalThis.fetch = (async (_url: unknown, init?: { body?: unknown }) => {
@@ -23,7 +33,10 @@ async function captureRequest(reasoningEffort?: 'none' | 'low' | 'medium') {
         stop_intent: 'none', post_stop_behavior: 'not_applicable',
         successful_outcome: 'none', voicemail_evidence: 'none',
         automation_evidence: 'none', junk_evidence: 'none',
+        agent_block_numbers: [1], meaningful_service_before_failure: false,
+        agent_failure_mode: 'none', agent_failure_start_block_number: 0,
         remarks: 'synthetic', dispute_recommended: false,
+        ...overrides,
       }) } }],
       usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
     }), { status: 200, headers: { 'content-type': 'application/json' } })
@@ -59,4 +72,36 @@ test('with reasoning, temperature is omitted and the effort is recorded', async 
   assert.equal(body.reasoning_effort, 'medium')
   assert.equal('temperature' in body, false)
   assert.equal(result.model.version, 'gpt-6-luna+reasoning-medium')
+})
+
+test('the reviewer reports the AGENT_FAILURE boundary like the primary', async () => {
+  const required = CONSENSUS_REVIEWER_OUTPUT_SCHEMA.schema.required as readonly string[]
+  assert.ok(required.includes('agent_failure_mode'))
+  assert.ok(required.includes('agent_failure_start_block_number'))
+  const { result } = await captureRequest('low', {
+    category: 'AGENT_FAILURE',
+    agent_failure_mode: 'mid_conversation',
+    agent_failure_start_block_number: 6,
+  })
+  assert.equal(result.decisionSignals?.agentFailureMode, 'mid_conversation')
+  assert.equal(result.agentFailureStartBlockNumber, 6)
+  const none = await captureRequest('low')
+  assert.equal(none.result.agentFailureStartBlockNumber, null)
+})
+
+test('an answered introduction before the failure is a mid-conversation failure', () => {
+  assert.match(REAUDIT_KAIRALI_REFERENCE_RULES, /language choice\s+counts/)
+  assert.doesNotMatch(REAUDIT_KAIRALI_REFERENCE_RULES, /mid_conversation ONLY when a genuine two-way/)
+})
+
+test('the reviewer schema is the primary schema, so no pricing field can drift', () => {
+  assert.deepEqual(
+    CONSENSUS_REVIEWER_OUTPUT_SCHEMA.schema,
+    REAUDIT_CLASSIFIER_OUTPUT_SCHEMA.schema,
+  )
+})
+
+test('the reviewer returns the agent blocks USER_SILENCE pricing needs', async () => {
+  const { result } = await captureRequest('low', { agent_block_numbers: [1] })
+  assert.deepEqual([...(result.agentBlockNumbers ?? [])], [1])
 })
