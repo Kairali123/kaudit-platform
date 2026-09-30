@@ -177,9 +177,13 @@ test('audit monitor isolates row tables before expensive summaries', async () =>
   assert.match(source, /section=rows&table=audited/)
   assert.match(source, /section=rows&table=pending/)
   assert.match(source, /section=rows&table=no-recording/)
-  assert.match(source, /section=summary-core/)
-  assert.match(source, /section=summary-usage/)
-  assert.match(source, /section=summary-financial/)
+  // Summaries read stored snapshots (or recompute in the long function); each
+  // section is still its own request, started in priority order below.
+  assert.match(source, /readSummary<AuditMonitorCoreSummaryData>\('summary-core', false\)/)
+  assert.match(source, /readSummary<AuditMonitorUsageSummaryData>\('summary-usage', false\)/)
+  assert.match(source, /readSummary<AuditMonitorFinancialSummaryData>\('summary-financial', false\)/)
+  assert.match(source, /section=\$\{section\}/)
+  assert.match(source, /\/api\/v1\/audits\/refresh\?section=/)
   assert.match(source, /enabled: summaryEnabled/)
   assert.match(source, /enabled: coreSummaryQuery\.isFetched/)
   assert.match(source, /enabled: usageSummaryQuery\.isFetched/)
@@ -212,7 +216,12 @@ test('audit monitor isolates row tables before expensive summaries', async () =>
   assert.match(source, /if \(refreshInFlight\.current \|\| monitorIsFetching\) return/)
   assert.match(
     source,
-    /await auditedRowsQuery\.refetch\(\)[\s\S]*await pendingRowsQuery\.refetch\(\)[\s\S]*await noRecordingRowsQuery\.refetch\(\)[\s\S]*await coreSummaryQuery\.refetch\(\)[\s\S]*await usageSummaryQuery\.refetch\(\)[\s\S]*await financialSummaryQuery\.refetch\(\)/,
+    /await auditedRowsQuery\.refetch\(\)[\s\S]*await pendingRowsQuery\.refetch\(\)[\s\S]*await noRecordingRowsQuery\.refetch\(\)[\s\S]*for \(const \[section, query\] of summaryQueries\)[\s\S]*await readSummary\(section, true\)[\s\S]*await query\.refetch\(\)/,
+  )
+  // …and that loop walks the summaries in priority order, one at a time.
+  assert.match(
+    source,
+    /\['summary-core', coreSummaryQuery\],\s*\['summary-usage', usageSummaryQuery\],\s*\['summary-financial', financialSummaryQuery\]/,
   )
   assert.match(source, /'Refresh data'/)
   assert.doesNotMatch(

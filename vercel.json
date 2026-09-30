@@ -16,6 +16,10 @@
     "api/reconciliation-batch.ts": {
       "maxDuration": 300,
       "includeFiles": "{apps/web/dist,src}/**"
+    },
+    "api/audit-monitor-refresh.ts": {
+      "maxDuration": 300,
+      "includeFiles": "{apps/web/dist,src}/**"
     }
   },
   "routes": [
@@ -27,6 +31,10 @@
     {
       "src": "/api/v1/reconciliation/batch",
       "dest": "/api/reconciliation-batch"
+    },
+    {
+      "src": "/api/v1/audits/refresh",
+      "dest": "/api/audit-monitor-refresh"
     },
     { "src": "/(.*)", "dest": "/api" }
   ]
