@@ -4,7 +4,10 @@ import {
   CONSENSUS_REVIEWER_OUTPUT_SCHEMA,
   createOpenAiConsensusReviewer,
 } from './openaiConsensus.ts'
-import { REAUDIT_KAIRALI_REFERENCE_RULES } from './openaiReaudit.ts'
+import {
+  REAUDIT_CLASSIFIER_OUTPUT_SCHEMA,
+  REAUDIT_KAIRALI_REFERENCE_RULES,
+} from './openaiReaudit.ts'
 
 /**
  * The v2 reviewer request shape, captured from a stubbed fetch. No network,
@@ -30,6 +33,7 @@ async function captureRequest(
         stop_intent: 'none', post_stop_behavior: 'not_applicable',
         successful_outcome: 'none', voicemail_evidence: 'none',
         automation_evidence: 'none', junk_evidence: 'none',
+        agent_block_numbers: [1], meaningful_service_before_failure: false,
         agent_failure_mode: 'none', agent_failure_start_block_number: 0,
         remarks: 'synthetic', dispute_recommended: false,
         ...overrides,
@@ -88,4 +92,16 @@ test('the reviewer reports the AGENT_FAILURE boundary like the primary', async (
 test('an answered introduction before the failure is a mid-conversation failure', () => {
   assert.match(REAUDIT_KAIRALI_REFERENCE_RULES, /language choice\s+counts/)
   assert.doesNotMatch(REAUDIT_KAIRALI_REFERENCE_RULES, /mid_conversation ONLY when a genuine two-way/)
+})
+
+test('the reviewer schema is the primary schema, so no pricing field can drift', () => {
+  assert.deepEqual(
+    CONSENSUS_REVIEWER_OUTPUT_SCHEMA.schema,
+    REAUDIT_CLASSIFIER_OUTPUT_SCHEMA.schema,
+  )
+})
+
+test('the reviewer returns the agent blocks USER_SILENCE pricing needs', async () => {
+  const { result } = await captureRequest('low', { agent_block_numbers: [1] })
+  assert.deepEqual([...(result.agentBlockNumbers ?? [])], [1])
 })

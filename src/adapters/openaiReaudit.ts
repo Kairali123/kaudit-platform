@@ -5,6 +5,7 @@ import {
 } from '../messaging/canonicalJson.ts'
 import type {
   ModelClassification,
+  NaturalSpeechBlock,
   ReauditAi,
   ReauditCategory,
 } from '../reaudit/types.ts'
@@ -548,117 +549,12 @@ ${transcript}`,
       if (!message || message.refusal) {
         throw new Error(message?.refusal || 'OpenAI classification was empty')
       }
-      const raw = JSON.parse(message.content || '{}') as {
-        category: ReauditCategory
-        confidence: number
-        customer_block_numbers: number[]
-        unclear_block_numbers: number[]
-        agent_block_numbers: number[]
-        voicemail_evidence_block_numbers: number[]
-        automation_evidence_block_numbers: number[]
-        junk_evidence_block_numbers: number[]
-        business_relevant_customer_block_numbers: number[]
-        counterparty_type:
-          | 'human'
-          | 'voicemail'
-          | 'interactive_automation'
-          | 'no_response'
-          | 'unclear'
-        agent_handling: 'normal' | 'failed' | 'unclear'
-        conversation_outcome: 'successful' | 'no_outcome' | 'unclear'
-        duration_outcome:
-          | 'appropriate'
-          | 'ended_too_early'
-          | 'continued_without_value'
-          | 'unclear'
-        stop_intent:
-          | 'none'
-          | 'busy_or_bad_time'
-          | 'callback_or_defer'
-          | 'decline_or_end'
-        post_stop_behavior:
-          | 'not_applicable'
-          | 'appropriate_close'
-          | 'administrative_extension'
-          | 'continued_sales_flow'
-          | 'unclear'
-        successful_outcome:
-          | 'none'
-          | 'qualified'
-          | 'handoff_or_transfer'
-          | 'resolved'
-        voicemail_evidence:
-          | 'fixed_greeting'
-          | 'leave_message_request'
-          | 'mailbox_notice'
-          | 'recording_notice'
-          | 'beep'
-          | 'none'
-        automation_evidence:
-          | 'menu_prompt'
-          | 'virtual_assistant_disclosure'
-          | 'screening_prompt'
-          | 'none'
-        junk_evidence:
-          | 'test_call'
-          | 'spam_or_scam'
-          | 'prank_or_illegitimate_purpose'
-          | 'none'
-        agent_failure_mode: 'none' | 'start' | 'mid_conversation'
-        meaningful_service_before_failure: boolean
-        agent_failure_start_block_number: number
-        remarks: string
-        dispute_recommended: boolean
-      }
-      const customerBlocks = new Set(raw.customer_block_numbers)
-      const customerEnds = options.blocks
-        .filter((block) => customerBlocks.has(block.number))
-        .map((block) => block.endMs)
       return {
-        model: {
+        ...parseClassifierOutput(message.content || '{}', options.blocks, {
           provider: 'openai',
           name: REAUDIT_CLASSIFICATION_MODEL,
           version: REAUDIT_CLASSIFICATION_MODEL,
-        },
-        category: raw.category,
-        confidence: fixedConfidence(raw.confidence),
-        customerBlockNumbers: raw.customer_block_numbers,
-        unclearBlockNumbers: raw.unclear_block_numbers,
-        agentBlockNumbers: raw.agent_block_numbers,
-        voicemailEvidenceBlockNumbers:
-          raw.voicemail_evidence_block_numbers,
-        automationEvidenceBlockNumbers:
-          raw.automation_evidence_block_numbers,
-        junkEvidenceBlockNumbers: raw.junk_evidence_block_numbers,
-        businessRelevantCustomerBlockNumbers:
-          raw.business_relevant_customer_block_numbers,
-        customerSpoke: customerEnds.length > 0,
-        lastMeaningfulCustomerExchangeMs:
-          customerEnds.length > 0 ? Math.max(...customerEnds) : null,
-        remarks: raw.remarks,
-        disputeRecommended: raw.dispute_recommended,
-        // Carried as a POINTER only. The engine validates the block against the
-        // transcript and decides the boundary, the service fact, and the money.
-        agentFailureStartBlockNumber:
-          Number.isInteger(raw.agent_failure_start_block_number) &&
-          raw.agent_failure_start_block_number > 0
-            ? raw.agent_failure_start_block_number
-            : null,
-        decisionSignals: {
-          counterpartyType: raw.counterparty_type,
-          agentHandling: raw.agent_handling,
-          conversationOutcome: raw.conversation_outcome,
-          durationOutcome: raw.duration_outcome,
-          stopIntent: raw.stop_intent,
-          postStopBehavior: raw.post_stop_behavior,
-          successfulOutcome: raw.successful_outcome,
-          voicemailEvidence: raw.voicemail_evidence,
-          automationEvidence: raw.automation_evidence,
-          junkEvidence: raw.junk_evidence,
-          agentFailureMode: raw.agent_failure_mode,
-          meaningfulServiceBeforeFailure:
-            raw.meaningful_service_before_failure,
-        },
+        }),
         usage: {
           inputTokens: completion.usage?.prompt_tokens ?? null,
           outputTokens: completion.usage?.completion_tokens ?? null,
@@ -672,6 +568,127 @@ ${transcript}`,
               : null,
         },
       }
+    },
+  }
+}
+
+/**
+ * The ONE mapping from the classifier output schema to a ModelClassification.
+ * The consensus reviewer uses the same schema and this same function, so a
+ * field the pricing engine needs can never be present for one pass and
+ * silently missing for another.
+ */
+export function parseClassifierOutput(
+  content: string,
+  blocks: NaturalSpeechBlock[],
+  model: ModelClassification['model'],
+): Omit<ModelClassification, 'usage'> {
+  const raw = JSON.parse(content) as {
+    category: ReauditCategory
+    confidence: number
+    customer_block_numbers: number[]
+    unclear_block_numbers: number[]
+    agent_block_numbers: number[]
+    voicemail_evidence_block_numbers: number[]
+    automation_evidence_block_numbers: number[]
+    junk_evidence_block_numbers: number[]
+    business_relevant_customer_block_numbers: number[]
+    counterparty_type:
+      | 'human'
+      | 'voicemail'
+      | 'interactive_automation'
+      | 'no_response'
+      | 'unclear'
+    agent_handling: 'normal' | 'failed' | 'unclear'
+    conversation_outcome: 'successful' | 'no_outcome' | 'unclear'
+    duration_outcome:
+      | 'appropriate'
+      | 'ended_too_early'
+      | 'continued_without_value'
+      | 'unclear'
+    stop_intent:
+      | 'none'
+      | 'busy_or_bad_time'
+      | 'callback_or_defer'
+      | 'decline_or_end'
+    post_stop_behavior:
+      | 'not_applicable'
+      | 'appropriate_close'
+      | 'administrative_extension'
+      | 'continued_sales_flow'
+      | 'unclear'
+    successful_outcome:
+      | 'none'
+      | 'qualified'
+      | 'handoff_or_transfer'
+      | 'resolved'
+    voicemail_evidence:
+      | 'fixed_greeting'
+      | 'leave_message_request'
+      | 'mailbox_notice'
+      | 'recording_notice'
+      | 'beep'
+      | 'none'
+    automation_evidence:
+      | 'menu_prompt'
+      | 'virtual_assistant_disclosure'
+      | 'screening_prompt'
+      | 'none'
+    junk_evidence:
+      | 'test_call'
+      | 'spam_or_scam'
+      | 'prank_or_illegitimate_purpose'
+      | 'none'
+    agent_failure_mode: 'none' | 'start' | 'mid_conversation'
+    meaningful_service_before_failure: boolean
+    agent_failure_start_block_number: number
+    remarks: string
+    dispute_recommended: boolean
+  }
+  const customerBlocks = new Set(raw.customer_block_numbers)
+  const customerEnds = blocks
+    .filter((block) => customerBlocks.has(block.number))
+    .map((block) => block.endMs)
+  return {
+model,
+    category: raw.category,
+    confidence: fixedConfidence(raw.confidence),
+    customerBlockNumbers: raw.customer_block_numbers,
+    unclearBlockNumbers: raw.unclear_block_numbers,
+    agentBlockNumbers: raw.agent_block_numbers,
+    voicemailEvidenceBlockNumbers:
+      raw.voicemail_evidence_block_numbers,
+    automationEvidenceBlockNumbers:
+      raw.automation_evidence_block_numbers,
+    junkEvidenceBlockNumbers: raw.junk_evidence_block_numbers,
+    businessRelevantCustomerBlockNumbers:
+      raw.business_relevant_customer_block_numbers,
+    customerSpoke: customerEnds.length > 0,
+    lastMeaningfulCustomerExchangeMs:
+      customerEnds.length > 0 ? Math.max(...customerEnds) : null,
+    remarks: raw.remarks,
+    disputeRecommended: raw.dispute_recommended,
+    // Carried as a POINTER only. The engine validates the block against the
+    // transcript and decides the boundary, the service fact, and the money.
+    agentFailureStartBlockNumber:
+      Number.isInteger(raw.agent_failure_start_block_number) &&
+      raw.agent_failure_start_block_number > 0
+        ? raw.agent_failure_start_block_number
+        : null,
+    decisionSignals: {
+      counterpartyType: raw.counterparty_type,
+      agentHandling: raw.agent_handling,
+      conversationOutcome: raw.conversation_outcome,
+      durationOutcome: raw.duration_outcome,
+      stopIntent: raw.stop_intent,
+      postStopBehavior: raw.post_stop_behavior,
+      successfulOutcome: raw.successful_outcome,
+      voicemailEvidence: raw.voicemail_evidence,
+      automationEvidence: raw.automation_evidence,
+      junkEvidence: raw.junk_evidence,
+      agentFailureMode: raw.agent_failure_mode,
+      meaningfulServiceBeforeFailure:
+        raw.meaningful_service_before_failure,
     },
   }
 }
