@@ -53,7 +53,7 @@ const candidate: ReauditCandidate = {
 }
 
 test('engine version identifies the classification repair', () => {
-  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.8.0')
+  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.9.0')
 })
 
 test('merges fragments using the approved pause, duration, and character limits', () => {
@@ -1272,20 +1272,18 @@ test('a failure with no service before the boundary collapses to start', () => {
   assert.equal(result.failureStartMs, null)
 })
 
-test('an unknown failure block collapses to start', () => {
+test('an unusable failure block falls back to the answered-introduction boundary', () => {
+  // 99 is not a block; block 1 begins at 0 ms with nothing served before it.
+  // Saanvi (1) was answered (2), so the failure is placed at the next turn (3).
   for (const agentFailureStartBlockNumber of [99, 1]) {
     const result = validateClassification(
       agentFailureClassification({ agentFailureStartBlockNumber }),
       SERVED_BLOCKS,
       60_000,
     )
-    if (agentFailureStartBlockNumber === 1) {
-      // Block 1 begins at 0ms: there is no served period before it.
-      assert.equal(result.agentFailureMode, 'start')
-      continue
-    }
-    assert.equal(result.agentFailureMode, 'start')
-    assert.equal(result.failureStartMs, null)
+    assert.equal(result.agentFailureMode, 'mid_conversation')
+    assert.equal(result.failureStartMs, 10_000)
+    assert.equal(result.agentFailureStartBlockNumber, 3)
   }
 })
 
@@ -1620,4 +1618,33 @@ test('intro answered by the customer, then silence, is a paid mid-conversation f
   )
   assert.equal(unanswered.category, 'USER_SILENCE')
   assert.notEqual(unanswered.agentFailureMode, 'mid_conversation')
+})
+
+test('the reported shape: intro, busy reply, Saanvi presses on -> paid from the next turn', () => {
+  // Synthetic shape of a reported call the model labelled "start".
+  const blocks = [
+    { number: 1, startMs: 0, endMs: 6_000, text: 'Hello, this is Saanvi from Kairali. Is this a good time?' },
+    { number: 2, startMs: 6_000, endMs: 9_000, text: 'I am having my meals right now.' },
+    { number: 3, startMs: 9_000, endMs: 14_000, text: 'Thank you. Let me know your preferred language.' },
+    { number: 4, startMs: 14_000, endMs: 18_000, text: 'I am having my meals right now.' },
+  ]
+  const result = validateClassification(
+    agentFailureClassification({
+      customerBlockNumbers: [2, 4],
+      agentBlockNumbers: [1, 3],
+      agentFailureStartBlockNumber: null,
+      decisionSignals: {
+        ...SILENCE_SIGNALS,
+        counterpartyType: 'human',
+        agentHandling: 'failed',
+        agentFailureMode: 'start',
+        meaningfulServiceBeforeFailure: false,
+      },
+    }),
+    blocks,
+    45_100,
+  )
+  assert.equal(result.agentFailureMode, 'mid_conversation')
+  assert.equal(result.failureStartMs, 9_000)
+  assert.equal(result.agentFailureStartBlockNumber, 3)
 })

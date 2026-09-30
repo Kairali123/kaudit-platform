@@ -161,14 +161,28 @@ test('a genuine mid-conversation failure charges the boundary plus exactly 30 se
   assert.equal(outcome.amount, '19.00000000')
 })
 
-test('from-start, no-service, and unsupported-boundary failures are zero', async () => {
-  for (const model of [FROM_START, NO_SERVICE, UNSUPPORTED_BOUNDARY]) {
+test('only a failure with no answered introduction is zero', async () => {
+  const primary = validated(NO_SERVICE)
+  assert.equal(primary.agentFailureMode, 'start')
+  const { outcome } = await run(primary, NO_SERVICE)
+  assert.equal(outcome.status, 'accepted')
+  assert.equal(outcome.policyCode, 'MANAGEMENT_ZERO_CATEGORY')
+  assert.equal(outcome.amount, '0.00000000')
+})
+
+test('an answered introduction is paid whatever the model called the failure', async () => {
+  // Management rule 2026-09-30. Saanvi (block 1) is answered by the customer
+  // (block 2); the failure is placed at the next turn (22 s) + 30 s grace =
+  // 52 s -> 1 billable minute, even when the model said "start" or named a
+  // block that does not exist.
+  for (const model of [FROM_START, UNSUPPORTED_BOUNDARY]) {
     const primary = validated(model)
-    assert.equal(primary.agentFailureMode, 'start')
+    assert.equal(primary.agentFailureMode, 'mid_conversation')
+    assert.equal(primary.failureStartMs, 22_000)
     const { outcome } = await run(primary, model)
     assert.equal(outcome.status, 'accepted')
-    assert.equal(outcome.policyCode, 'MANAGEMENT_ZERO_CATEGORY')
-    assert.equal(outcome.amount, '0.00000000')
+    assert.equal(outcome.policyCode, 'AGENT_FAILURE_MID_CONVERSATION_PLUS_30S')
+    assert.equal(outcome.amount, '9.50000000')
   }
 })
 

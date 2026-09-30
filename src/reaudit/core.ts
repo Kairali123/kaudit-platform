@@ -22,7 +22,7 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.8.0'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.9.0'
 
 /**
  * The engine FAMILY, for readers asking "was this call audited by our
@@ -472,44 +472,72 @@ export function resolveAgentFailureEvidence(options: {
     meaningfulServiceBeforeFailure: false,
     blockNumber: null,
   } as const
-  if (options.proposedMode !== 'mid_conversation') return failedFromStart
-  // Saanvi can fail by simply going silent after a completed exchange; then
-  // no transcript block is the failure and the model names none (0/null).
-  // The boundary is the end of the last completed turn. A number that is not
-  // a supplied block is still an unsupported claim.
-  const silentAfterLastTurn =
-    options.proposedBlockNumber == null || options.proposedBlockNumber === 0
-  const block = silentAfterLastTurn
-    ? null
-    : options.blocks.find(
-        (candidate) => candidate.number === options.proposedBlockNumber,
-      )
-  if (!silentAfterLastTurn && !block) return failedFromStart
-  const failureStartMs = Math.min(
-    block
-      ? block.startMs
-      : Math.max(0, ...options.blocks.map((candidate) => candidate.endMs)),
-    options.recordedDurationMs,
-  )
-  if (!Number.isSafeInteger(failureStartMs) || failureStartMs <= 0) {
-    return failedFromStart
-  }
-  const endsBefore = (numbers: readonly number[]): boolean =>
-    options.blocks.some(
-      (candidate) =>
-        numbers.includes(candidate.number) &&
-        candidate.endMs <= failureStartMs,
-    )
-  const meaningfulServiceBeforeFailure =
-    endsBefore(options.customerBlockNumbers) &&
-    endsBefore(options.agentBlockNumbers)
-  if (!meaningfulServiceBeforeFailure) return failedFromStart
-  return {
-    mode: 'mid_conversation',
+  const midConversation = (failureStartMs: number, blockNumber: number | null) => ({
+    mode: 'mid_conversation' as const,
     failureStartMs,
     meaningfulServiceBeforeFailure: true,
-    blockNumber: block?.number ?? null,
+    blockNumber,
+  })
+  const servedBefore = (failureStartMs: number): boolean => {
+    const endsBefore = (numbers: readonly number[]): boolean =>
+      options.blocks.some(
+        (candidate) =>
+          numbers.includes(candidate.number) &&
+          candidate.endMs <= failureStartMs,
+      )
+    return Number.isSafeInteger(failureStartMs) && failureStartMs > 0 &&
+      endsBefore(options.customerBlockNumbers) &&
+      endsBefore(options.agentBlockNumbers)
   }
+
+  // 1. The model's own boundary, when it names a valid one. Saanvi can fail by
+  //    going silent after a completed exchange; then no block is the failure
+  //    and the model names none (0/null): the boundary is the end of the last
+  //    completed turn. A number that is not a supplied block is unsupported.
+  if (options.proposedMode === 'mid_conversation') {
+    const silentAfterLastTurn =
+      options.proposedBlockNumber == null || options.proposedBlockNumber === 0
+    const block = silentAfterLastTurn
+      ? null
+      : options.blocks.find(
+          (candidate) => candidate.number === options.proposedBlockNumber,
+        )
+    if (silentAfterLastTurn || block) {
+      const failureStartMs = Math.min(
+        block
+          ? block.startMs
+          : Math.max(0, ...options.blocks.map((candidate) => candidate.endMs)),
+        options.recordedDurationMs,
+      )
+      if (servedBefore(failureStartMs)) {
+        return midConversation(failureStartMs, block?.number ?? null)
+      }
+    }
+  }
+
+  // 2. Management rule (2026-09-30), applied deterministically whatever the
+  //    model called it: once Saanvi has spoken and the customer has replied,
+  //    service was delivered. The failure is placed at the first turn after
+  //    that reply, or -- when nothing follows it -- at the reply's end (the
+  //    same boundary step 1 derives for a silent agent, so a persisted
+  //    decision re-derives identically).
+  const ordered = [...options.blocks].sort((left, right) => left.number - right.number)
+  const firstAgent = ordered.find((block) => options.agentBlockNumbers.includes(block.number))
+  const firstReply = firstAgent
+    ? ordered.find((block) =>
+        block.number > firstAgent.number &&
+        options.customerBlockNumbers.includes(block.number) &&
+        block.startMs >= firstAgent.endMs)
+    : undefined
+  if (!firstReply) return failedFromStart
+  const next = ordered.find((block) => block.number > firstReply.number)
+  const failureStartMs = Math.min(
+    next ? next.startMs : firstReply.endMs,
+    options.recordedDurationMs,
+  )
+  return servedBefore(failureStartMs)
+    ? midConversation(failureStartMs, next?.number ?? null)
+    : failedFromStart
 }
 
 export function validateClassification(
