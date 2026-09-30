@@ -503,7 +503,9 @@ export function createReconciliationBatchService(options: {
       }
 
       const rateCard = await loadPublishedRateCard(pool, options.rateCardId)
-      for (const taskId of processingTaskIds) {
+      // Calls are independent: validate them concurrently. Each one's model
+      // passes dominate the batch time, and every write is per call.
+      await Promise.all(processingTaskIds.map(async (taskId) => {
         const callId = resolution.calls.get(taskId) as string
         try {
           const billed = await validateAndBill(pool, {
@@ -535,7 +537,7 @@ export function createReconciliationBatchService(options: {
               : 'BILLING_RETRY_REQUIRED',
           })
         }
-      }
+      }))
       const failed = await failureReceipts(pool, period, processingTaskIds)
       for (const [taskId, receipt] of failed) {
         if (receipts.get(taskId)?.status !== 'completed') receipts.set(taskId, receipt)
@@ -642,12 +644,13 @@ export function createReconciliationBatchService(options: {
       })
     }
 
-    const facts = await listLateRecordingCorrectionFacts(pool, committed.batchId)
-    for (const fact of facts) {
+    const lateBatchId = committed.batchId
+    const facts = await listLateRecordingCorrectionFacts(pool, lateBatchId)
+    await Promise.all(facts.map(async (fact) => {
       try {
         await correctLateRecordingItem(pool, {
           facts: fact,
-          batchId: committed.batchId,
+          batchId: lateBatchId,
           period,
           rateCard,
           reviewer,
@@ -659,7 +662,7 @@ export function createReconciliationBatchService(options: {
         logReconciliationBillingFailure('late_correction', error)
         // The durable item remains in flight and the sheet retries this batch.
       }
-    }
+    }))
     await summaries.invalidate(period.month)
     const revisedVerifiedTotal = await readVerifiedMonthTotal(pool, period)
     const actualPaidAmount = await readActualPaidAmount(pool, period.month)
