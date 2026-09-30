@@ -202,3 +202,47 @@ test('runtime bootstrap timing emits duration only', () => {
     'occurredAt',
   ])
 })
+
+test('slow statements are named by verb, tables and fingerprint only', async () => {
+  const saved = { logs: process.env.KAUDIT_PERF_LOGS, slow: process.env.KAUDIT_PERF_SLOW_SQL_MS }
+  process.env.KAUDIT_PERF_LOGS = 'true'
+  process.env.KAUDIT_PERF_SLOW_SQL_MS = '0'
+  const entries: Record<string, unknown>[] = []
+  const pool = instrumentMysqlPool({
+    async execute() {
+      return [[], []]
+    },
+  } as unknown as Pool)
+  try {
+    const finish = startRequestTiming({
+      operation: 'reconciliation.batch',
+      method: 'POST',
+      onComplete(entry) {
+        entries.push(entry)
+      },
+    })
+    for (let n = 0; n < 5; n += 1) {
+      await pool.execute(
+        `SELECT secret_column FROM kaudit_call c
+         JOIN kaudit_call_external_reference ref ON ref.call_id = c.id
+         WHERE ref.external_id = ?`,
+        ['T-sensitive-task'],
+      )
+    }
+    finish(200)
+  } finally {
+    for (const [key, value] of [
+      ['KAUDIT_PERF_LOGS', saved.logs],
+      ['KAUDIT_PERF_SLOW_SQL_MS', saved.slow],
+    ] as const) {
+      if (value == null) delete process.env[key]
+      else process.env[key] = value
+    }
+  }
+  const slow = entries[0]?.slowSql as Array<Record<string, unknown>>
+  assert.equal(slow.length, 3)
+  assert.equal(slow[0]?.op, 'SELECT')
+  assert.deepEqual(slow[0]?.tables, ['kaudit_call', 'kaudit_call_external_reference'])
+  assert.match(String(slow[0]?.sqlSha), /^[0-9a-f]{12}$/)
+  assert.doesNotMatch(JSON.stringify(entries), /secret_column|T-sensitive-task|external_id/)
+})

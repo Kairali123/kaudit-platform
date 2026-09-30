@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { AsyncLocalStorage } from 'node:async_hooks'
 import { performance } from 'node:perf_hooks'
 import type { Pool, PoolConnection } from 'mysql2/promise'
@@ -17,6 +18,42 @@ interface RequestTiming {
   dbAcquireCount: number
   dbAcquireMs: number
   cache: CacheResult | null
+  slowSql: SlowStatement[]
+}
+
+/**
+ * Identifies a slow statement without its text: the verb, the kaudit_* tables
+ * it names, and a fingerprint of the whitespace-normalized SQL. Values are
+ * bound parameters and never part of the text, but the text itself is still
+ * not logged.
+ */
+interface SlowStatement {
+  ms: number
+  op: string
+  tables: string[]
+  sqlSha: string
+}
+
+function slowSqlMs(): number {
+  const raw = Number(process.env.KAUDIT_PERF_SLOW_SQL_MS ?? 2_000)
+  return Number.isFinite(raw) && raw >= 0 ? raw : 2_000
+}
+const MAX_SLOW_SQL = 3
+
+function describeSql(argument: unknown, ms: number): SlowStatement | null {
+  const text = typeof argument === 'string'
+    ? argument
+    : typeof (argument as { sql?: unknown })?.sql === 'string'
+      ? (argument as { sql: string }).sql
+      : null
+  if (!text) return null
+  const normalized = text.replace(/\s+/g, ' ').trim()
+  return {
+    ms: Math.round(ms),
+    op: (normalized.match(/^[A-Za-z]+/)?.[0] ?? 'UNKNOWN').toUpperCase(),
+    tables: [...new Set(normalized.match(/\bkaudit_[a-z0-9_]+/g) ?? [])].slice(0, 12),
+    sqlSha: createHash('sha256').update(normalized).digest('hex').slice(0, 12),
+  }
 }
 
 const storage = new AsyncLocalStorage<RequestTiming>()
@@ -44,12 +81,18 @@ function recordPhase(phase: TimingPhase, ms: number): void {
   timing[phase] += ms
 }
 
-function recordSql(ms: number): void {
+function recordSql(ms: number, sql?: unknown): void {
   const timing = storage.getStore()
   if (!timing) return
   timing.sqlCount += 1
   timing.sqlMs += ms
   timing.maxSqlMs = Math.max(timing.maxSqlMs, ms)
+  if (ms < slowSqlMs()) return
+  const slow = describeSql(sql, ms)
+  if (!slow) return
+  timing.slowSql.push(slow)
+  timing.slowSql.sort((left, right) => right.ms - left.ms)
+  timing.slowSql.length = Math.min(timing.slowSql.length, MAX_SLOW_SQL)
 }
 
 function recordDbAcquire(ms: number): void {
@@ -110,6 +153,7 @@ export function startRequestTiming(options: {
     dbAcquireCount: 0,
     dbAcquireMs: 0,
     cache: null,
+    slowSql: [],
   }
   storage.enterWith(timing)
   const complete = options.onComplete ?? ((entry) => {
@@ -134,6 +178,7 @@ export function startRequestTiming(options: {
       dbAcquireCount: timing.dbAcquireCount,
       dbAcquireMs: rounded(timing.dbAcquireMs),
       cache: timing.cache,
+      ...(timing.slowSql.length ? { slowSql: timing.slowSql } : {}),
       status: statusCode ?? null,
       occurredAt: new Date().toISOString(),
     })
@@ -153,7 +198,7 @@ function wrapConnection(connection: PoolConnection): PoolConnection {
         try {
           return await value.apply(target, args)
         } finally {
-          recordSql(elapsedSince(startedAt))
+          recordSql(elapsedSince(startedAt), args[0])
         }
       }
     },
@@ -186,7 +231,7 @@ export function instrumentMysqlPool(pool: Pool): Pool {
             tagKnownPoolAcquisitionFailure(error)
             throw error
           } finally {
-            recordSql(elapsedSince(startedAt))
+            recordSql(elapsedSince(startedAt), args[0])
           }
         }
       }

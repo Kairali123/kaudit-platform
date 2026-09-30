@@ -190,6 +190,12 @@ function requestIndexHint(requestId?: string): string {
   return requestId ? 'FORCE INDEX (uq_billing_reaudit_request_call)' : ''
 }
 
+/** The same reasoning for a sweep scoped to specific calls. */
+function sweepIndexHint(callIds?: readonly string[], requestId?: string): string {
+  if (requestId) return requestIndexHint(requestId)
+  return callIds ? 'FORCE INDEX (idx_billing_reaudit_item_call)' : ''
+}
+
 async function expireInterruptedClaims(
   connection: PoolConnection,
   callIds?: readonly string[],
@@ -203,7 +209,7 @@ async function expireInterruptedClaims(
   const [interrupted] = await connection.execute<ClaimedItemRow[]>(
     `SELECT item.id AS item_id, item.request_id, item.call_id,
             item.baseline_audit_run_id
-     FROM kaudit_billing_reaudit_item item ${requestIndexHint(requestId)}
+     FROM kaudit_billing_reaudit_item item ${sweepIndexHint(callIds, requestId)}
      WHERE item.status = 'processing'
        AND NOT EXISTS (
          SELECT 1

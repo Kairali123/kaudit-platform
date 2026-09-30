@@ -770,3 +770,18 @@ test('a request-scoped claim reads only that request through its key', async () 
     .listCandidates({ limit: 3, includePreviouslyClassified: true })
   assert.ok(global.statements.every(({ sql }) => !/FORCE INDEX/.test(sql)))
 })
+
+test('an enqueue-time sweep of specific calls reads them through the call key', async () => {
+  const fake = fakePool([
+    LOCK,
+    RELEASE,
+    { match: /FROM kaudit_billing_reaudit_request\s+WHERE idempotency_key/, rows: [] },
+    { match: /UNION/, rows: RESOLVED },
+    { match: /active_call_id IN/, rows: [] },
+  ])
+  await createMysqlManualReauditRequestRepository(fake.pool).enqueue(REQUEST)
+  const sweeps = fake.statements.filter(({ sql }) =>
+    /status = 'processing'/.test(sql) && /FOR UPDATE/.test(sql))
+  assert.equal(sweeps.length, 1)
+  assert.match(sweeps[0]!.sql, /FORCE INDEX \(idx_billing_reaudit_item_call\)/)
+})
