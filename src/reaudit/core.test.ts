@@ -53,7 +53,7 @@ const candidate: ReauditCandidate = {
 }
 
 test('engine version identifies the classification repair', () => {
-  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.7.0')
+  assert.equal(REAUDIT_ENGINE_VERSION, 'kairali-independent-reaudit/2.8.0')
 })
 
 test('merges fragments using the approved pause, duration, and character limits', () => {
@@ -1272,8 +1272,8 @@ test('a failure with no service before the boundary collapses to start', () => {
   assert.equal(result.failureStartMs, null)
 })
 
-test('an unknown or absent failure block collapses to start', () => {
-  for (const agentFailureStartBlockNumber of [null, 0, 99, 1]) {
+test('an unknown failure block collapses to start', () => {
+  for (const agentFailureStartBlockNumber of [99, 1]) {
     const result = validateClassification(
       agentFailureClassification({ agentFailureStartBlockNumber }),
       SERVED_BLOCKS,
@@ -1566,4 +1566,58 @@ test('deadline and access refusals are retryable; other 4xx refusals name their 
     assert.equal(result.outcome, 'transcription_failed')
     assert.equal(result.errorCode, expected)
   }
+})
+
+test('no failing block means Saanvi went silent after the last completed turn', () => {
+  for (const agentFailureStartBlockNumber of [null, 0]) {
+    const result = validateClassification(
+      agentFailureClassification({ agentFailureStartBlockNumber }),
+      SERVED_BLOCKS,
+      60_000,
+    )
+    assert.equal(result.agentFailureMode, 'mid_conversation')
+    assert.equal(result.failureStartMs, 44_000)
+    assert.equal(result.agentFailureStartBlockNumber ?? null, null)
+  }
+})
+
+test('intro answered by the customer, then silence, is a paid mid-conversation failure', () => {
+  // Synthetic shape of a reported call: Saanvi's introduction, one customer
+  // reply, then no further Saanvi turn while the recording runs on.
+  const blocks = [
+    { number: 1, startMs: 0, endMs: 5_000, text: 'Hello, this is Saanvi calling from Kairali.' },
+    { number: 2, startMs: 6_000, endMs: 8_400, text: 'No, maam.' },
+  ]
+  const answered = validateClassification(
+    agentFailureClassification({
+      customerBlockNumbers: [2],
+      agentBlockNumbers: [1],
+      agentFailureStartBlockNumber: null,
+    }),
+    blocks,
+    28_700,
+  )
+  assert.equal(answered.agentFailureMode, 'mid_conversation')
+  assert.equal(answered.failureStartMs, 8_400)
+  // Without any customer reply there was no exchange: the reviewed rules make
+  // it USER_SILENCE (paid by its own rule), never a mid-conversation failure.
+  const unanswered = validateClassification(
+    agentFailureClassification({
+      customerBlockNumbers: [],
+      agentBlockNumbers: [1],
+      agentFailureStartBlockNumber: null,
+      customerSpoke: false,
+      decisionSignals: {
+        ...SILENCE_SIGNALS,
+        counterpartyType: 'no_response',
+        agentHandling: 'failed',
+        agentFailureMode: 'mid_conversation',
+        meaningfulServiceBeforeFailure: false,
+      },
+    }),
+    blocks.slice(0, 1),
+    28_700,
+  )
+  assert.equal(unanswered.category, 'USER_SILENCE')
+  assert.notEqual(unanswered.agentFailureMode, 'mid_conversation')
 })

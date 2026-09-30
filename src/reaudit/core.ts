@@ -22,7 +22,7 @@ import type {
 } from './types.ts'
 import { REAUDIT_CATEGORIES } from './types.ts'
 
-export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.7.0'
+export const REAUDIT_ENGINE_VERSION = 'kairali-independent-reaudit/2.8.0'
 
 /**
  * The engine FAMILY, for readers asking "was this call audited by our
@@ -40,7 +40,7 @@ export const REAUDIT_ENGINE_FAMILY = 'kairali-independent-reaudit/'
 if (!REAUDIT_ENGINE_VERSION.startsWith(REAUDIT_ENGINE_FAMILY)) {
   throw new Error('Reaudit engine version must belong to its engine family')
 }
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.10.0'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.11.0'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
@@ -473,11 +473,24 @@ export function resolveAgentFailureEvidence(options: {
     blockNumber: null,
   } as const
   if (options.proposedMode !== 'mid_conversation') return failedFromStart
-  const block = options.blocks.find(
-    (candidate) => candidate.number === options.proposedBlockNumber,
+  // Saanvi can fail by simply going silent after a completed exchange; then
+  // no transcript block is the failure and the model names none (0/null).
+  // The boundary is the end of the last completed turn. A number that is not
+  // a supplied block is still an unsupported claim.
+  const silentAfterLastTurn =
+    options.proposedBlockNumber == null || options.proposedBlockNumber === 0
+  const block = silentAfterLastTurn
+    ? null
+    : options.blocks.find(
+        (candidate) => candidate.number === options.proposedBlockNumber,
+      )
+  if (!silentAfterLastTurn && !block) return failedFromStart
+  const failureStartMs = Math.min(
+    block
+      ? block.startMs
+      : Math.max(0, ...options.blocks.map((candidate) => candidate.endMs)),
+    options.recordedDurationMs,
   )
-  if (!block) return failedFromStart
-  const failureStartMs = Math.min(block.startMs, options.recordedDurationMs)
   if (!Number.isSafeInteger(failureStartMs) || failureStartMs <= 0) {
     return failedFromStart
   }
@@ -495,7 +508,7 @@ export function resolveAgentFailureEvidence(options: {
     mode: 'mid_conversation',
     failureStartMs,
     meaningfulServiceBeforeFailure: true,
-    blockNumber: block.number,
+    blockNumber: block?.number ?? null,
   }
 }
 
