@@ -37,3 +37,26 @@ test('dashboard performance migration is schema-only and stays inside Billing Au
   assert.doesNotMatch(sql, /ai_voice_leads_received/i)
   assert.doesNotMatch(sql, /kaudit_call_audit_/i)
 })
+
+test('0021 adds only the two leading-column Task ID lookup indexes', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const sql = await readFile(
+    new URL('../../migrations/0021_task_reference_lookup_indexes.sql', import.meta.url),
+    'utf8',
+  )
+  const statements = sql
+    .split('\n')
+    .filter((line) => !line.trim().startsWith('--'))
+    .join('\n')
+    .split(';')
+    .map((statement) => statement.trim())
+    .filter(Boolean)
+  assert.equal(statements.length, 2)
+  for (const statement of statements) {
+    assert.match(statement, /^ALTER TABLE `kaudit_call(_external_reference)?`\s+ADD INDEX/)
+    assert.match(statement, /ALGORITHM=INPLACE, LOCK=NONE$/)
+    assert.doesNotMatch(statement, /\b(DROP|UPDATE|DELETE|INSERT|MODIFY)\b/i)
+  }
+  assert.match(statements[0]!, /\(`logical_call_key`, `billing_period_date`\)/)
+  assert.match(statements[1]!, /\(`external_id`, `reference_type`, `call_id`\)/)
+})
