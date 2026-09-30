@@ -267,3 +267,65 @@ test('a run reads only the columns it uses, as raw values', () => {
   assert.equal(rows[0]?.[4], '2')
   assert.equal(rows[1]?.[1], '2026-07')
 })
+
+test('with the Sheets API enabled, one call reads and one call writes', () => {
+  const calls: Array<{ kind: string; body: Record<string, unknown> }> = []
+  const context = vm.createContext({
+    console,
+    SpreadsheetApp: {
+      getActive: () => ({ getId: () => 'sheet-id', getSpreadsheetTimeZone: () => 'Asia/Kolkata' }),
+    },
+    Utilities: { formatDate: () => 'unused' },
+    Sheets: {
+      Spreadsheets: {
+        Values: {
+          batchGet: (_id: string, body: Record<string, unknown>) => {
+            calls.push({ kind: 'get', body })
+            // Trailing empty cells are omitted by the API.
+            return { valueRanges: [
+              { values: [['T-1'], ['T-2']] },
+              { values: [['2026-06-01']] },
+            ] }
+          },
+          batchUpdate: (body: Record<string, unknown>) => {
+            calls.push({ kind: 'update', body })
+            return {}
+          },
+        },
+      },
+    },
+  })
+  new vm.Script(source).runInContext(context)
+  const script = context as unknown as {
+    kauditAuditReadColumns_: (sheet: unknown, headerRow: number, rowCount: number,
+      columns: Record<string, number>) => unknown[][]
+    kauditAuditColumnLetter_: (column: number) => string
+    kauditAuditSet_: (ref: unknown, key: string, value: unknown) => void
+    kauditAuditFlush_: (contexts: unknown[]) => void
+  }
+  assert.deepEqual(
+    [1, 26, 27, 52, 53].map((n) => String(script.kauditAuditColumnLetter_(n))),
+    ['A', 'Z', 'AA', 'AZ', 'BA'],
+  )
+  const sheet = {
+    getName: () => "Re-audit",
+    getRange: () => { throw new Error('SpreadsheetApp must not be used') },
+  }
+  const rows = script.kauditAuditReadColumns_(sheet, 1, 2, { taskId: 0, billMonth: 27 })
+  assert.equal(calls.length, 1)
+  assert.deepEqual([...(calls[0]?.body.ranges as string[])], ["'Re-audit'!A2:A3", "'Re-audit'!AB2:AB3"])
+  assert.equal(rows[0]?.[27], '2026-06')
+  assert.equal(rows[1]?.[27], '')
+
+  const tabContext = {
+    sheet, headerRow: 1, rows: [[], []],
+    columns: { status: 4, stage: 5, error: 6, batchId: 7, attempt: 8, updatedAt: 9, amount: 10 },
+  }
+  script.kauditAuditSet_({ context: tabContext, index: 1 }, 'status', 'RUNNING')
+  script.kauditAuditFlush_([tabContext])
+  assert.equal(calls.length, 2)
+  const update = calls[1]!.body as { valueInputOption: string; data: Array<{ range: string }> }
+  assert.equal(update.valueInputOption, 'RAW')
+  assert.equal(update.data.length, 7)
+  assert.equal(update.data[0]?.range, "'Re-audit'!E3:E3")
+})
