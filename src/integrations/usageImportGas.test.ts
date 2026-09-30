@@ -57,12 +57,18 @@ function makeSandbox(options: {
       if (args.length === 4 && args[0] === 2 && args[1] === 12 && options.modes) {
         return { getDisplayValues: () => options.modes!.map((mode) => [mode]) }
       }
-      if (
-        args.length === 4 && args[0] === 2 && args[2] === rowCount &&
-        ((args[1] === 1 && args[3] === 11) ||
-         (args[1] === 11 && args[3] === 1))
-      ) {
+      if (args.length === 4 && args[0] === 2 && args[2] === rowCount &&
+          args[1] === 1 && args[3] === 11) {
         return dataRange
+      }
+      // The Import Status column alone: the cheap pending pre-check reads it,
+      // and the status write-back writes it.
+      if (args.length === 4 && args[0] === 2 && args[2] === rowCount &&
+          args[1] === 11 && args[3] === 1) {
+        return {
+          getValues: () => options.rows.map((row) => [row[10] ?? '']),
+          setValues: dataRange.setValues,
+        }
       }
       if (args.length === 4 && args[2] === 1) {
         return {
@@ -474,4 +480,32 @@ test('unified intake uploads only new_month rows and leaves late/re-audit rows u
     JSON.stringify(sandbox.writtenStatuses()),
     JSON.stringify([['Submitted'], [''], [''], ['Submitted']]),
   )
+})
+
+test('a tab with every row already submitted is not read in full', async () => {
+  const sentBodies: string[] = []
+  const sandbox = makeSandbox({
+    rows: [
+      [...validRow('task-done-1'), 'Submitted'],
+      [...validRow('task-done-2'), 'Needs review'],
+    ],
+    fetch: (_url, params) => {
+      sentBodies.push(params.payload)
+      return { status: 200, body: importedReceipt(0) }
+    },
+  })
+  // Replace the full-width read with one that fails the test if used.
+  const context = sandbox.context as unknown as {
+    SpreadsheetApp: { getActive: () => { getSheetByName: () => { getRange: (...a: number[]) => unknown } } }
+  }
+  const sheet = context.SpreadsheetApp.getActive().getSheetByName()
+  const original = sheet.getRange.bind(sheet)
+  sheet.getRange = (...args: number[]) => {
+    if (args.length === 4 && args[1] === 1 && args[3] === 11) {
+      throw new Error('full-width read on a fully submitted tab')
+    }
+    return original(...args)
+  }
+  await runImport(sandbox)
+  assert.equal(sentBodies.length, 0)
 })

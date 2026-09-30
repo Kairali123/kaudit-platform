@@ -228,3 +228,42 @@ test('a run writes back only the rows it changed, in contiguous blocks', () => {
   assert.equal(writes.length, 14)
   assert.deepEqual([...new Set(writes.map(([row, , rows]) => `${row}:${rows}`))], ['3:2', '6:1'])
 })
+
+test('a run reads only the columns it uses, as raw values', () => {
+  const reads: number[] = []
+  const context = vm.createContext({
+    console,
+    SpreadsheetApp: { getActive: () => ({ getSpreadsheetTimeZone: () => 'Asia/Kolkata' }) },
+    Utilities: {
+      formatDate: (date: Date) =>
+        `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`,
+    },
+  })
+  new vm.Script(source).runInContext(context)
+  const read = (context as unknown as {
+    kauditAuditReadColumns_: (
+      sheet: unknown, headerRow: number, rowCount: number, columns: Record<string, number>,
+    ) => unknown[][]
+  }).kauditAuditReadColumns_
+  const cells: Record<number, unknown[]> = {
+    0: ['T-1', 'T-2'],
+    1: [new Date(Date.UTC(2026, 5, 1)), '2026-07'],
+    4: [2, ''],
+  }
+  const sheet = {
+    getRange: (_row: number, column: number, rows: number, width: number) => {
+      assert.equal(width, 1)
+      reads.push(column - 1)
+      return {
+        getValues: () => Array.from({ length: rows }, (_, n) => [cells[column - 1]?.[n] ?? '']),
+      }
+    },
+  }
+  const rows = read(sheet, 1, 2, { taskId: 0, billMonth: 1, attempt: 4, mode: -1 })
+  // Only the three mapped columns; the unmapped mode (-1) and every other
+  // column of a wide, month-sized tab are never read.
+  assert.deepEqual([...reads].sort(), [0, 1, 4])
+  assert.equal(rows[0]?.[1], '2026-06')
+  assert.equal(rows[0]?.[4], '2')
+  assert.equal(rows[1]?.[1], '2026-07')
+})
