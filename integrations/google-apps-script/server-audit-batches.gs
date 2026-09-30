@@ -122,7 +122,9 @@ function retrySelectedKauditServerAudits() {
   for (let sheetRow = first; sheetRow <= last; sheetRow += 1) {
     const ref = { context: context, index: sheetRow - context.headerRow - 1 };
     const status = String(kauditAuditGet_(ref, 'status') || '').toUpperCase();
-    if (status !== 'FAILED' && status !== 'RETRYABLE') continue;
+    // NEEDS_REVIEW is retried only on request, e.g. after a consensus policy
+    // change; the trigger never retries it on its own.
+    if (['FAILED', 'RETRYABLE', 'NEEDS_REVIEW'].indexOf(status) < 0) continue;
     const hasBatch = String(kauditAuditGet_(ref, 'batchId') || '').trim() !== '';
     kauditAuditSet_(ref, 'status', hasBatch ? 'RETRYABLE' : 'PENDING');
     kauditAuditSet_(ref, 'attempt', hasBatch ? 1 : 0);

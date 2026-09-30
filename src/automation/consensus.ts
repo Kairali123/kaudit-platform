@@ -5,9 +5,23 @@ import {
   type CategoryChargeDecision,
 } from '../billing/categoryChargePolicy.ts'
 
+/**
+ * v2 (approved 2026-09-30): a majority decides the CATEGORY. When the passes
+ * that agree on it differ on billable duration, a tie-breaker is asked and
+ * the duration most of them support wins; only if no two agree is the
+ * shortest used. Deterministic policy then prices it. v1 also required an
+ * identical customer-speech flag and rounded duration from two passes, so
+ * e.g. two AGENT_FAILURE passes a minute apart could never be priced under
+ * the current rules.
+ */
 export const AUTOMATED_VALIDATION_VERSION =
-  'leadership-approved-auto-consensus/1.1.0'
-export const AUTOMATED_VALIDATION_THRESHOLD = '0.80000000'
+  'leadership-approved-auto-consensus/2.0.0'
+export const AUTOMATED_VALIDATION_THRESHOLD = '0.65000000'
+export const AUTOMATED_VALIDATION_CHECKS = [
+  'category_majority_of_passes',
+  'majority_agreeing_billable_duration_else_shortest',
+  'agreeing_confidence_at_or_above_floor',
+] as const
 
 export interface ConsensusInput {
   primary: ModelClassification
@@ -92,41 +106,44 @@ export function evaluateAutomatedConsensus(
   }))
   const groups = new Map<string, typeof outputs>()
   for (const output of outputs) {
-    const key = [
-      output.value.category,
-      output.value.customerSpoke ? 'customer' : 'no-customer',
-      output.billableDurationMs,
-    ].join(':')
+    const key = output.value.category
     groups.set(key, [...(groups.get(key) || []), output])
   }
   const winningGroup = [...groups.values()]
     .filter((group) => group.length >= 2)
     .sort((left, right) => right.length - left.length)[0]
+  // The two most confident members of the majority must clear the floor.
+  const supporting = winningGroup
+    ? [...winningGroup]
+        .sort((left, right) => right.confidence - left.confidence)
+        .slice(0, 2)
+    : []
+  const durations = new Set(
+    (winningGroup ?? []).map((output) => output.billableDurationMs),
+  )
   const reasons: string[] = []
   if (!winningGroup) {
     reasons.push('CATEGORY_DISAGREEMENT')
-    if (
-      new Set(
-        outputs.map((output) => output.value.customerSpoke),
-      ).size > 1
-    ) {
-      reasons.push('CUSTOMER_SPEECH_DISAGREEMENT')
-    }
-    if (
-      new Set(
-        outputs.map((output) => output.billableDurationMs),
-      ).size > 1
-    ) {
-      reasons.push('BILLABLE_DURATION_DISAGREEMENT')
-    }
-  } else if (
-    winningGroup.some((output) => output.confidence < threshold)
-  ) {
+  } else if (durations.size > 1 && !input.adjudicator) {
+    // Same category, different money: ask the tie-breaker before pricing.
+    reasons.push('BILLABLE_DURATION_DISAGREEMENT')
+  } else if (supporting.some((output) => output.confidence < threshold)) {
     reasons.push('WINNING_CONSENSUS_CONFIDENCE_BELOW_FLOOR')
   }
-  const selected = reasons.length === 0 ? winningGroup?.[0] : null
-  const effectiveConfidence = winningGroup
-    ? Math.min(...winningGroup.map((output) => output.confidence))
+  // The duration most agreeing passes support; if none is shared, the
+  // shortest. Ties keep pass order (primary, secondary, adjudicator).
+  const byDuration = (candidates: typeof outputs) => [...candidates].sort(
+    (left, right) => left.billableDurationMs - right.billableDurationMs,
+  )
+  const sharedDuration = (winningGroup ?? []).find((output) =>
+    winningGroup!.filter(
+      (other) => other.billableDurationMs === output.billableDurationMs,
+    ).length >= 2)
+  const selected = reasons.length === 0
+    ? sharedDuration ?? byDuration(winningGroup!)[0]
+    : null
+  const effectiveConfidence = supporting.length
+    ? Math.min(...supporting.map((output) => output.confidence))
     : Math.min(...outputs.map((output) => output.confidence))
   return {
     status: reasons.length === 0 ? 'accepted' : 'unresolved',

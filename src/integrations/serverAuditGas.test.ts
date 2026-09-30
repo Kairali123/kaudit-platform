@@ -173,3 +173,8 @@ test('a low-confidence billing refusal is parked for review, not retried', () =>
   sheet.rows[1]![4] = 'COMPLETED'
   assert.equal(dispatcher.kauditAuditRetryBatches_([sheet], 4).length, 0)
 })
+
+test('NEEDS_REVIEW rows can be retried on request, never by the trigger', () => {
+  assert.match(source, /\['FAILED', 'RETRYABLE', 'NEEDS_REVIEW'\]\.indexOf\(status\)/)
+  assert.match(source, /\['RETRYABLE', 'RUNNING', 'FAILED'\]/)
+})

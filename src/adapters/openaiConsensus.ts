@@ -182,7 +182,17 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
   },
 } as const
 
-export function createOpenAiConsensusReviewer(apiKey: string): {
+export type ConsensusReasoningEffort = 'none' | 'low' | 'medium'
+
+/**
+ * Auto consensus v2 runs the second opinion with light reasoning and the
+ * tie-breaker with deeper reasoning, so the three passes are not copies of
+ * one another. The effort is part of the recorded model version.
+ */
+export function createOpenAiConsensusReviewer(
+  apiKey: string,
+  options: { reasoningEffort?: ConsensusReasoningEffort } = {},
+): {
   classify(options: {
     blocks: NaturalSpeechBlock[]
     language: string
@@ -193,6 +203,10 @@ export function createOpenAiConsensusReviewer(apiKey: string): {
   }): Promise<ModelClassification>
 } {
   if (!apiKey.trim()) throw new Error('OPENAI_API_KEY is required')
+  const reasoningEffort = options.reasoningEffort ?? 'none'
+  const modelVersion = reasoningEffort === 'none'
+    ? REAUDIT_CLASSIFICATION_MODEL
+    : `${REAUDIT_CLASSIFICATION_MODEL}+reasoning-${reasoningEffort}`
   const client = new OpenAI({
     apiKey,
     maxRetries: 3,
@@ -211,8 +225,9 @@ export function createOpenAiConsensusReviewer(apiKey: string): {
         .slice(0, 60_000)
       const completion = await client.chat.completions.create({
         model: REAUDIT_CLASSIFICATION_MODEL,
-        reasoning_effort: 'none',
-        temperature: 0,
+        reasoning_effort: reasoningEffort,
+        // Sampling temperature is accepted only without reasoning.
+        ...(reasoningEffort === 'none' ? { temperature: 0 } : {}),
         response_format: {
           type: 'json_schema',
           json_schema: CONSENSUS_REVIEWER_OUTPUT_SCHEMA,
@@ -309,7 +324,7 @@ ${transcript}`,
         model: {
           provider: 'openai',
           name: REAUDIT_CLASSIFICATION_MODEL,
-          version: REAUDIT_CLASSIFICATION_MODEL,
+          version: modelVersion,
         },
         category: raw.category,
         confidence: Number(raw.confidence).toFixed(8),

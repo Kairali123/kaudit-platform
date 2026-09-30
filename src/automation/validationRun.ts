@@ -1,6 +1,7 @@
 import type { Pool } from 'mysql2/promise'
 import {
   agentFailureTrace,
+  finalizeAutomatedFindingStates,
   persistAutomatedValidation,
   type AutomatedValidationCandidate,
 } from '../adapters/mysqlAutomatedValidation.ts'
@@ -79,8 +80,11 @@ export async function runAutomatedValidation(
     candidate: AutomatedValidationCandidate
     /** The second independent opinion. */
     reviewer: ClassificationOnly
-    /** The third, used only to break a lone category disagreement. */
-    adjudicator: ClassificationOnly
+    /**
+     * The tie-breaker, asked whenever the first two passes do not settle the
+     * call. Optional: a caller with no third opinion leaves it unresolved.
+     */
+    adjudicator?: ClassificationOnly
     rateCard: PublishedRateCard
     correlationId: string | null
     decidedAt: string
@@ -138,17 +142,10 @@ export async function runAutomatedValidation(
     recordedDurationMs: candidate.recordedDurationMs,
   })
   let adjudication = null
-  /**
-   * A third pass is paid for ONLY when the single thing the two passes
-   * disagree on is the category. Any other disagreement — a differing
-   * billable duration above all — is a question a third opinion cannot
-   * settle, and the call stays unresolved rather than being voted on.
-   */
-  if (
-    consensus.status === 'unresolved' &&
-    consensus.reasons.length === 1 &&
-    consensus.reasons[0] === 'CATEGORY_DISAGREEMENT'
-  ) {
+  // v2: a third opinion is asked whenever two passes do not settle the call
+  // (different category, or agreement below the confidence floor); the
+  // category majority then decides and deterministic policy prices it.
+  if (consensus.status === 'unresolved' && options.adjudicator) {
     adjudication = await classify(options.adjudicator)
     consensus = evaluateAutomatedConsensus({
       primary: candidate.primary,
@@ -261,6 +258,19 @@ export async function runAutomatedValidation(
       result: billing,
       correlationId: options.correlationId,
     })
+    if (billing.status === 'final') {
+      // Keep findings and the displayed category in step with what was billed.
+      // The bill is already durable; the month-end finalizer repeats this
+      // step, so a failure here is logged rather than failing the call.
+      try {
+        await finalizeAutomatedFindingStates(pool, { callIds: [candidate.callId] })
+      } catch (error) {
+        process.stderr.write(`${JSON.stringify({
+          event: 'automated_finding_finalize_failed',
+          name: error instanceof Error ? error.name : 'unknown',
+        })}\n`)
+      }
+    }
   }
   return {
     callId: candidate.callId,
