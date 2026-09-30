@@ -87,7 +87,10 @@ function runKauditServerAuditBatches() {
       batch.request = kauditAuditSignedRequest_(config, batch);
     });
     kauditAuditFlush_(contexts);
-    SpreadsheetApp.flush();
+    // SpreadsheetApp.flush() waits for the whole workbook to recalculate
+    // (~12 s here). An API batchUpdate is already durable, so it is only
+    // needed on the SpreadsheetApp path.
+    if (!kauditAuditSheetsApi_()) SpreadsheetApp.flush();
     timing.claimedMs = Date.now() - startedAt;
 
     let responses;
