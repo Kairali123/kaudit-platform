@@ -40,7 +40,7 @@ export const REAUDIT_ENGINE_FAMILY = 'kairali-independent-reaudit/'
 if (!REAUDIT_ENGINE_VERSION.startsWith(REAUDIT_ENGINE_FAMILY)) {
   throw new Error('Reaudit engine version must belong to its engine family')
 }
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.11.0'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.12.0'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000
@@ -445,6 +445,21 @@ export function mergeTranscriptSegments(
  *     which is what "meaningful service before the failure" means as a fact
  *     rather than as an assertion.
  */
+/**
+ * End of Saanvi's introduction: her lowest-numbered attributed block, bounded
+ * by the recording. Null when no block is positively hers.
+ */
+export function firstAgentTurnEnd(
+  blocks: readonly NaturalSpeechBlock[],
+  agentBlockNumbers: readonly number[],
+  recordedDurationMs: number,
+): number | null {
+  const first = [...blocks]
+    .filter((block) => agentBlockNumbers.includes(block.number))
+    .sort((left, right) => left.number - right.number)[0]
+  return first ? Math.min(first.endMs, recordedDurationMs) : null
+}
+
 export function resolveAgentFailureEvidence(options: {
   category: ModelClassification['category']
   blocks: NaturalSpeechBlock[]
@@ -756,6 +771,7 @@ export function validateClassification(
     lastMeaningfulCustomerExchangeMs: last,
     lastMeaningfulAgentExchangeMs:
       agentEnds.length > 0 ? Math.max(...agentEnds) : null,
+    firstAgentTurnEndMs: firstAgentTurnEnd(blocks, agentBlockNumbers, recordedDurationMs),
     lastVoicemailExchangeMs:
       voicemailEnds.length > 0 ? Math.max(...voicemailEnds) : null,
     lastBusinessRelevantCustomerExchangeMs:
@@ -1003,6 +1019,7 @@ export async function auditTranscriptEvidence(options: {
       recordedDurationMs: transcript.durationMs,
       lastCustomerExchangeMs: null,
       lastAgentExchangeMs: null,
+      firstAgentTurnEndMs: null,
       lastVoicemailExchangeMs: null,
       lastBusinessRelevantCustomerExchangeMs: null,
       lastVerifiedInteractionMs: null,
@@ -1083,6 +1100,7 @@ export async function auditTranscriptEvidence(options: {
         classification.lastMeaningfulCustomerExchangeMs,
       lastAgentExchangeMs:
         classification.lastMeaningfulAgentExchangeMs ?? null,
+      firstAgentTurnEndMs: classification.firstAgentTurnEndMs ?? null,
       lastVoicemailExchangeMs:
         classification.lastVoicemailExchangeMs ?? null,
       lastBusinessRelevantCustomerExchangeMs:

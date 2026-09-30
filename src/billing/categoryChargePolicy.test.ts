@@ -14,6 +14,7 @@ function charge(category: ReauditCategory, overrides: Record<string, number | nu
     recordedDurationMs: 180_000,
     lastCustomerExchangeMs: 40_000,
     lastAgentExchangeMs: 50_000,
+    firstAgentTurnEndMs: 6_000,
     lastVoicemailExchangeMs: 45_000,
     lastBusinessRelevantCustomerExchangeMs: 35_000,
     lastVerifiedInteractionMs: 50_000,
@@ -32,10 +33,28 @@ test('management zero categories never produce a chargeable duration', () => {
   }
 })
 
-test('user silence uses the final agent exchange plus standard grace', () => {
+test("user silence pays Saanvi's introduction plus standard grace only", () => {
   const result = charge('USER_SILENCE')
-  assert.equal(result.serviceEndMs, 50_000)
-  assert.equal(result.adjustedChargeableDurationMs, 110_000)
+  assert.equal(result.policyCode, 'USER_SILENCE_INTRO_PLUS_GRACE')
+  assert.equal(result.serviceEndMs, 6_000)
+  assert.equal(result.adjustedChargeableDurationMs, 66_000)
+})
+
+test('a long Saanvi monologue to a silent line is not paid beyond the introduction', () => {
+  // Synthetic shape of a reported call: intro ends 0:06, Saanvi keeps talking
+  // to 24:52 of a 24:58 recording.
+  const result = charge('USER_SILENCE', {
+    recordedDurationMs: 1_497_800,
+    lastAgentExchangeMs: 1_492_000,
+    firstAgentTurnEndMs: 6_000,
+  })
+  assert.equal(result.adjustedChargeableDurationMs, 66_000)
+})
+
+test('user silence without any attributed Saanvi turn is not chargeable', () => {
+  const result = charge('USER_SILENCE', { firstAgentTurnEndMs: null })
+  assert.equal(result.policyCode, 'NO_VERIFIED_CHARGEABLE_INTERACTION')
+  assert.equal(result.adjustedChargeableDurationMs, 0)
 })
 
 test('voicemail uses the final service exchange plus its shorter grace', () => {

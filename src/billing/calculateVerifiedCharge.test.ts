@@ -151,7 +151,7 @@ test('no meaningful exchange is independently verified as zero, not missing', ()
   assert.equal(result.ruleCode, 'ZERO_DURATION_NOT_BILLED')
 })
 
-test('category policy bills user silence through agent service plus grace', () => {
+test('category policy bills user silence through the introduction plus grace', () => {
   const result = calculateVerifiedKServeCharge(
     input({
       conversationAssessment: 'no_meaningful_exchange',
@@ -161,7 +161,7 @@ test('category policy bills user silence through agent service plus grace', () =
         category: 'USER_SILENCE',
         serviceEndMs: 45_000,
         graceMs: 60_000,
-        policyCode: 'USER_SILENCE_AGENT_PLUS_GRACE',
+        policyCode: 'USER_SILENCE_INTRO_PLUS_GRACE',
         policyVersion: CATEGORY_CHARGE_POLICY_VERSION,
         policySha256: CATEGORY_CHARGE_POLICY_SHA256,
       },
@@ -341,4 +341,79 @@ test('rounded amount never decreases as duration increases', () => {
     assert.ok(result.amountPaise >= previous)
     previous = result.amountPaise
   }
+})
+
+function silenceCharge(serviceEndMs: number, overrides: Record<string, unknown>) {
+  return calculateVerifiedKServeCharge(
+    input({
+      conversationAssessment: 'no_meaningful_exchange',
+      lastMeaningfulCustomerExchangeMs: null,
+      categoryCharge: {
+        category: 'USER_SILENCE',
+        serviceEndMs,
+        graceMs: 60_000,
+        policyCode: 'USER_SILENCE_INTRO_PLUS_GRACE',
+        policyVersion: CATEGORY_CHARGE_POLICY_VERSION,
+        policySha256: CATEGORY_CHARGE_POLICY_SHA256,
+      },
+      ...overrides,
+    }),
+    publishedRateCard(),
+  )
+}
+
+test('the reported call: intro + 60 s = 66 s -> 2 minutes, not 25', () => {
+  // KServe: connected 405 s, billed 7 minutes. Recording 1,497.8 s.
+  const result = silenceCharge(6_000, {
+    recordedDurationMs: 1_497_800,
+    connectedDurationMs: 405_000,
+    claimedDurationMs: 420_000,
+  })
+  assert.equal(result.status, 'final')
+  if (result.status !== 'final') return
+  assert.equal(result.adjustedChargeableDurationMs, 66_000)
+  assert.equal(result.amount, '19.00000000')
+})
+
+test('cap 1: a charge never runs past KServe connected time', () => {
+  // The old last-turn shape of the same call, now bounded by connected time.
+  const result = silenceCharge(1_492_000, {
+    recordedDurationMs: 1_497_800,
+    connectedDurationMs: 405_000,
+    claimedDurationMs: 420_000,
+  })
+  assert.equal(result.status, 'final')
+  if (result.status !== 'final') return
+  assert.equal(result.adjustedChargeableDurationMs, 405_000)
+  assert.equal(result.amount, '66.50000000')
+  const calculation = (result.trace as unknown as { calculation: Record<string, unknown> }).calculation
+  assert.equal(calculation.capApplied, 'connected')
+})
+
+test('cap 2: a charge never exceeds what KServe billed', () => {
+  // Intro 5 s + 60 s grace, connected 60 s -> 1 minute (INR 9.50);
+  // KServe billed half a minute, so we pay half a minute.
+  const result = silenceCharge(5_000, {
+    recordedDurationMs: 90_000,
+    connectedDurationMs: 60_000,
+    claimedDurationMs: 30_000,
+  })
+  assert.equal(result.status, 'final')
+  if (result.status !== 'final') return
+  assert.equal(result.amount, '4.75000000')
+  assert.equal(result.ruleCode, 'SHORT_CALL_FLAT')
+  const calculation = (result.trace as unknown as { calculation: Record<string, unknown> }).calculation
+  assert.equal(calculation.capApplied, 'kserve_billed')
+})
+
+test('without KServe figures nothing is capped', () => {
+  const result = silenceCharge(6_000, {
+    recordedDurationMs: 120_000,
+    connectedDurationMs: null,
+    claimedDurationMs: null,
+  })
+  if (result.status !== 'final') return
+  assert.equal(result.adjustedChargeableDurationMs, 66_000)
+  const calculation = (result.trace as unknown as { calculation: Record<string, unknown> }).calculation
+  assert.equal(calculation.capApplied, null)
 })

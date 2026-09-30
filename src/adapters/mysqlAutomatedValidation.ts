@@ -27,6 +27,7 @@ import {
 } from './openaiConsensus.ts'
 import { insertAiUsageEvent } from './mysqlAiUsage.ts'
 import {
+  firstAgentTurnEnd,
   mergeTranscriptSegments,
   resolveAgentFailureEvidence,
 } from '../reaudit/core.ts'
@@ -406,6 +407,13 @@ export async function collectAutomatedValidationCandidates(
             : Number(row.conversation_end_ms),
         lastMeaningfulAgentExchangeMs:
           row.category === 'USER_SILENCE' ? serviceEndMs : null,
+        // Recomputed from the persisted attribution, so an analysis stored
+        // before the introduction rule is priced by it on re-validation.
+        firstAgentTurnEndMs: firstAgentTurnEnd(
+          mergeTranscriptSegments(segments),
+          blockNumbers(metrics.agentBlockNumbers),
+          recordedDurationMs,
+        ),
         lastVoicemailExchangeMs:
           row.category === 'VOICEMAIL' ? serviceEndMs : null,
         lastBusinessRelevantCustomerExchangeMs:

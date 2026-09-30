@@ -527,7 +527,7 @@ test('parsed passes price a mid-conversation AGENT_FAILURE, not zero', async () 
   assert.equal(outcome.amount, '19.00000000')
 })
 
-test('parsed passes price USER_SILENCE through the last agent turn plus grace', async () => {
+test('parsed passes price USER_SILENCE through the introduction plus grace', async () => {
   const segments = [
     { startMs: 0, endMs: 8_000, text: 'Namaste, this is Saanvi from Kairali.' },
     { startMs: 12_000, endMs: 20_000, text: 'Is this a good time for a quick conversation?' },
@@ -539,6 +539,6 @@ test('parsed passes price USER_SILENCE through the last agent turn plus grace', 
     counterparty_type: 'no_response',
   }), blocks, segments, 60_000)
   assert.equal(outcome.status, 'accepted')
-  assert.equal(outcome.policyCode, 'USER_SILENCE_AGENT_PLUS_GRACE')
+  assert.equal(outcome.policyCode, 'USER_SILENCE_INTRO_PLUS_GRACE')
   assert.notEqual(outcome.amount, '0.00000000')
 })

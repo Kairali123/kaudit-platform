@@ -64,7 +64,10 @@ category when a more specific rule below matches:
    busy, callback, or not interested, means USER_SILENCE is not allowed.
    Background audio, music, ringing, an unclear block, media-like or
    song-like transcription, and ASR noise are NOT a customer response and NOT
-   evidence that the call was inactive. INACTIVE_CALL is only for a transcript
+   evidence that the call was inactive. Speech that is not directed at Saanvi
+   -- the called person talking to someone else, a background conversation, a
+   TV or radio, or unrelated talk that never answers her -- is also NOT a
+   customer response: with nothing else it is USER_SILENCE. INACTIVE_CALL is only for a transcript
    with no meaningful customer speech AND no identifiable Saanvi speech at all.
    If even one block is Saanvi's, the answer is USER_SILENCE, never
    INACTIVE_CALL.

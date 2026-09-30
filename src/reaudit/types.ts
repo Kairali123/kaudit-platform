@@ -187,6 +187,8 @@ export interface ModelClassification {
   lastMeaningfulCustomerExchangeMs: number | null
   /** Deterministically derived from attributed transcript blocks. */
   lastMeaningfulAgentExchangeMs?: number | null
+  /** End of Saanvi's first attributed block (her introduction). */
+  firstAgentTurnEndMs?: number | null
   /** Deterministically derived from affirmative voicemail evidence blocks. */
   lastVoicemailExchangeMs?: number | null
   /** Deterministically derived from reviewed business-relevant customer blocks. */

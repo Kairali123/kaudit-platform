@@ -68,19 +68,21 @@ test('a third independent pass resolves a two-pass category disagreement by majo
   )
 })
 
-test('user-silence agreement charges through the final agent exchange', () => {
+test('user-silence agreement charges through the introduction plus grace', () => {
   const consensus = evaluateAutomatedConsensus({
     primary: result({
       category: 'USER_SILENCE',
       customerSpoke: false,
       lastMeaningfulCustomerExchangeMs: null,
       lastMeaningfulAgentExchangeMs: 20_000,
+      firstAgentTurnEndMs: 20_000,
     }),
     secondary: result({
       category: 'USER_SILENCE',
       customerSpoke: false,
       lastMeaningfulCustomerExchangeMs: null,
       lastMeaningfulAgentExchangeMs: 20_000,
+      firstAgentTurnEndMs: 20_000,
     }),
     recordedDurationMs: 100_000,
   })
@@ -89,7 +91,7 @@ test('user-silence agreement charges through the final agent exchange', () => {
   assert.equal(consensus.secondaryBillableDurationMs, 120_000)
   assert.equal(
     consensus.selectedChargeDecision?.policyCode,
-    'USER_SILENCE_AGENT_PLUS_GRACE',
+    'USER_SILENCE_INTRO_PLUS_GRACE',
   )
 })
 
@@ -116,6 +118,7 @@ const silence = (agentEndMs: number, confidence = '0.90000000') => result({
   customerSpoke: false,
   lastMeaningfulCustomerExchangeMs: null,
   lastMeaningfulAgentExchangeMs: agentEndMs,
+  firstAgentTurnEndMs: agentEndMs,
 })
 
 test('same category, different money: unresolved until the tie-breaker is asked', () => {
