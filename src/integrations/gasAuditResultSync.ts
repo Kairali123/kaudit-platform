@@ -499,12 +499,8 @@ export function createGasAuditResultSync(
           const outcome = await runAutomatedValidation(pool, {
             candidate: validationCandidate,
             reviewer: { classify: async () => secondary },
-            adjudicator: {
-              classify: async () => {
-                if (!third) throw new Error('THIRD_REVIEW_REQUIRED')
-                return third
-              },
-            },
+            // The Sheet supplies its own third opinion, when it has one.
+            ...(third ? { adjudicator: { classify: async () => third } } : {}),
             rateCard,
             correlationId: input.correlationId,
             decidedAt: new Date().toISOString(),

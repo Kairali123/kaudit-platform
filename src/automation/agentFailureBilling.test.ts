@@ -172,15 +172,23 @@ test('from-start, no-service, and unsupported-boundary failures are zero', async
   }
 })
 
-test('a primary that lost its evidence cannot agree with a charging reviewer', async () => {
-  // The old bug: consensus priced every AGENT_FAILURE at zero, so a stripped
-  // primary and a charging secondary "agreed". They must not.
+test('agreeing AGENT_FAILURE passes that disagree on money go to the tie-breaker', async () => {
+  // A stripped primary (zero) and a charging reviewer agree on the category
+  // but not the money, so the tie-breaker is asked and the shared duration
+  // wins -- here the two zero opinions.
   const stripped = { ...validated(raw()), agentFailureMode: null, failureStartMs: null }
-  const { outcome } = await run(stripped, raw(), FROM_START)
-  assert.equal(outcome.status, 'unresolved')
-  assert.ok(outcome.reasons.includes('BILLABLE_DURATION_DISAGREEMENT'))
-  assert.equal(outcome.billingStatus, 'unresolved')
-  assert.equal(outcome.amount, null)
+  const { outcome, adjudicatorCalls } = await run(stripped, raw(), FROM_START)
+  assert.equal(adjudicatorCalls, 1)
+  assert.equal(outcome.status, 'accepted')
+  assert.equal(outcome.amount, '0.00000000')
+})
+
+test('one zero opinion cannot pull a served mid-conversation failure to zero', async () => {
+  const { outcome, adjudicatorCalls } = await run(validated(raw()), FROM_START, raw())
+  assert.equal(adjudicatorCalls, 1)
+  assert.equal(outcome.status, 'accepted')
+  assert.equal(outcome.policyCode, 'AGENT_FAILURE_MID_CONVERSATION_PLUS_30S')
+  assert.equal(outcome.amount, '19.00000000')
 })
 
 test('DRY-RUN still adjudicates a lone category disagreement and writes nothing', async () => {
@@ -431,9 +439,11 @@ test('a second opinion is repaired like the primary instead of aborting billing'
     decisionSignals: { ...BASE_SIGNALS, counterpartyType: 'no_response' },
   })
   assert.throws(() => validated(silentWithoutAgent), /positively identified agent speech/)
-  const { outcome } = await run(validated(raw()), silentWithoutAgent)
-  assert.equal(outcome.status, 'unresolved')
-  assert.equal(outcome.billingStatus, 'unresolved')
+  // The repaired opinion (INACTIVE_CALL) takes part in the vote; the
+  // primary and tie-breaker agree, so billing completes instead of aborting.
+  const { outcome } = await run(validated(raw()), silentWithoutAgent, raw())
+  assert.equal(outcome.status, 'accepted')
+  assert.equal(outcome.amount, '19.00000000')
 })
 
 test('an unrepairable second opinion stops with a terminal code', async () => {

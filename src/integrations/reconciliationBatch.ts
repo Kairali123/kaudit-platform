@@ -246,7 +246,7 @@ async function validateAndBill(
     period: BillingMonthScope
     rateCard: PublishedRateCard
     reviewer: ReturnType<typeof createOpenAiConsensusReviewer>
-    adjudicator: ReturnType<typeof createConfiguredReauditAi>
+    adjudicator: ReturnType<typeof createOpenAiConsensusReviewer>
     correlationId: string | null
     allowExistingCalculation: boolean
   },
@@ -378,8 +378,16 @@ export function createReconciliationBatchService(options: {
   }
   const pool = options.pool
   const ai = createConfiguredReauditAi(options.env)
+  // Auto consensus v2: the second opinion and the tie-breaker use the
+  // reviewer prompt with different reasoning depths, so no pass is a copy
+  // of the primary classification.
   const reviewer = createOpenAiConsensusReviewer(
     options.env.OPENAI_API_KEY?.trim() || '',
+    { reasoningEffort: 'low' },
+  )
+  const adjudicator = createOpenAiConsensusReviewer(
+    options.env.OPENAI_API_KEY?.trim() || '',
+    { reasoningEffort: 'medium' },
   )
   const fetcher = createProxyResolvingFetcher(options.proxyBaseUrl)
   const transcriptCache = createMysqlTranscriptionCache(pool)
@@ -503,7 +511,7 @@ export function createReconciliationBatchService(options: {
             period,
             rateCard,
             reviewer,
-            adjudicator: ai,
+            adjudicator,
             correlationId: input.correlationId,
             allowExistingCalculation: mode === 'transcript_reaudit',
           })
@@ -643,7 +651,7 @@ export function createReconciliationBatchService(options: {
           period,
           rateCard,
           reviewer,
-          adjudicator: ai,
+          adjudicator,
           decidedAt: new Date().toISOString(),
           correlationId: input.correlationId ?? `gas:${input.batchId}`,
         })

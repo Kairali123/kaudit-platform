@@ -18,6 +18,7 @@ import type {
 } from '../billing/types.ts'
 import type { ConsensusResult } from '../automation/consensus.ts'
 import {
+  AUTOMATED_VALIDATION_CHECKS,
   AUTOMATED_VALIDATION_VERSION,
 } from '../automation/consensus.ts'
 import {
@@ -548,12 +549,7 @@ export async function persistAutomatedValidation(
   const rulesetSha256 = canonicalJsonSha256({
     version: AUTOMATED_VALIDATION_VERSION,
     threshold: consensus.threshold,
-    checks: [
-      'category_exact',
-      'customer_spoke_exact',
-      'rounded_billable_duration_exact',
-      'both_confidence_at_or_above_floor',
-    ],
+    checks: [...AUTOMATED_VALIDATION_CHECKS],
   } as unknown as JsonValue)
   const connection = await pool.getConnection()
   try {
@@ -691,12 +687,15 @@ interface ValidationDecisionRow extends RowDataPacket {
 
 export async function finalizeAutomatedFindingStates(
   pool: Pool,
-  period: { start: string; end: string },
+  scope: { start: string; end: string } | { callIds: readonly string[] },
 ): Promise<{
   confirmed: number
   rejected: number
   insertedReplacement: number
 }> {
+  if ('callIds' in scope && scope.callIds.length === 0) {
+    return { confirmed: 0, rejected: 0, insertedReplacement: 0 }
+  }
   const [decisions] = await pool.execute<ValidationDecisionRow[]>(
     `SELECT decision_row.id, decision_row.call_id,
             decision_row.audit_run_id,
@@ -705,7 +704,9 @@ export async function finalizeAutomatedFindingStates(
             decision_row.evidence_refs_json
      FROM kaudit_automated_decision decision_row
      JOIN kaudit_call c ON c.id = decision_row.call_id
-     WHERE c.billing_period_date BETWEEN ? AND ?
+     WHERE ${'callIds' in scope
+         ? `c.id IN (${scope.callIds.map(() => '?').join(',')})`
+         : 'c.billing_period_date BETWEEN ? AND ?'}
        AND decision_row.decision_type =
              'automated_consensus_validation'
        AND decision_row.decision_status = 'final'
@@ -714,7 +715,7 @@ export async function finalizeAutomatedFindingStates(
          SELECT 1 FROM kaudit_automated_decision newer
          WHERE newer.supersedes_decision_id = decision_row.id
        )`,
-    [period.start, period.end],
+    'callIds' in scope ? [...scope.callIds] : [scope.start, scope.end],
   )
   const summary = {
     confirmed: 0,
@@ -854,6 +855,14 @@ export async function finalizeAutomatedFindingStates(
           summary.insertedReplacement += 1
         }
       }
+      // The call's displayed category follows the billed decision, but only
+      // while that decision's audit run is still the call's latest.
+      await connection.execute(
+        `UPDATE kaudit_call
+         SET canonical_outcome_code = ?
+         WHERE id = ? AND latest_audit_run_id = ?`,
+        [selected.category, decision.call_id, decision.audit_run_id],
+      )
       const afterHash = canonicalJsonSha256({
         automatedConsensusDecisionId: decision.id,
         selectedCategory: selected.category,

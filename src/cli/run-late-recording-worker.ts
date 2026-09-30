@@ -2,7 +2,6 @@ import mysql, { type RowDataPacket } from 'mysql2/promise'
 import { createProxyResolvingFetcher } from '../adapters/proxyResolvingFetcher.ts'
 import { createMysqlReauditWriteRepo } from '../adapters/mysqlReauditWriteRepo.ts'
 import { createConfiguredReauditAi } from '../adapters/configuredReaudit.ts'
-import { createOpenAiReaudit } from '../adapters/openaiReaudit.ts'
 import { createMysqlBillingSpendGuard } from '../adapters/mysqlBillingSpendLease.ts'
 import { createMysqlTranscriptionCache } from '../adapters/mysqlTranscriptionCache.ts'
 import { createMysqlBillingMonthSummaryStore } from '../adapters/mysqlBillingMonthSummary.ts'
@@ -132,7 +131,7 @@ async function validateCorrectedCall(
     period: BillingMonthScope
     rateCard: PublishedRateCard
     reviewer: ReturnType<typeof createOpenAiConsensusReviewer>
-    adjudicator: ReturnType<typeof createOpenAiReaudit>
+    adjudicator: ReturnType<typeof createOpenAiConsensusReviewer>
     correlationId: string
     decidedAt: string
   },
@@ -168,7 +167,7 @@ async function correctOneItem(
     period: BillingMonthScope
     rateCard: PublishedRateCard
     reviewer: ReturnType<typeof createOpenAiConsensusReviewer>
-    adjudicator: ReturnType<typeof createOpenAiReaudit>
+    adjudicator: ReturnType<typeof createOpenAiConsensusReviewer>
     decidedAt: string
     correlationId: string
   },
@@ -435,10 +434,15 @@ async function main(): Promise<void> {
       required('KAUDIT_UNPOD_PROXY_BASE'),
     )
     const ai = createConfiguredReauditAi(process.env)
-    // The second and third opinions of the approved validation policy. The
-    // adjudicator is the primary classifier re-run, exactly as the month-wide
-    // validation runner uses it.
-    const reviewer = createOpenAiConsensusReviewer(required('OPENAI_API_KEY'))
+    // Auto consensus v2 panel (see reconciliationBatch.ts).
+    const reviewer = createOpenAiConsensusReviewer(
+      required('OPENAI_API_KEY'),
+      { reasoningEffort: 'low' },
+    )
+    const adjudicator = createOpenAiConsensusReviewer(
+      required('OPENAI_API_KEY'),
+      { reasoningEffort: 'medium' },
+    )
     const summaries = createMysqlBillingMonthSummaryStore(pool)
 
     for (const batchId of batchIds) {
@@ -541,7 +545,7 @@ async function main(): Promise<void> {
             period,
             rateCard,
             reviewer,
-            adjudicator: ai,
+            adjudicator,
             decidedAt,
             correlationId: `late-recording:${scope.billMonth}`,
           })

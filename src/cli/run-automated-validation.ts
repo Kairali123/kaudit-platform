@@ -8,7 +8,6 @@ import {
 } from '../adapters/mysqlAutomatedValidation.ts'
 import { createOpenAiConsensusReviewer } from '../adapters/openaiConsensus.ts'
 import { runAutomatedValidation } from '../automation/validationRun.ts'
-import { createOpenAiReaudit } from '../adapters/openaiReaudit.ts'
 import { parseBillingMonth } from '../reporting/billingMonth.ts'
 
 function required(name: string): string {
@@ -76,11 +75,14 @@ async function main(): Promise<void> {
         limit: integer('KAUDIT_AUTO_VALIDATE_BATCH', 10, 1, 100),
       },
     )
+    // Auto consensus v2 panel (see reconciliationBatch.ts).
     const reviewer = createOpenAiConsensusReviewer(
       required('OPENAI_API_KEY'),
+      { reasoningEffort: 'low' },
     )
-    const adjudicator = createOpenAiReaudit(
+    const adjudicator = createOpenAiConsensusReviewer(
       required('OPENAI_API_KEY'),
+      { reasoningEffort: 'medium' },
     )
     const summary = {
       mode,

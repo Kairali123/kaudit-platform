@@ -38,7 +38,7 @@ test('accepts independent agreement on category and rounded money basis', () => 
   assert.deepEqual(consensus.reasons, [])
 })
 
-test('keeps category, billable-duration, and low-confidence conflicts unresolved', () => {
+test('two passes with different categories stay unresolved until a tie-breaker votes', () => {
   const consensus = evaluateAutomatedConsensus({
     primary: result(),
     secondary: result({
@@ -50,11 +50,7 @@ test('keeps category, billable-duration, and low-confidence conflicts unresolved
     recordedDurationMs: 100_000,
   })
   assert.equal(consensus.status, 'unresolved')
-  assert.deepEqual(consensus.reasons, [
-    'CATEGORY_DISAGREEMENT',
-    'CUSTOMER_SPEECH_DISAGREEMENT',
-    'BILLABLE_DURATION_DISAGREEMENT',
-  ])
+  assert.deepEqual(consensus.reasons, ['CATEGORY_DISAGREEMENT'])
 })
 
 test('a third independent pass resolves a two-pass category disagreement by majority', () => {
@@ -110,4 +106,63 @@ test('management-zero categories remain zero even when customer speech exists', 
     consensus.selectedChargeDecision?.policyCode,
     'MANAGEMENT_ZERO_CATEGORY',
   )
+})
+
+// ---- v2: category majority, then the duration most agreeing passes share ----
+
+const silence = (agentEndMs: number, confidence = '0.90000000') => result({
+  category: 'USER_SILENCE',
+  confidence,
+  customerSpoke: false,
+  lastMeaningfulCustomerExchangeMs: null,
+  lastMeaningfulAgentExchangeMs: agentEndMs,
+})
+
+test('same category, different money: unresolved until the tie-breaker is asked', () => {
+  const consensus = evaluateAutomatedConsensus({
+    primary: silence(20_000),
+    secondary: silence(90_000),
+    recordedDurationMs: 200_000,
+  })
+  assert.equal(consensus.status, 'unresolved')
+  assert.deepEqual(consensus.reasons, ['BILLABLE_DURATION_DISAGREEMENT'])
+})
+
+test('the duration two agreeing passes share wins over a lone outlier', () => {
+  const consensus = evaluateAutomatedConsensus({
+    primary: silence(90_000),
+    secondary: silence(20_000),
+    adjudicator: silence(90_000),
+    recordedDurationMs: 200_000,
+  })
+  assert.equal(consensus.status, 'accepted')
+  assert.equal(consensus.selectedSource, 'primary')
+  assert.equal(consensus.primaryBillableDurationMs, 180_000)
+})
+
+test('with no shared duration the shortest agreeing duration is used', () => {
+  const consensus = evaluateAutomatedConsensus({
+    primary: silence(90_000),
+    secondary: silence(20_000),
+    adjudicator: silence(150_000),
+    recordedDurationMs: 300_000,
+  })
+  assert.equal(consensus.status, 'accepted')
+  assert.equal(consensus.selectedSource, 'secondary')
+})
+
+test('the two most confident agreeing passes must clear the 0.65 floor', () => {
+  const accepted = evaluateAutomatedConsensus({
+    primary: silence(20_000, '0.70000000'),
+    secondary: silence(20_000, '0.66000000'),
+    recordedDurationMs: 100_000,
+  })
+  assert.equal(accepted.status, 'accepted')
+  assert.equal(accepted.threshold, '0.65000000')
+  const low = evaluateAutomatedConsensus({
+    primary: silence(20_000, '0.70000000'),
+    secondary: silence(20_000, '0.64000000'),
+    recordedDurationMs: 100_000,
+  })
+  assert.deepEqual(low.reasons, ['WINNING_CONSENSUS_CONFIDENCE_BELOW_FLOOR'])
 })
