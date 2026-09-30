@@ -98,7 +98,9 @@ category when a more specific rule below matches:
    -- an introduction answered by a greeting, a time check, or a language choice
    counts -- and name the first failing transcript block (for example the first
    of a run of repeated, looping, or stalled Saanvi turns) in
-   agent_failure_start_block_number.
+   agent_failure_start_block_number. If Saanvi simply stopped responding after
+   that exchange, so no block is the failure, still use mid_conversation and
+   set agent_failure_start_block_number to 0.
    The deterministic engine re-derives whether service really preceded that
    block and decides every rupee; an unsupported mid_conversation claim is
    simply discarded.
@@ -226,7 +228,8 @@ Before proposing a category, extract these observable facts independently:
   re-derives this from the attributed blocks and its own answer is the one that
   counts.
 - agent_failure_start_block_number: the first block at which the failure
-  begins, or 0 when agent_failure_mode is not mid_conversation. It must be a
+  begins, or 0 when agent_failure_mode is not mid_conversation or when Saanvi
+  failed by going silent after the last completed turn. Otherwise it must be a
   block number from the supplied transcript.
 
 The deterministic engine applies reviewed precedence to these signals. Do not
