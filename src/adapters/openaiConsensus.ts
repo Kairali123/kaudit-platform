@@ -17,7 +17,7 @@ import {
 } from './openaiReaudit.ts'
 
 export const CONSENSUS_REVIEWER_VERSION =
-  'kairali-independent-consensus-review/1.7.0'
+  'kairali-independent-consensus-review/1.8.0'
 
 export const CONSENSUS_REVIEWER_PROMPT = `You are an independent automated
 verification pass for Kairali's call-audit system. Review the timestamped,
@@ -44,7 +44,7 @@ export const CONSENSUS_REVIEWER_RULESET_SHA256 =
     model: REAUDIT_CLASSIFICATION_MODEL,
     prompt: CONSENSUS_REVIEWER_PROMPT,
     categories: REAUDIT_CATEGORIES,
-    outputSchemaVersion: '7',
+    outputSchemaVersion: '8',
   } as unknown as JsonValue)
 
 export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
@@ -145,6 +145,13 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
           'none',
         ],
       },
+      // The same failure boundary the primary reports. Without it every
+      // AGENT_FAILURE opinion from this reviewer priced at zero.
+      agent_failure_mode: {
+        type: 'string',
+        enum: ['none', 'start', 'mid_conversation'],
+      },
+      agent_failure_start_block_number: { type: 'integer', minimum: 0 },
       junk_evidence: {
         type: 'string',
         enum: [
@@ -176,6 +183,8 @@ export const CONSENSUS_REVIEWER_OUTPUT_SCHEMA = {
       'voicemail_evidence',
       'automation_evidence',
       'junk_evidence',
+      'agent_failure_mode',
+      'agent_failure_start_block_number',
       'remarks',
       'dispute_recommended',
     ],
@@ -313,6 +322,8 @@ ${transcript}`,
           | 'spam_or_scam'
           | 'prank_or_illegitimate_purpose'
           | 'none'
+        agent_failure_mode: 'none' | 'start' | 'mid_conversation'
+        agent_failure_start_block_number: number
         remarks: string
         dispute_recommended: boolean
       }
@@ -342,6 +353,11 @@ ${transcript}`,
           customerEnds.length > 0 ? Math.max(...customerEnds) : null,
         remarks: raw.remarks,
         disputeRecommended: raw.dispute_recommended,
+        agentFailureStartBlockNumber:
+          Number.isInteger(raw.agent_failure_start_block_number) &&
+          raw.agent_failure_start_block_number > 0
+            ? raw.agent_failure_start_block_number
+            : null,
         decisionSignals: {
           counterpartyType: raw.counterparty_type,
           agentHandling: raw.agent_handling,
@@ -353,6 +369,7 @@ ${transcript}`,
           voicemailEvidence: raw.voicemail_evidence,
           automationEvidence: raw.automation_evidence,
           junkEvidence: raw.junk_evidence,
+          agentFailureMode: raw.agent_failure_mode,
         },
         usage: {
           inputTokens: completion.usage?.prompt_tokens ?? null,

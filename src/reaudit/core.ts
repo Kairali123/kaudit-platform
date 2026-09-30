@@ -40,7 +40,7 @@ export const REAUDIT_ENGINE_FAMILY = 'kairali-independent-reaudit/'
 if (!REAUDIT_ENGINE_VERSION.startsWith(REAUDIT_ENGINE_FAMILY)) {
   throw new Error('Reaudit engine version must belong to its engine family')
 }
-export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.9.0'
+export const REAUDIT_CLASSIFIER_RULESET_VERSION = 'kairali-12cat/2.10.0'
 export const DURATION_TOLERANCE_MS = 5_000
 export const MERGE_GAP_MS = 1_000
 export const MERGE_MAX_BLOCK_MS = 15_000

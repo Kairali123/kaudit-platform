@@ -90,12 +90,14 @@ category when a more specific rule below matches:
 9. A human stop, defer, wrong-number, busy, or decline response followed by an
    appropriate Saanvi close is CONNECT_NOT_FRUITFUL when no successful outcome
    occurred. A vendor-duration difference never changes that quality category.
-10. For AGENT_FAILURE, report WHERE the failure begins. Use start when Saanvi
-   never connected, never introduced herself, failed before delivering any
-   meaningful service, or connected and provided no introduction or service at
-   all. Use mid_conversation ONLY when a genuine two-way conversation with real
-   service was already under way and the failure begins part-way through it;
-   name the first failing transcript block in agent_failure_start_block_number.
+10. For AGENT_FAILURE, report WHERE the failure begins. Use start ONLY when
+   Saanvi never connected, never introduced herself, or failed before the
+   customer said anything in reply. Use mid_conversation whenever at least one
+   customer reply and a Saanvi turn had both completed before the failure began
+   -- an introduction answered by a greeting, a time check, or a language choice
+   counts -- and name the first failing transcript block (for example the first
+   of a run of repeated, looping, or stalled Saanvi turns) in
+   agent_failure_start_block_number.
    The deterministic engine re-derives whether service really preceded that
    block and decides every rupee; an unsupported mid_conversation claim is
    simply discarded.
@@ -214,11 +216,10 @@ Before proposing a category, extract these observable facts independently:
   blocks, ASR noise, customer speech, or voicemail/automation evidence. A block
   you cannot attribute belongs in unclear_block_numbers or in no list at all;
   it is never counted as Saanvi.
-- agent_failure_mode: none unless the category is AGENT_FAILURE. start when the
-  failure was present from the beginning -- never connected, never introduced,
-  failed before any meaningful service, or connected with no introduction or
-  service. mid_conversation only when meaningful two-way service was already
-  under way and the failure begins part-way through it.
+- agent_failure_mode: none unless the category is AGENT_FAILURE. start only when
+  the failure was present from the beginning -- never connected, never
+  introduced, or no customer reply before the failure. mid_conversation whenever
+  a customer reply and a Saanvi turn both completed before the failing block.
 - meaningful_service_before_failure: true only when a real customer exchange and
   a real Saanvi response both completed BEFORE the failing block. The engine
   re-derives this from the attributed blocks and its own answer is the one that
