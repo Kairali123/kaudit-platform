@@ -63,6 +63,7 @@ function projectedCharge(
       classification.lastMeaningfulCustomerExchangeMs,
     lastAgentExchangeMs:
       classification.lastMeaningfulAgentExchangeMs ?? null,
+    firstAgentTurnEndMs: classification.firstAgentTurnEndMs ?? null,
     lastVoicemailExchangeMs:
       classification.lastVoicemailExchangeMs ?? null,
     lastBusinessRelevantCustomerExchangeMs:

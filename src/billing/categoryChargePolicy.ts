@@ -6,7 +6,7 @@ import type { ReauditCategory } from '../reaudit/types.ts'
 import { KSERVE_WRAP_UP_GRACE_MS } from './kserveRules.ts'
 
 export const CATEGORY_CHARGE_POLICY_VERSION =
-  'management-category-charge/2026-09-16.1'
+  'management-category-charge/2026-09-30.1'
 export const VOICEMAIL_GRACE_MS = 30_000
 
 /**
@@ -25,7 +25,10 @@ export const CATEGORY_CHARGE_POLICY_DOCUMENT = {
   schemaVersion: '1',
   version: CATEGORY_CHARGE_POLICY_VERSION,
   rules: {
-    USER_SILENCE: 'last_agent_exchange_plus_standard_grace',
+    // Management rule 2026-09-30: when the customer never responds, pay
+    // Saanvi's introduction (her first turn) and the standard grace only --
+    // however long she keeps talking afterwards.
+    USER_SILENCE: 'first_agent_turn_plus_standard_grace',
     VOICEMAIL: 'last_agent_or_voicemail_exchange_plus_30s_grace',
     AI_TO_AI: 'standard_grace_only',
     INACTIVE_CALL: 'zero',
@@ -47,7 +50,7 @@ export const CATEGORY_CHARGE_POLICY_SHA256 = canonicalJsonSha256(
 
 export type CategoryChargePolicyCode =
   | 'STANDARD_CUSTOMER_PLUS_GRACE'
-  | 'USER_SILENCE_AGENT_PLUS_GRACE'
+  | 'USER_SILENCE_INTRO_PLUS_GRACE'
   | 'VOICEMAIL_SERVICE_PLUS_30S'
   | 'AI_TO_AI_GRACE_ONLY'
   | 'JUNK_BUSINESS_INTERACTION_PLUS_GRACE'
@@ -58,7 +61,7 @@ export type CategoryChargePolicyCode =
 
 export const CATEGORY_CHARGE_POLICY_CODES = [
   'STANDARD_CUSTOMER_PLUS_GRACE',
-  'USER_SILENCE_AGENT_PLUS_GRACE',
+  'USER_SILENCE_INTRO_PLUS_GRACE',
   'VOICEMAIL_SERVICE_PLUS_30S',
   'AI_TO_AI_GRACE_ONLY',
   'JUNK_BUSINESS_INTERACTION_PLUS_GRACE',
@@ -73,6 +76,8 @@ export interface CategoryChargeEvidence {
   recordedDurationMs: number
   lastCustomerExchangeMs: number | null
   lastAgentExchangeMs: number | null
+  /** End of Saanvi's first turn (her introduction); engine-derived. */
+  firstAgentTurnEndMs?: number | null
   lastVoicemailExchangeMs: number | null
   lastBusinessRelevantCustomerExchangeMs: number | null
   lastVerifiedInteractionMs: number | null
@@ -160,7 +165,8 @@ export function resolveCategoryCharge(
     return decision(evidence, 'AI_TO_AI_GRACE_ONLY', null, KSERVE_WRAP_UP_GRACE_MS)
   }
   if (evidence.category === 'USER_SILENCE') {
-    if (evidence.lastAgentExchangeMs == null) {
+    const introEndMs = evidence.firstAgentTurnEndMs ?? null
+    if (introEndMs == null) {
       return decision(
         evidence,
         'NO_VERIFIED_CHARGEABLE_INTERACTION',
@@ -170,8 +176,8 @@ export function resolveCategoryCharge(
     }
     return decision(
       evidence,
-      'USER_SILENCE_AGENT_PLUS_GRACE',
-      evidence.lastAgentExchangeMs,
+      'USER_SILENCE_INTRO_PLUS_GRACE',
+      introEndMs,
       KSERVE_WRAP_UP_GRACE_MS,
     )
   }

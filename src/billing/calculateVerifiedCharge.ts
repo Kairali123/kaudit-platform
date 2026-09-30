@@ -198,7 +198,7 @@ function validateInput(input: VerifiedBillingInput): void {
           categoryCharge.graceMs === KSERVE_WRAP_UP_GRACE_MS
         : categoryCharge.category === 'USER_SILENCE'
           ? categoryCharge.policyCode ===
-              'USER_SILENCE_AGENT_PLUS_GRACE' &&
+              'USER_SILENCE_INTRO_PLUS_GRACE' &&
             categoryCharge.serviceEndMs > 0 &&
             categoryCharge.graceMs === KSERVE_WRAP_UP_GRACE_MS
           : categoryCharge.category === 'VOICEMAIL'
@@ -346,20 +346,26 @@ export function roundKServeChargeableDuration(
     'adjustedChargeableDurationMs',
   )
   let halfMinutes: bigint
-  let ruleCode: RoundedCharge['ruleCode']
   if (adjustedChargeableDurationMs === 0) {
     halfMinutes = 0n
-    ruleCode = 'ZERO_DURATION_NOT_BILLED'
   } else if (adjustedChargeableDurationMs < KSERVE_SHORT_CALL_CUTOFF_MS) {
     halfMinutes = 1n
-    ruleCode = 'SHORT_CALL_FLAT'
   } else {
     const milliseconds = BigInt(adjustedChargeableDurationMs)
     const minuteMs = BigInt(KSERVE_MINUTE_MS)
     const minutes = (milliseconds + minuteMs - 1n) / minuteMs
     halfMinutes = minutes * 2n
-    ruleCode = 'PER_MINUTE_CEIL'
   }
+  return chargeForHalfMinutes(halfMinutes)
+}
+
+/** The charge for a whole number of billable half-minutes. */
+function chargeForHalfMinutes(halfMinutes: bigint): RoundedCharge {
+  const ruleCode: RoundedCharge['ruleCode'] = halfMinutes === 0n
+    ? 'ZERO_DURATION_NOT_BILLED'
+    : halfMinutes === 1n
+      ? 'SHORT_CALL_FLAT'
+      : 'PER_MINUTE_CEIL'
   const amountPaise =
     (halfMinutes * KSERVE_RATE_PER_MINUTE_PAISE) / 2n
   const billableDurationMs = Number(
@@ -513,21 +519,54 @@ export function calculateVerifiedKServeCharge(
     : input.conversationAssessment === 'no_meaningful_exchange'
       ? 0
       : KSERVE_WRAP_UP_GRACE_MS
-  const adjustedChargeableDurationMs = Math.min(
+  /**
+   * Management caps (2026-09-30), for every category:
+   * 1. never beyond KServe's connected time -- recording that outlasts the
+   *    connected call is not a billable call;
+   * 2. never more than KServe billed for the call. `claimedDurationMs` is
+   *    KServe's billed minutes at the same rate, so the cap is applied to the
+   *    rounded billable half-minutes.
+   */
+  const uncappedChargeableMs = Math.min(
     input.recordedDurationMs,
     finalExchangeMs + configuredWrapUpGraceMs,
   )
-  const appliedWrapUpGraceMs =
-    adjustedChargeableDurationMs - finalExchangeMs
+  const connectedCapMs =
+    input.connectedDurationMs != null && input.connectedDurationMs > 0
+      ? input.connectedDurationMs
+      : null
+  const adjustedChargeableDurationMs =
+    connectedCapMs == null
+      ? uncappedChargeableMs
+      : Math.min(uncappedChargeableMs, connectedCapMs)
+  const appliedWrapUpGraceMs = Math.max(
+    0,
+    adjustedChargeableDurationMs - finalExchangeMs,
+  )
   const oneWayTailMs = Math.max(
     0,
     input.recordedDurationMs - adjustedChargeableDurationMs,
   )
   const oneWayTailAlert =
     oneWayTailMs > KSERVE_ONE_WAY_TAIL_ALERT_MS
-  const rounded = roundKServeChargeableDuration(
+  const uncappedRounded = roundKServeChargeableDuration(
     adjustedChargeableDurationMs,
   )
+  const kserveBilledHalfMinutes =
+    input.claimedDurationMs == null
+      ? null
+      : BigInt(Math.ceil(input.claimedDurationMs / (KSERVE_MINUTE_MS / 2)))
+  const rounded =
+    kserveBilledHalfMinutes != null &&
+    uncappedRounded.billableHalfMinutes > kserveBilledHalfMinutes
+      ? chargeForHalfMinutes(kserveBilledHalfMinutes)
+      : uncappedRounded
+  const capApplied =
+    rounded !== uncappedRounded
+      ? 'kserve_billed'
+      : adjustedChargeableDurationMs < uncappedChargeableMs
+        ? 'connected'
+        : null
   const calculation: JsonValue = {
     basis: categoryCharge
       ? 'category_service_end_plus_policy_grace'
@@ -540,6 +579,11 @@ export function calculateVerifiedKServeCharge(
     configuredWrapUpGraceMs,
     appliedWrapUpGraceMs,
     adjustedChargeableDurationMs,
+    uncappedChargeableDurationMs: uncappedChargeableMs,
+    connectedDurationCapMs: connectedCapMs,
+    kserveBilledCapHalfMinutes:
+      kserveBilledHalfMinutes == null ? null : Number(kserveBilledHalfMinutes),
+    capApplied,
     rounding: {
       ruleCode: rounded.ruleCode,
       billableDurationMs: rounded.billableDurationMs,
