@@ -17,6 +17,8 @@ const KAUDIT_SERVER_AUDIT = Object.freeze({
   // A run that has not sent within this budget gives up and leaves its rows
   // for the next run instead of being killed mid-flight.
   sendBudgetMs: 60000,
+  // Apps Script stops a run at 360 s; keep every round comfortably inside it.
+  runBudgetMs: 330000,
   // Tab name picks the mode (see kauditAuditMode_), so rows need no mode cell.
   tabs: Object.freeze({
     newMonth: 'New Month',
@@ -51,79 +53,93 @@ function runKauditServerAuditBatches() {
     return;
   }
   const startedAt = Date.now();
-  const timing = {};
   try {
     const config = kauditAuditConfig_();
     const contexts = kauditAuditContexts_(config);
-    timing.readMs = Date.now() - startedAt;
+    const readMs = Date.now() - startedAt;
     if (!contexts.length) return;
-
-    const plan = kauditAuditPlanBatches_(contexts, config.parallelBatches);
-    const batches = plan.batches;
-    const pass = plan.pass;
-    if (!batches.length) {
-      kauditAuditFlush_(contexts);
-      console.log(JSON.stringify({ event: 'kaudit_server_audit_complete', timing: timing }));
-      return;
-    }
-    if (Date.now() - startedAt > KAUDIT_SERVER_AUDIT.sendBudgetMs) {
+    if (readMs > KAUDIT_SERVER_AUDIT.sendBudgetMs) {
       console.log(JSON.stringify({
-        event: 'kaudit_server_audit_skipped', reason: 'send_budget_exceeded', timing: timing,
+        event: 'kaudit_server_audit_skipped', reason: 'send_budget_exceeded', readMs: readMs,
       }));
       return;
     }
-
-    batches.forEach(function(batch) {
-      const batchId = batch.batchId || kauditAuditBatchId_();
-      batch.batchId = batchId;
-      batch.rows.forEach(function(ref) {
-        kauditAuditSet_(ref, 'batchId', batchId);
-        kauditAuditSet_(ref, 'attempt', Number(kauditAuditGet_(ref, 'attempt') || 0) + 1);
-        kauditAuditSet_(ref, 'status', 'RUNNING');
-        kauditAuditSet_(ref, 'stage', 'upload');
-        kauditAuditSet_(ref, 'error', '');
-        kauditAuditSet_(ref, 'updatedAt', new Date().toISOString());
-      });
-      batch.request = kauditAuditSignedRequest_(config, batch);
-    });
-    kauditAuditFlush_(contexts);
-    // SpreadsheetApp.flush() waits for the whole workbook to recalculate
-    // (~12 s here). An API batchUpdate is already durable, so it is only
-    // needed on the SpreadsheetApp path.
-    if (!kauditAuditSheetsApi_()) SpreadsheetApp.flush();
-    timing.claimedMs = Date.now() - startedAt;
-
-    let responses;
-    try {
-      responses = UrlFetchApp.fetchAll(batches.map(function(batch) {
-        return batch.request;
-      }));
-    } catch (error) {
-      batches.forEach(function(batch) {
-        kauditAuditMarkTransportFailure_(batch, 'NETWORK_REQUEST_FAILED');
-      });
-      kauditAuditFlush_(contexts);
-      console.log(JSON.stringify({
-        event: 'kaudit_server_audit_run', pass: pass,
-        batches: batches.length, state: 'retry_pending',
-      }));
-      return;
+    // Rounds back to back on the rows already read, so a run that takes a
+    // little over a minute does not leave the next trigger slot idle. A new
+    // round starts only while twice the last round still fits the budget.
+    let lastRoundMs = 0;
+    for (let round = 1; ; round += 1) {
+      if (round > 1 &&
+          Date.now() - startedAt + 2 * lastRoundMs > KAUDIT_SERVER_AUDIT.runBudgetMs) break;
+      const roundStartedAt = Date.now();
+      const result = kauditAuditRound_(config, contexts);
+      lastRoundMs = Date.now() - roundStartedAt;
+      console.log(JSON.stringify(Object.assign(
+        { round: round, readMs: readMs, roundMs: lastRoundMs }, result.log,
+      )));
+      if (!result.sent || result.stop) break;
     }
-
-    timing.serverMs = Date.now() - startedAt - timing.claimedMs;
-    responses.forEach(function(response, index) {
-      kauditAuditApplyResponse_(batches[index], response);
-    });
-    kauditAuditFlush_(contexts);
-    timing.totalMs = Date.now() - startedAt;
-    console.log(JSON.stringify({
-      event: 'kaudit_server_audit_run', pass: pass, timing: timing,
-      batches: batches.length,
-      rows: batches.reduce(function(total, batch) { return total + batch.rows.length; }, 0),
-    }));
   } finally {
     lock.releaseLock();
   }
+}
+
+/** Plans, claims, sends and records one set of parallel batches. */
+function kauditAuditRound_(config, contexts) {
+  const plan = kauditAuditPlanBatches_(contexts, config.parallelBatches);
+  const batches = plan.batches;
+  const pass = plan.pass;
+  if (!batches.length) {
+    kauditAuditFlush_(contexts);
+    return { sent: false, log: { event: 'kaudit_server_audit_complete' } };
+  }
+  batches.forEach(function(batch) {
+    const batchId = batch.batchId || kauditAuditBatchId_();
+    batch.batchId = batchId;
+    batch.rows.forEach(function(ref) {
+      kauditAuditSet_(ref, 'batchId', batchId);
+      kauditAuditSet_(ref, 'attempt', Number(kauditAuditGet_(ref, 'attempt') || 0) + 1);
+      kauditAuditSet_(ref, 'status', 'RUNNING');
+      kauditAuditSet_(ref, 'stage', 'upload');
+      kauditAuditSet_(ref, 'error', '');
+      kauditAuditSet_(ref, 'updatedAt', new Date().toISOString());
+    });
+    batch.request = kauditAuditSignedRequest_(config, batch);
+  });
+  kauditAuditFlush_(contexts);
+  // SpreadsheetApp.flush() waits for the whole workbook to recalculate
+  // (~12 s here). An API batchUpdate is already durable, so it is only
+  // needed on the SpreadsheetApp path.
+  if (!kauditAuditSheetsApi_()) SpreadsheetApp.flush();
+  const rows = batches.reduce(function(total, batch) { return total + batch.rows.length; }, 0);
+
+  const sentAt = Date.now();
+  let responses;
+  try {
+    responses = UrlFetchApp.fetchAll(batches.map(function(batch) {
+      return batch.request;
+    }));
+  } catch (error) {
+    batches.forEach(function(batch) {
+      kauditAuditMarkTransportFailure_(batch, 'NETWORK_REQUEST_FAILED');
+    });
+    kauditAuditFlush_(contexts);
+    return {
+      sent: true, stop: true,
+      log: { event: 'kaudit_server_audit_run', pass: pass, batches: batches.length,
+        rows: rows, state: 'retry_pending' },
+    };
+  }
+  const serverMs = Date.now() - sentAt;
+  responses.forEach(function(response, index) {
+    kauditAuditApplyResponse_(batches[index], response);
+  });
+  kauditAuditFlush_(contexts);
+  return {
+    sent: true,
+    log: { event: 'kaudit_server_audit_run', pass: pass, serverMs: serverMs,
+      batches: batches.length, rows: rows },
+  };
 }
 
 /** Make selected failed rows eligible for one supervised retry. */
@@ -458,7 +474,11 @@ function kauditAuditFlush_(contexts) {
       outputKeys.forEach(function(key) {
         const column = context.columns[key];
         const firstRow = context.headerRow + 1 + indexes[start];
-        const values = block.map(function(row) { return [row[column]]; });
+        const values = block.map(function(row) {
+          // RAW stores strings as text: numeric columns must be numbers or
+          // the sheet shows them as '9.50000000.
+          return [useApi ? kauditAuditApiCell_(key, row[column]) : row[column]];
+        });
         if (useApi) {
           apiWrites.push({
             range: kauditAuditA1_(context.sheet.getName(), column + 1, firstRow, firstRow + block.length - 1),
@@ -489,6 +509,14 @@ function kauditAuditFlush_(contexts) {
 function kauditAuditSheetsApi_() {
   return typeof Sheets !== 'undefined' && Sheets && Sheets.Spreadsheets &&
     Sheets.Spreadsheets.Values ? Sheets : null;
+}
+
+function kauditAuditApiCell_(key, value) {
+  if ((key === 'amount' || key === 'attempt') &&
+      /^-?\d+(\.\d+)?$/.test(String(value === null || value === undefined ? '' : value).trim())) {
+    return Number(value);
+  }
+  return value === null || value === undefined ? '' : value;
 }
 
 function kauditAuditColumnLetter_(column) {

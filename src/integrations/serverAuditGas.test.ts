@@ -329,3 +329,67 @@ test('with the Sheets API enabled, one call reads and one call writes', () => {
   assert.equal(update.data.length, 7)
   assert.equal(update.data[0]?.range, "'Re-audit'!E3:E3")
 })
+
+test('through the API, amounts and attempts are written as numbers, not text', () => {
+  const updates: Array<{ data: Array<{ range: string; values: unknown[][] }> }> = []
+  const context = vm.createContext({
+    console,
+    SpreadsheetApp: { getActive: () => ({ getId: () => 'sheet-id' }) },
+    Sheets: { Spreadsheets: { Values: {
+      batchGet: () => ({ valueRanges: [] }),
+      batchUpdate: (body: never) => { updates.push(body); return {} },
+    } } },
+  })
+  new vm.Script(source).runInContext(context)
+  const script = context as unknown as {
+    kauditAuditSet_: (ref: unknown, key: string, value: unknown) => void
+    kauditAuditFlush_: (contexts: unknown[]) => void
+  }
+  const tabContext = {
+    sheet: { getName: () => 'Re-audit' }, headerRow: 1, rows: [[]],
+    columns: { status: 0, stage: 1, error: 2, batchId: 3, attempt: 4, updatedAt: 5, amount: 6 },
+  }
+  const ref = { context: tabContext, index: 0 }
+  script.kauditAuditSet_(ref, 'amount', '9.50000000')
+  script.kauditAuditSet_(ref, 'attempt', '1')
+  script.kauditAuditSet_(ref, 'status', 'COMPLETED')
+  script.kauditAuditFlush_([tabContext])
+  const byRange = Object.fromEntries(updates[0]!.data.map((entry) => [entry.range, entry.values[0]![0]]))
+  assert.equal(byRange["'Re-audit'!G2:G2"], 9.5)
+  assert.equal(byRange["'Re-audit'!E2:E2"], 1)
+  assert.equal(byRange["'Re-audit'!A2:A2"], 'COMPLETED')
+})
+
+function runLoop(roundResults: Array<{ sent: boolean; ms: number }>) {
+  let clock = 0
+  let rounds = 0
+  const context = vm.createContext({
+    console: { log: () => undefined },
+    LockService: { getScriptLock: () => ({ tryLock: () => true, releaseLock: () => undefined }) },
+  })
+  new vm.Script(source).runInContext(context)
+  const script = context as unknown as Record<string, unknown>
+  ;(context as unknown as { Date: unknown }).Date = { now: () => clock }
+  script.kauditAuditConfig_ = () => ({ parallelBatches: 6 })
+  script.kauditAuditContexts_ = () => [{}]
+  script.kauditAuditRound_ = () => {
+    const next = roundResults[rounds++] ?? { sent: false, ms: 0 }
+    clock += next.ms
+    return { sent: next.sent, log: {} }
+  }
+  ;(script.runKauditServerAuditBatches as () => void)()
+  return rounds
+}
+
+test('a run keeps doing rounds while there is work and time', () => {
+  // Three 60 s rounds fit (60+120 < 330, 120+120 < 330), then no work.
+  assert.equal(runLoop([
+    { sent: true, ms: 60_000 }, { sent: true, ms: 60_000 },
+    { sent: true, ms: 60_000 }, { sent: false, ms: 1_000 },
+  ]), 4)
+})
+
+test('a slow round stops the run before the 6-minute limit', () => {
+  // After a 120 s round at t=120, another would need 120+240 > 330.
+  assert.equal(runLoop([{ sent: true, ms: 120_000 }, { sent: true, ms: 120_000 }]), 1)
+})
