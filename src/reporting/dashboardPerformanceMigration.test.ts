@@ -60,3 +60,16 @@ test('0021 adds only the two leading-column Task ID lookup indexes', async () =>
   assert.match(statements[0]!, /\(`logical_call_key`, `billing_period_date`\)/)
   assert.match(statements[1]!, /\(`external_id`, `reference_type`, `call_id`\)/)
 })
+
+test('0022 only creates the page snapshot cache table', async () => {
+  const { readFile } = await import('node:fs/promises')
+  const sql = (await readFile(
+    new URL('../../migrations/0022_page_snapshot.sql', import.meta.url),
+    'utf8',
+  )).split('\n').filter((line) => !line.trim().startsWith('--')).join('\n')
+  // Column comments contain ';', so count statements by keyword.
+  assert.equal(sql.match(/\bCREATE TABLE\b/g)?.length, 1)
+  assert.match(sql.trim(), /^CREATE TABLE `kaudit_page_snapshot`/)
+  // One statement, a CREATE TABLE ("ON UPDATE" is its timestamp column).
+  assert.doesNotMatch(sql, /\b(ALTER|DROP|DELETE|INSERT)\b/i)
+})

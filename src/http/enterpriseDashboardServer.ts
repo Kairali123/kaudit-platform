@@ -2,6 +2,15 @@ import http, {
   type IncomingMessage,
   type ServerResponse,
 } from 'node:http'
+import {
+  createMysqlPageSnapshotStore,
+  type PageSnapshotStore,
+} from '../adapters/mysqlPageSnapshot.ts'
+import {
+  AUDIT_MONITOR_REFRESH_ROUTE,
+  auditMonitorSnapshotKey,
+  snapshotSummary,
+} from './auditMonitorSnapshot.ts'
 import { once } from 'node:events'
 import { readFile } from 'node:fs/promises'
 import path from 'node:path'
@@ -271,6 +280,7 @@ interface Dependencies {
   billingReadPool?: Pool
   /** Cache of per-month billing aggregates. Defaults to the MySQL store. */
   billingMonthSummary?: BillingMonthSummaryStore
+  pageSnapshots?: PageSnapshotStore
   access: AccessRepository
   audit: AuditSink
   verifier: TokenVerifier | null
@@ -552,7 +562,14 @@ function userAgent(request: IncomingMessage): string | null {
 }
 
 function requestUrl(request: IncomingMessage): URL {
-  return new URL(request.url || '/', 'http://kaudit.invalid')
+  const url = new URL(request.url || '/', 'http://kaudit.invalid')
+  // The refresh path is the audits read with refresh=1; on Vercel it reaches
+  // this server through the dedicated long-running function.
+  if (url.pathname === AUDIT_MONITOR_REFRESH_ROUTE) {
+    url.pathname = '/api/v1/audits'
+    url.searchParams.set('refresh', '1')
+  }
+  return url
 }
 
 function problem(
@@ -2024,7 +2041,7 @@ async function apiResponse(
      * honours the same configured per-statement limit; with the limit unset the
      * pool is the same object and nothing changes.
      */
-    return collectAuditMonitor(billingReadPool(dependencies), {
+    const query = {
       page: integer('page', 1, 1, 100_000),
       pendingPage: integer('pendingPage', 1, 1, 100_000),
       noRecordingPage: integer(
@@ -2038,17 +2055,41 @@ async function apiResponse(
       taskId,
       periodStart: period?.start ?? null,
       periodEnd: period?.end ?? null,
-    }, section as
-      | 'all'
-      | 'summary'
-      | 'summary-core'
-      | 'summary-usage'
-      | 'summary-financial'
-      | 'rows', rowTable as
-      | 'all'
-      | 'audited'
-      | 'pending'
-      | 'no-recording')
+    }
+    type MonitorSection =
+      | 'all' | 'summary' | 'summary-core' | 'summary-usage'
+      | 'summary-financial' | 'rows'
+    type MonitorTable = 'all' | 'audited' | 'pending' | 'no-recording'
+    const snapshotKey = auditMonitorSnapshotKey({
+      section,
+      month: period?.month ?? null,
+      category: query.category,
+      taskId,
+    })
+    if (snapshotKey) {
+      // Month-wide summaries come from the stored snapshot. Recomputing runs
+      // only on refresh=1, which Vercel routes to the dedicated long function,
+      // on the unbounded pool so a long aggregate is not cut short.
+      return snapshotSummary({
+        store:
+          dependencies.pageSnapshots ??
+          createMysqlPageSnapshotStore(dependencies.pool),
+        key: snapshotKey,
+        refresh: url.searchParams.get('refresh') === '1',
+        compute: async () => (await collectAuditMonitor(
+          dependencies.pool,
+          query,
+          section as MonitorSection,
+          rowTable as MonitorTable,
+        )) as unknown as Record<string, unknown>,
+      })
+    }
+    return collectAuditMonitor(
+      billingReadPool(dependencies),
+      query,
+      section as MonitorSection,
+      rowTable as MonitorTable,
+    )
   }
   if (pathname === '/api/v1/audit-workers') {
     const control =
@@ -2405,7 +2446,11 @@ function cacheTtlMs(url: URL): number {
     // remains near-live, while costly usage/financial aggregates are stable
     // enough to reuse for a minute. The cache key still includes every filter.
     const section = url.searchParams.get('section')
-    if (section?.startsWith('summary')) return 60_000
+    // A refresh recomputes and must never be answered from this cache.
+    if (url.searchParams.get('refresh') === '1') return 0
+    // Summaries are stored snapshots now: a cheap read that should show a
+    // refresh made by another instance within seconds.
+    if (section?.startsWith('summary')) return 5_000
     if (section === 'rows') return 30_000
     return 5_000
   }

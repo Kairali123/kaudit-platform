@@ -49,6 +49,26 @@ import {
 import { useBillingPeriod } from '../lib/billingPeriod'
 import { AuditWorkerControl } from '../components/AuditWorkerControl'
 
+/** How old a stored month summary may be before it is refreshed in the background. */
+const SNAPSHOT_STALE_MS = 10 * 60_000
+
+type Snapshotted<T> = T & {
+  snapshot?: { computedAt: string | null; refreshing: boolean; missing?: true }
+}
+
+function summaryAsOf(
+  snapshot: Snapshotted<unknown>['snapshot'],
+  updating: boolean,
+): string {
+  if (!snapshot?.computedAt) return 'Calculating month totals…'
+  const time = new Date(snapshot.computedAt).toLocaleString('en-IN', {
+    day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit',
+  })
+  return updating || snapshot.refreshing
+    ? `Month totals as of ${time} · updating in the background…`
+    : `Month totals as of ${time}. Refresh recalculates them.`
+}
+
 function seconds(value: number | null): string {
   if (value == null) return '—'
   return `${(value / 1000).toFixed(1)}s`
@@ -317,6 +337,34 @@ export function AuditMonitorPage() {
     placeholderData: keepPreviousData,
     retry: false,
   })
+  /**
+   * Month-wide summaries come from stored snapshots. A snapshot is shown at
+   * once; recomputing runs in the dedicated long function (…/audits/refresh):
+   * on first visit for a month, in the background when the snapshot is older
+   * than 10 minutes, or when the administrator presses Refresh. Filtered views
+   * (category or Task ID) stay live.
+   */
+  const snapshotMode = !category && !taskId
+  const readSummary = async <T,>(
+    section: string,
+    force: boolean,
+  ): Promise<Snapshotted<T>> => {
+    const readPath = period.apiPath(
+      `/api/v1/audits?section=${section}&${summaryFilterQueryString}`,
+    )
+    if (!snapshotMode) return getJson<Snapshotted<T>>(readPath)
+    const refreshPath = period.apiPath(`/api/v1/audits/refresh?section=${section}`)
+    let data = await getJson<Snapshotted<T>>(force ? refreshPath : readPath)
+    if (data.snapshot?.missing && !data.snapshot.refreshing) {
+      data = await getJson<Snapshotted<T>>(refreshPath)
+    }
+    // Another tab is computing this month: wait for its stored result.
+    for (let tries = 0; data.snapshot?.missing && tries < 60; tries += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5_000))
+      data = await getJson<Snapshotted<T>>(readPath)
+    }
+    return data
+  }
   const summaryEnabled =
     auditedRowsQuery.isFetched &&
     pendingRowsQuery.isFetched &&
@@ -329,12 +377,7 @@ export function AuditMonitorPage() {
       category,
       taskId,
     ],
-    queryFn: () =>
-      getJson<AuditMonitorCoreSummaryData>(
-        period.apiPath(
-          `/api/v1/audits?section=summary-core&${summaryFilterQueryString}`,
-        ),
-      ),
+    queryFn: () => readSummary<AuditMonitorCoreSummaryData>('summary-core', false),
     // Start after each table has made its first attempt. The three summaries
     // then start in priority order so the database is not asked to run its
     // heaviest monitor aggregates at the same time.
@@ -349,12 +392,7 @@ export function AuditMonitorPage() {
       category,
       taskId,
     ],
-    queryFn: () =>
-      getJson<AuditMonitorUsageSummaryData>(
-        period.apiPath(
-          `/api/v1/audits?section=summary-usage&${summaryFilterQueryString}`,
-        ),
-      ),
+    queryFn: () => readSummary<AuditMonitorUsageSummaryData>('summary-usage', false),
     enabled: coreSummaryQuery.isFetched,
     retry: false,
   })
@@ -366,15 +404,43 @@ export function AuditMonitorPage() {
       category,
       taskId,
     ],
-    queryFn: () =>
-      getJson<AuditMonitorFinancialSummaryData>(
-        period.apiPath(
-          `/api/v1/audits?section=summary-financial&${summaryFilterQueryString}`,
-        ),
-      ),
+    queryFn: () => readSummary<AuditMonitorFinancialSummaryData>('summary-financial', false),
     enabled: usageSummaryQuery.isFetched,
     retry: false,
   })
+  const summaryQueries = [
+    ['summary-core', coreSummaryQuery],
+    ['summary-usage', usageSummaryQuery],
+    ['summary-financial', financialSummaryQuery],
+  ] as const
+  const summaryKey = (section: string) =>
+    ['audit-monitor', section, period.month, category, taskId]
+  const backgroundRefreshes = useRef(new Set<string>())
+  const [summaryUpdating, setSummaryUpdating] = useState(false)
+  useEffect(() => {
+    if (!snapshotMode) return
+    for (const [section, query] of summaryQueries) {
+      const snapshot = (query.data as Snapshotted<unknown> | undefined)?.snapshot
+      if (!snapshot?.computedAt || snapshot.refreshing) continue
+      if (Date.now() - Date.parse(snapshot.computedAt) < SNAPSHOT_STALE_MS) continue
+      const marker = `${section}:${period.month}:${snapshot.computedAt}`
+      if (backgroundRefreshes.current.has(marker)) continue
+      backgroundRefreshes.current.add(marker)
+      setSummaryUpdating(true)
+      void readSummary(section, true)
+        .then((fresh) => client.setQueryData(summaryKey(section), fresh))
+        .catch(() => undefined)
+        .finally(() => setSummaryUpdating(false))
+    }
+    // The snapshots' computedAt values are the only inputs that matter here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [
+    snapshotMode,
+    period.month,
+    (coreSummaryQuery.data as Snapshotted<unknown> | undefined)?.snapshot?.computedAt,
+    (usageSummaryQuery.data as Snapshotted<unknown> | undefined)?.snapshot?.computedAt,
+    (financialSummaryQuery.data as Snapshotted<unknown> | undefined)?.snapshot?.computedAt,
+  ])
   const refreshInFlight = useRef(false)
   const [isRefreshing, setIsRefreshing] = useState(false)
   const monitorQueries = [
@@ -396,9 +462,14 @@ export function AuditMonitorPage() {
       await auditedRowsQuery.refetch()
       await pendingRowsQuery.refetch()
       await noRecordingRowsQuery.refetch()
-      await coreSummaryQuery.refetch()
-      await usageSummaryQuery.refetch()
-      await financialSummaryQuery.refetch()
+      for (const [section, query] of summaryQueries) {
+        if (snapshotMode) {
+          // Refresh means recompute, not re-read the same snapshot.
+          client.setQueryData(summaryKey(section), await readSummary(section, true))
+        } else {
+          await query.refetch()
+        }
+      }
     } finally {
       refreshInFlight.current = false
       setIsRefreshing(false)
@@ -667,8 +738,13 @@ export function AuditMonitorPage() {
         <div>
           <strong>On-demand snapshot</strong>
           <span>
-            Heavy audit totals load once and refresh in sequence to protect the
-            database from overlapping reads.
+            {snapshotMode
+              ? summaryAsOf(
+                  (coreSummaryQuery.data as Snapshotted<unknown> | undefined)
+                    ?.snapshot,
+                  summaryUpdating,
+                )
+              : 'Filtered totals are calculated live for this view.'}
           </span>
         </div>
         <button

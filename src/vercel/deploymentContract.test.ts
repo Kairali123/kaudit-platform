@@ -78,8 +78,12 @@ test('only Vite hashed assets are served without the function', () => {
     const isReconciliationBatch =
       route.src === '/api/v1/reconciliation/batch' &&
       route.dest === '/api/reconciliation-batch'
+    // Same authenticated server handler, in the long-running function.
+    const isAuditMonitorRefresh =
+      route.src === '/api/v1/audits/refresh' &&
+      route.dest === '/api/audit-monitor-refresh'
     assert.ok(
-      isAsset || isCsvExport || isReconciliationBatch,
+      isAsset || isCsvExport || isReconciliationBatch || isAuditMonitorRefresh,
       'every route must reach a reviewed edge',
     )
   }
@@ -313,4 +317,14 @@ test('functions run in Mumbai, next to the Bangalore database', async () => {
     await readFile(new URL('../../vercel.json', import.meta.url), 'utf8'),
   ) as { regions?: string[] }
   assert.deepEqual(config.regions, ['bom1'])
+})
+
+test('Audit Monitor summaries recompute in their own long-running function', () => {
+  const fn = VERCEL.functions?.['api/audit-monitor-refresh.ts']
+  assert.equal(fn?.maxDuration, 300)
+  const entry = read('api/audit-monitor-refresh.ts')
+  assert.match(entry, /createVercelDashboardHandler\(\)/)
+  assert.match(entry, /AUDIT_MONITOR_REFRESH_ROUTE/)
+  // The page function keeps its short limit; only the refresh is long.
+  assert.equal(VERCEL.functions?.['api/index.ts']?.maxDuration, 30)
 })
