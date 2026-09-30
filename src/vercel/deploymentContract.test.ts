@@ -303,3 +303,14 @@ test('the function uses Google Drive-backed cycle imports', () => {
 test('the function asks for the bounded serverless pool profile', () => {
   assert.match(FUNCTION_CODE, /poolProfile:\s*'serverless'/)
 })
+
+test('functions run in Mumbai, next to the Bangalore database', async () => {
+  // The MySQL/MariaDB host is in DigitalOcean BLR1 (Bangalore). From the
+  // default iad1 region every statement paid a ~230 ms round trip, and a
+  // reconciliation batch issues ~165 of them.
+  const { readFile } = await import('node:fs/promises')
+  const config = JSON.parse(
+    await readFile(new URL('../../vercel.json', import.meta.url), 'utf8'),
+  ) as { regions?: string[] }
+  assert.deepEqual(config.regions, ['bom1'])
+})
