@@ -363,9 +363,28 @@ function kauditAuditReadColumns_(sheet, headerRow, rowCount, columns) {
   for (let index = 0; index < rowCount; index += 1) rows.push([]);
   if (!rowCount) return rows;
   const timeZone = SpreadsheetApp.getActive().getSpreadsheetTimeZone();
-  Object.keys(columns).forEach(function(key) {
+  const keys = Object.keys(columns).filter(function(key) { return columns[key] >= 0; });
+  const api = kauditAuditSheetsApi_();
+  if (api) {
+    const response = api.Spreadsheets.Values.batchGet(SpreadsheetApp.getActive().getId(), {
+      ranges: keys.map(function(key) {
+        return kauditAuditA1_(sheet.getName(), columns[key] + 1, headerRow + 1, headerRow + rowCount);
+      }),
+      valueRenderOption: 'UNFORMATTED_VALUE',
+      dateTimeRenderOption: 'FORMATTED_STRING',
+    });
+    keys.forEach(function(key, rangeIndex) {
+      // The API omits trailing empty rows and empty cells.
+      const values = (response.valueRanges[rangeIndex] || {}).values || [];
+      for (let index = 0; index < rowCount; index += 1) {
+        const cell = values[index] && values[index].length ? values[index][0] : '';
+        rows[index][columns[key]] = kauditAuditCellText_(cell, key, timeZone);
+      }
+    });
+    return rows;
+  }
+  keys.forEach(function(key) {
     const column = columns[key];
-    if (column < 0) return;
     const values = sheet.getRange(headerRow + 1, column + 1, rowCount, 1).getValues();
     for (let index = 0; index < rowCount; index += 1) {
       rows[index][column] = kauditAuditCellText_(values[index][0], key, timeZone);
@@ -376,6 +395,14 @@ function kauditAuditReadColumns_(sheet, headerRow, rowCount, columns) {
 
 function kauditAuditCellText_(value, key, timeZone) {
   if (value === null || value === undefined) return '';
+  if (key === 'billMonth' && typeof value === 'string') {
+    // A month Sheets turned into a date comes back from the API as formatted
+    // text, e.g. 2026-06-01 or 6/1/2026.
+    const iso = value.match(/^(\d{4})-(\d{2})/);
+    if (iso) return iso[1] + '-' + iso[2];
+    const us = value.match(/^(\d{1,2})\/\d{1,2}\/(\d{4})/);
+    if (us) return us[2] + '-' + ('0' + us[1]).slice(-2);
+  }
   if (Object.prototype.toString.call(value) === '[object Date]') {
     if (isNaN(value.getTime())) return '';
     return key === 'billMonth'
@@ -415,6 +442,8 @@ function kauditAuditSet_(ref, key, value) {
  */
 function kauditAuditFlush_(contexts) {
   const outputKeys = ['status', 'stage', 'error', 'batchId', 'attempt', 'updatedAt', 'amount'];
+  const apiWrites = [];
+  const useApi = kauditAuditSheetsApi_();
   contexts.forEach(function(context) {
     const indexes = Object.keys(context.dirty || {})
       .map(Number).sort(function(left, right) { return left - right; });
@@ -425,13 +454,52 @@ function kauditAuditFlush_(contexts) {
       const block = context.rows.slice(indexes[start], indexes[end] + 1);
       outputKeys.forEach(function(key) {
         const column = context.columns[key];
-        context.sheet.getRange(
-          context.headerRow + 1 + indexes[start], column + 1, block.length, 1,
-        ).setValues(block.map(function(row) { return [row[column]]; }));
+        const firstRow = context.headerRow + 1 + indexes[start];
+        const values = block.map(function(row) { return [row[column]]; });
+        if (useApi) {
+          apiWrites.push({
+            range: kauditAuditA1_(context.sheet.getName(), column + 1, firstRow, firstRow + block.length - 1),
+            values: values,
+          });
+        } else {
+          context.sheet.getRange(firstRow, column + 1, block.length, 1).setValues(values);
+        }
       });
       start = end + 1;
     }
   });
+  if (apiWrites.length) {
+    // One request for every changed cell; RAW keeps ISO times and months as text.
+    useApi.Spreadsheets.Values.batchUpdate(
+      { valueInputOption: 'RAW', data: apiWrites },
+      SpreadsheetApp.getActive().getId(),
+    );
+  }
+}
+
+/**
+ * The Sheets advanced service, when enabled in the project (Services -> Google
+ * Sheets API). It reads all needed columns and writes all changes in one call
+ * each, which is much faster than SpreadsheetApp inside a large, formula-heavy
+ * workbook. Without it the script falls back to SpreadsheetApp.
+ */
+function kauditAuditSheetsApi_() {
+  return typeof Sheets !== 'undefined' && Sheets && Sheets.Spreadsheets &&
+    Sheets.Spreadsheets.Values ? Sheets : null;
+}
+
+function kauditAuditColumnLetter_(column) {
+  let letters = '';
+  for (let n = column; n > 0; n = Math.floor((n - 1) / 26)) {
+    letters = String.fromCharCode(65 + ((n - 1) % 26)) + letters;
+  }
+  return letters;
+}
+
+function kauditAuditA1_(sheetName, column, firstRow, lastRow) {
+  const letter = kauditAuditColumnLetter_(column);
+  return "'" + String(sheetName).replace(/'/g, "''") + "'!" +
+    letter + firstRow + ':' + letter + lastRow;
 }
 
 function kauditAuditMode_(ref) {
