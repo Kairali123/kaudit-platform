@@ -163,5 +163,5 @@ test('a call settled at the KServe claim no longer holds the cycle open', async 
   await collectLatestBillingCycle(pool, {
     month: '2026-06', start: '2026-06-01', end: '2026-06-30', label: 'June 2026',
   })
-  assert.match(unresolvedSql, /settled\.calculation_basis = 'accepted_as_billed_unverified'/)
+  assert.match(unresolvedSql, /settled\.calculation_basis IN \(\s*'accepted_as_billed_unverified',\s*'independent_audited_projection'\s*\)/)
 })
