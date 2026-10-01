@@ -21,6 +21,7 @@ import {
 } from '../lib/deadline.ts'
 import {
   createMysqlBillingMonthSummaryStore,
+  monthHasEnded,
   type BillingMonthSummaryStore,
 } from '../adapters/mysqlBillingMonthSummary.ts'
 import {
@@ -1911,7 +1912,11 @@ async function apiResponse(
   if (pathname === '/api/v1/reports') {
     const [billingReadiness, snapshotData, emailDelivery] =
       await Promise.all([
-        collectBillingReadiness(billingReadPool(dependencies), period),
+        // A finished month comes from the same cache the Billing page fills;
+        // recomputing 39k calls on every load ran past the 30 s limit.
+        period && monthHasEnded(period)
+          ? collectBillingForPeriod(dependencies, period)
+          : collectBillingReadiness(billingReadPool(dependencies), period),
         period
           ? collectMonthlyRevenueClaim(dependencies.pool, period).then(
               (claim) => ({ kind: 'monthly' as const, claim, period }),

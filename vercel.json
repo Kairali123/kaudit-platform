@@ -20,6 +20,14 @@
     "api/audit-monitor-refresh.ts": {
       "maxDuration": 300,
       "includeFiles": "{apps/web/dist,src}/**"
+    },
+    "api/reports-page.ts": {
+      "maxDuration": 120,
+      "includeFiles": "{apps/web/dist,src}/**"
+    },
+    "api/billing-page.ts": {
+      "maxDuration": 120,
+      "includeFiles": "{apps/web/dist,src}/**"
     }
   },
   "routes": [
@@ -36,6 +44,8 @@
       "src": "/api/v1/audits/refresh",
       "dest": "/api/audit-monitor-refresh"
     },
+    { "src": "/api/v1/reports", "dest": "/api/reports-page" },
+    { "src": "/api/v1/billing", "dest": "/api/billing-page" },
     { "src": "/(.*)", "dest": "/api" }
   ]
 }

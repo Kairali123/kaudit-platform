@@ -53,7 +53,7 @@ test('the production timeout is explicit and bounded by configuration', () => {
   )
   assert.throws(
     () => configuredBillingReadTimeoutSeconds({
-      [BILLING_READ_TIMEOUT_VARIABLE]: '30',
+      [BILLING_READ_TIMEOUT_VARIABLE]: '90',
     }),
     new RegExp(BILLING_READ_TIMEOUT_VARIABLE),
   )
