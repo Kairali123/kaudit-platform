@@ -73,8 +73,10 @@ test('only Vite hashed assets are served without the function', () => {
   for (const route of routes().slice(0, -1)) {
     const isAsset = /^\/assets\//.test(route.src)
     const isCsvExport =
-      route.src === '/api/v1/reports/monthly.csv' &&
-      route.dest === '/api/monthly-report-csv'
+      (route.src === '/api/v1/reports/monthly.csv' &&
+        route.dest === '/api/monthly-report-csv') ||
+      (route.src === '/api/v1/reports/monthly.pdf' &&
+        route.dest === '/api/monthly-report-pdf')
     const isReconciliationBatch =
       route.src === '/api/v1/reconciliation/batch' &&
       route.dest === '/api/reconciliation-batch'
@@ -345,4 +347,9 @@ test('Reports and Billing month reads run in their own longer functions', () => 
   assert.ok(index('/api/v1/reports/monthly.csv') < index('/api/v1/reports'))
   assert.ok(index('/api/v1/billing') < index('/(.*)'))
   assert.equal(VERCEL.functions?.['api/index.ts']?.maxDuration, 30)
+})
+
+test('the monthly PDF summary has the same extended window as the CSV', () => {
+  assert.equal(VERCEL.functions?.['api/monthly-report-pdf.ts']?.maxDuration, 180)
+  assert.match(read('api/monthly-report-pdf.ts'), /request\.url = `\/api\/v1\/reports\/monthly\.pdf\$\{search\}`/)
 })

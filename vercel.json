@@ -13,6 +13,10 @@
       "maxDuration": 180,
       "includeFiles": "{apps/web/dist,src}/**"
     },
+    "api/monthly-report-pdf.ts": {
+      "maxDuration": 180,
+      "includeFiles": "{apps/web/dist,src}/**"
+    },
     "api/reconciliation-batch.ts": {
       "maxDuration": 300,
       "includeFiles": "{apps/web/dist,src}/**"
@@ -35,6 +39,10 @@
     {
       "src": "/api/v1/reports/monthly.csv",
       "dest": "/api/monthly-report-csv"
+    },
+    {
+      "src": "/api/v1/reports/monthly.pdf",
+      "dest": "/api/monthly-report-pdf"
     },
     {
       "src": "/api/v1/reconciliation/batch",
