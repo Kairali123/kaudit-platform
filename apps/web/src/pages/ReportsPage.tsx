@@ -288,6 +288,7 @@ export function ReportsPage() {
                 <div>
                   <dt>Verified billable</dt>
                   <dd>{snapshot.verified}</dd>
+                  {snapshot.invoiceCapNote && <small>{snapshot.invoiceCapNote}</small>}
                 </div>
                 <div>
                   <dt>Vendor claim</dt>

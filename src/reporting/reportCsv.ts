@@ -100,6 +100,7 @@ export function buildReportCsv(report: MonthlyEmailReport): Buffer {
   lines.push(
     `# audited_verified_total,${report.summary.verifiedBillableRevenue}`,
   )
+  lines.push(`# payable_capped_at_invoice,${report.summary.payableAmount}`)
   lines.push(
     `# variance_vs_invoice,${report.summary.revenueVarianceVsInvoice ?? 'unavailable'}`,
   )

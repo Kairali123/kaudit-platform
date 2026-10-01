@@ -215,3 +215,25 @@ test('accept_kserve_claim replays a settled call and refuses one that is not unr
   // No model, no money written.
   assert.ok(statements.every(({ sql }) => /^\s*SELECT/i.test(sql)))
 })
+
+test('cap_at_kserve leaves a call already within KServe charge untouched', async () => {
+  const { pool, statements } = fakePool([
+    { match: /UNION/, rows: [{ task_id: 'task-ok', call_id: 'call-ok' }, { task_id: 'task-x', call_id: 'call-x' }] },
+    { match: /AS basis/, rows: [
+      { call_id: 'call-ok', basis: 'independent_category_service_end', amount: '9.50000000' },
+    ] },
+    { match: /audited_media\.status = 'completed'/, rows: [{
+      call_id: 'call-ok', audit_run_id: 'run-ok', fallback_reason: 'automated_validation_unresolved',
+      vendor_billed_minutes: '1.00000000', vendor_billed_amount: '9.50000000',
+      evidence_object_id: 'ev', evidence_sha256: 'a'.repeat(64),
+    }] },
+  ])
+  const receipt = await service(pool).process(request({
+    mode: 'cap_at_kserve', items: [{ task_id: 'task-ok' }, { task_id: 'task-x' }],
+  }))
+  assert.deepEqual(receipt.items, [
+    { taskId: 'task-ok', stage: 'complete', status: 'duplicate', code: 'WITHIN_KSERVE_CHARGE', amount: '9.50000000' },
+    { taskId: 'task-x', stage: 'upload', status: 'failed', code: 'CAP_NOT_AUDITED_OR_NO_KSERVE_CHARGE' },
+  ])
+  assert.ok(statements.every(({ sql }) => /^\s*SELECT/i.test(sql)))
+})

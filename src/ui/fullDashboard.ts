@@ -1,5 +1,5 @@
 import { buildDashboard, type RawMetrics, type Tile } from './metrics.ts'
-import { formatMoney, subtract, trendWithDeadband, type Trend } from './decimal.ts'
+import { formatMoney, subtract, toScaled, trendWithDeadband, type Trend } from './decimal.ts'
 import type { SnapshotCadence } from './periods.ts'
 import {
   assessBillingCycleReadiness,
@@ -131,6 +131,8 @@ export interface RevenueSnapshotView {
   variance: string
   varianceRaw: string | null
   basisLabel: string
+  /** Set when the audit total exceeded the invoice and was capped to it. */
+  invoiceCapNote: string | null
   trend: Trend
   trendLabel: string
 }
@@ -370,7 +372,15 @@ export function buildRevenueSnapshots(
   options: { releaseVerifiedValues?: boolean } = {},
 ): RevenueSnapshotView[] {
   return raw.map((s): RevenueSnapshotView => {
-    const variance = subtract(s.vendorClaimed, s.verified)
+    // Never pay more than KServe invoiced: an audit total above the invoice
+    // is capped to it, and the uncapped total is still shown in the note.
+    const verifiedScaled = toScaled(s.verified)
+    const invoiceScaled =
+      s.vendorClaimedBasis === 'invoiced' ? toScaled(s.vendorClaimed) : null
+    const invoiceCapped =
+      verifiedScaled != null && invoiceScaled != null && verifiedScaled > invoiceScaled
+    const payable = invoiceCapped ? s.vendorClaimed : s.verified
+    const variance = subtract(s.vendorClaimed, payable)
     const priorVariance = subtract(s.priorVendorClaimed, s.priorVerified)
     const snapshotTrend = trendWithDeadband(s.verified, s.priorVerified)
     const trendLabel =
@@ -385,7 +395,7 @@ export function buildRevenueSnapshots(
       verified:
         options.releaseVerifiedValues === false
           ? 'Audit pending'
-          : formatMoney(s.verified, s.currency),
+          : formatMoney(payable, s.currency),
       vendorClaimed: formatMoney(s.vendorClaimed, s.currency),
       variance:
         options.releaseVerifiedValues === false
@@ -399,6 +409,10 @@ export function buildRevenueSnapshots(
           : s.vendorClaimedBasis === 'provider_claimed_no_invoice'
             ? 'provider-asserted usage; no invoice'
             : 'claim unavailable',
+      invoiceCapNote:
+        options.releaseVerifiedValues === false || !invoiceCapped
+          ? null
+          : `Audit total ${formatMoney(s.verified, s.currency)}; capped at the KServe invoice`,
       trend:
         options.releaseVerifiedValues === false
           ? 'unknown'

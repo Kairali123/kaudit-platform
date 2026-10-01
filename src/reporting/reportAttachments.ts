@@ -412,8 +412,10 @@ export function buildReportPdf(
       y: 203,
       width: cardWidth,
       label: 'Verified billable',
-      value: pdfMoney(report.summary.verifiedBillableRevenue, currency),
-      note: 'Final traced billing output',
+      value: pdfMoney(report.summary.payableAmount, currency),
+      note: report.summary.payableAmount === report.summary.verifiedBillableRevenue
+        ? 'Final traced billing output'
+        : `Audit total ${pdfMoney(report.summary.verifiedBillableRevenue, currency)}; capped at invoice`,
       accent: PDF_COLORS.teal,
       fill: PDF_COLORS.tealSoft,
     })
@@ -439,7 +441,7 @@ export function buildReportPdf(
     const barWidth = 333
     const vendorRatio = ratio(vendorClaim, vendorClaim)
     const verifiedRatio = ratio(
-      report.summary.verifiedBillableRevenue,
+      report.summary.payableAmount,
       vendorClaim,
     )
     const rows = [
@@ -451,7 +453,7 @@ export function buildReportPdf(
       },
       {
         label: 'Verified billable',
-        value: report.summary.verifiedBillableRevenue,
+        value: report.summary.payableAmount,
         fill: PDF_COLORS.teal,
         width: verifiedRatio,
       },
@@ -730,6 +732,7 @@ export function buildReportEmailHtml(
   <p>The automated billing cycle is complete and the authoritative internal report is attached.</p>
   <table role="presentation" style="border-collapse:collapse">
     <tr><td style="padding:8px;border:1px solid #cbd5e1">Verified billable revenue</td><td style="padding:8px;border:1px solid #cbd5e1"><strong>${html(formatMoney(report.summary.verifiedBillableRevenue, report.summary.currency))}</strong></td></tr>
+    <tr><td style="padding:8px;border:1px solid #cbd5e1">Payable to KServe (never above the invoice)</td><td style="padding:8px;border:1px solid #cbd5e1"><strong>${html(formatMoney(report.summary.payableAmount, report.summary.currency))}</strong></td></tr>
     <tr><td style="padding:8px;border:1px solid #cbd5e1">Vendor invoice claim</td><td style="padding:8px;border:1px solid #cbd5e1"><strong>${html(formatMoney(report.summary.invoiceClaimedAmount, report.summary.currency))}</strong></td></tr>
     <tr><td style="padding:8px;border:1px solid #cbd5e1">Variance identified</td><td style="padding:8px;border:1px solid #cbd5e1"><strong>${html(formatMoney(report.summary.revenueVarianceVsInvoice, report.summary.currency))}</strong></td></tr>
 ${settlementLines(report)

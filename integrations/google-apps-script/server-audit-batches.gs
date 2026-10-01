@@ -28,9 +28,12 @@ const KAUDIT_SERVER_AUDIT = Object.freeze({
     retryAudit: 'Retry Audit',
     // Final word for calls the AI checks never agreed on: bill KServe's claim.
     acceptClaim: 'Accept KServe Claim',
+    // Calls billed above KServe's own charge: re-price from our audit, capped.
+    applyCap: 'Apply KServe Cap',
   }),
   modes: Object.freeze([
     'new_month', 'late_recording', 'transcript_reaudit', 'retry_audit', 'accept_kserve_claim',
+    'cap_at_kserve',
   ]),
   headers: Object.freeze({
     taskId: 'Task ID',
@@ -205,6 +208,7 @@ function setupKauditAuditTabs() {
   layouts[tabs.reaudit] = [h.taskId, h.billMonth].concat(lifecycle);
   layouts[tabs.retryAudit] = [h.taskId, h.billMonth].concat(lifecycle);
   layouts[tabs.acceptClaim] = [h.taskId, h.billMonth].concat(lifecycle);
+  layouts[tabs.applyCap] = [h.taskId, h.billMonth].concat(lifecycle);
   const spreadsheet = SpreadsheetApp.getActive();
   Object.keys(layouts).forEach(function(name) {
     kauditAuditSetupTab_(spreadsheet, name, layouts[name]);
@@ -337,7 +341,8 @@ function kauditAuditContexts_(config) {
   const tabs = KAUDIT_SERVER_AUDIT.tabs;
   const names = config.sheetNames.length
     ? config.sheetNames
-    : [tabs.newMonth, tabs.lateRecording, tabs.reaudit, tabs.retryAudit, tabs.acceptClaim];
+    : [tabs.newMonth, tabs.lateRecording, tabs.reaudit, tabs.retryAudit, tabs.acceptClaim,
+        tabs.applyCap];
   const sheets = names.map(function(name) {
     const sheet = spreadsheet.getSheetByName(name);
     // A configured tab must exist; a default tab nobody created is skipped.
@@ -554,6 +559,7 @@ function kauditAuditMode_(ref) {
   // The tab name outranks the project-wide default so each tab keeps its flow.
   const name = ref.context.sheet.getName().toLowerCase();
   if (name.indexOf('accept') >= 0) return 'accept_kserve_claim';
+  if (name.indexOf('cap') >= 0) return 'cap_at_kserve';
   if (name.indexOf('retry') >= 0) return 'retry_audit';
   if (name.indexOf('late') >= 0) return 'late_recording';
   if (name.indexOf('reaudit') >= 0 || name.indexOf('re-audit') >= 0) {

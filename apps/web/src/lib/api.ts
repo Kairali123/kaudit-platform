@@ -158,6 +158,7 @@ export interface Snapshot {
   variance: string
   varianceRaw: string | null
   basisLabel: string
+  invoiceCapNote?: string | null
   trend: 'up' | 'down' | 'flat' | 'unknown'
   trendLabel: string
 }

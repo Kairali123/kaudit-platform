@@ -5,6 +5,7 @@ import { createMysqlBillingMonthSummaryStore } from '../adapters/mysqlBillingMon
 import { listAcceptedAsBilledCandidates } from '../adapters/mysqlCycleClose.ts'
 import { persistVerifiedBillingRecords } from '../adapters/mysqlVerifiedBilling.ts'
 import { buildAcceptedAsBilledRecords } from '../billing/acceptedAsBilled.ts'
+import { buildAuditedProjectionRecords } from '../billing/auditedProjectionSettlement.ts'
 import { createMysqlBillingSpendGuard } from '../adapters/mysqlBillingSpendLease.ts'
 import {
   collectAutomatedValidationCandidates,
@@ -55,6 +56,7 @@ export type ReconciliationMode =
   | 'transcript_reaudit'
   | 'retry_audit'
   | 'accept_kserve_claim'
+  | 'cap_at_kserve'
 
 export interface ReconciliationBatchRequest {
   batchId: string
@@ -137,7 +139,8 @@ function parseRequest(input: ReconciliationBatchRequest): {
     body.mode !== 'late_recording' &&
     body.mode !== 'transcript_reaudit' &&
     body.mode !== 'retry_audit' &&
-    body.mode !== 'accept_kserve_claim'
+    body.mode !== 'accept_kserve_claim' &&
+    body.mode !== 'cap_at_kserve'
   ) throw new TypeError('reconciliation mode is invalid')
   if (
     !Array.isArray(body.items) ||
@@ -609,15 +612,21 @@ export function createReconciliationBatchService(options: {
   }
 
   /**
-   * Operator's final word on calls the automated checks never agreed on:
-   * bill KServe's claim, recorded as unverified. No model is called. Only a
-   * call whose latest consensus is still unresolved qualifies; its first
-   * audit's bill and the disagreement stay in history, superseded.
+   * Deterministic re-settlement of named calls; no model is called. Each
+   * settlement supersedes the call's live bill, which stays in history.
+   *
+   * accept_kserve_claim: the operator's final word on calls the automated
+   * checks never agreed on -- bill KServe's claim, recorded as unverified.
+   *
+   * cap_at_kserve: a call billed above KServe's own charge (before the
+   * per-call cap existed) is re-priced from its own audit, capped at that
+   * charge; with no audited duration on record, KServe's charge is accepted.
    */
-  async function processAcceptClaim(
+  async function processSettle(
     input: ReconciliationBatchRequest,
     period: BillingMonthScope,
     items: ParsedItem[],
+    mode: 'accept_kserve_claim' | 'cap_at_kserve',
   ): Promise<ReconciliationBatchReceipt> {
     const taskIds = items.map((item) => item.taskId)
     const resolution = await resolveTaskCalls(pool, period, taskIds)
@@ -632,44 +641,79 @@ export function createReconciliationBatchService(options: {
     if (callIds.length > 0) {
       const live = await liveBills(pool, callIds)
       const candidates = new Map((await listAcceptedAsBilledCandidates(
-        pool, period, callIds.length, 'unresolved-validation', callIds,
+        pool, period, callIds.length,
+        mode === 'accept_kserve_claim' ? 'unresolved-validation' : 'audited-recap',
+        callIds,
       )).map((candidate) => [candidate.callId, candidate]))
       let rateCard: PublishedRateCard | null = null
       let written = false
       for (const taskId of valid) {
         const callId = resolution.calls.get(taskId) as string
         const bill = live.get(callId)
-        if (bill?.basis === 'accepted_as_billed_unverified') {
+        const candidate = candidates.get(callId)
+        if (mode === 'accept_kserve_claim' && bill?.basis === 'accepted_as_billed_unverified') {
           receipts.set(taskId, {
             taskId, stage: 'complete', status: 'duplicate',
             code: ACCEPTED_CLAIM_CODE, amount: bill.amount,
           })
           continue
         }
-        const candidate = candidates.get(callId)
-        if (!candidate) {
-          // Agreed, never audited, or no KServe claim on file: not this tab.
+        if (
+          mode === 'cap_at_kserve' && bill && candidate?.vendorBilledAmount != null &&
+          Number(bill.amount) <= Number(candidate.vendorBilledAmount)
+        ) {
+          // Already at or below KServe's charge (also a replay): unchanged.
           receipts.set(taskId, {
-            taskId, stage: 'upload', status: 'failed', code: 'ACCEPT_CLAIM_NOT_UNRESOLVED',
+            taskId, stage: 'complete', status: 'duplicate',
+            code: 'WITHIN_KSERVE_CHARGE', amount: bill.amount,
+          })
+          continue
+        }
+        if (!candidate || (mode === 'cap_at_kserve' && candidate.vendorBilledAmount == null)) {
+          receipts.set(taskId, {
+            taskId, stage: 'upload', status: 'failed',
+            code: mode === 'accept_kserve_claim'
+              ? 'ACCEPT_CLAIM_NOT_UNRESOLVED'
+              : 'CAP_NOT_AUDITED_OR_NO_KSERVE_CHARGE',
           })
           continue
         }
         rateCard ??= await loadPublishedRateCard(pool, options.rateCardId)
-        const records = buildAcceptedAsBilledRecords({
+        // Same timestamp month close uses, so a replay is a duplicate.
+        const decidedAt = `${period.end}T18:29:59.999Z`
+        const sourceEvidence = {
+          kind: 'call_manifest' as const,
+          referenceId: candidate.evidenceObjectId,
+          sha256: candidate.evidenceSha256,
+        }
+        const projected = mode === 'cap_at_kserve'
+          ? buildAuditedProjectionRecords({
+              callId,
+              auditRunId: candidate.auditRunId,
+              category: candidate.category,
+              recordedDurationMs: candidate.recordedDurationMs,
+              speechDurationMs: candidate.speechDurationMs,
+              serviceEndMs: candidate.serviceEndMs,
+              graceMs: candidate.graceMs,
+              claimedDurationMs: candidate.claimedDurationMs,
+              connectedDurationMs: candidate.connectedDurationMs,
+              vendorBilledAmount: candidate.vendorBilledAmount,
+              sourceEvidence,
+              decidedAt,
+            }, rateCard)
+          : null
+        const records = projected ?? buildAcceptedAsBilledRecords({
           callId,
           auditRunId: candidate.auditRunId,
-          fallbackReason: 'automated_validation_unresolved',
+          fallbackReason: mode === 'accept_kserve_claim'
+            ? 'automated_validation_unresolved'
+            : 'audited_duration_unavailable',
           claimedDurationMs: candidate.claimedDurationMs,
           connectedDurationMs: candidate.connectedDurationMs,
           vendorBilledMinutes: candidate.vendorBilledMinutes,
           vendorBilledAmount: candidate.vendorBilledAmount,
-          sourceEvidence: {
-            kind: 'call_manifest',
-            referenceId: candidate.evidenceObjectId,
-            sha256: candidate.evidenceSha256,
-          },
-          // Same timestamp month close uses, so a replay is a duplicate.
-          decidedAt: `${period.end}T18:29:59.999Z`,
+          sourceEvidence,
+          decidedAt,
         }, rateCard)
         await persistVerifiedBillingRecords(pool, {
           records, rateCard, correlationId: input.correlationId,
@@ -677,7 +721,10 @@ export function createReconciliationBatchService(options: {
         written = true
         receipts.set(taskId, {
           taskId, stage: 'complete', status: 'completed',
-          code: ACCEPTED_CLAIM_CODE, amount: records.calculation?.totalAmount ?? null,
+          code: mode === 'accept_kserve_claim'
+            ? ACCEPTED_CLAIM_CODE
+            : projected ? 'CAPPED_AT_KSERVE_FROM_AUDIT' : 'CAPPED_AT_KSERVE_CHARGE',
+          amount: records.calculation?.totalAmount ?? null,
         })
       }
       if (written) await summaries.invalidate(period.month)
@@ -685,7 +732,7 @@ export function createReconciliationBatchService(options: {
     return {
       batchId: input.batchId,
       billMonth: period.month,
-      mode: 'accept_kserve_claim',
+      mode,
       items: taskIds.map((taskId) => receipts.get(taskId) as ReconciliationItemReceipt),
     }
   }
@@ -878,8 +925,8 @@ export function createReconciliationBatchService(options: {
           status: 400,
         })
       }
-      if (parsed.mode === 'accept_kserve_claim') {
-        return processAcceptClaim(input, parsed.period, parsed.items)
+      if (parsed.mode === 'accept_kserve_claim' || parsed.mode === 'cap_at_kserve') {
+        return processSettle(input, parsed.period, parsed.items, parsed.mode)
       }
       return parsed.mode === 'late_recording'
         ? processLate(input, parsed.period, parsed.items)
