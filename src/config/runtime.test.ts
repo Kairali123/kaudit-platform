@@ -11,7 +11,7 @@ test('billing read timeout is optional but strictly bounded', () => {
   assert.throws(
     () => loadRuntimeConfig({
       ...base(),
-      KAUDIT_BILLING_READ_TIMEOUT_SECONDS: '30',
+      KAUDIT_BILLING_READ_TIMEOUT_SECONDS: '90',
     }),
     /KAUDIT_BILLING_READ_TIMEOUT_SECONDS/,
   )

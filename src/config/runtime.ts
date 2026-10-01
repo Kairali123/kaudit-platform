@@ -28,9 +28,9 @@ export function configuredBillingReadTimeoutSeconds(
   const raw = env[BILLING_READ_TIMEOUT_VARIABLE]?.trim()
   if (!raw) return null
   const timeout = Number(raw)
-  if (!Number.isInteger(timeout) || timeout < 1 || timeout > 25) {
+  if (!Number.isInteger(timeout) || timeout < 1 || timeout > 85) {
     throw new ConfigurationError(
-      `${BILLING_READ_TIMEOUT_VARIABLE} must be an integer from 1 to 25`,
+      `${BILLING_READ_TIMEOUT_VARIABLE} must be an integer from 1 to 85`,
     )
   }
   return timeout

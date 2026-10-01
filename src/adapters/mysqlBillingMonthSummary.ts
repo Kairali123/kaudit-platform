@@ -30,7 +30,8 @@ import type { RawBillingMetrics } from '../ui/fullDashboard.ts'
  * Bump when the MEANING of any cached aggregate changes -- a different basis
  * counted, a different join, a corrected total. Not for unrelated edits.
  */
-export const BILLING_SUMMARY_DEFINITION = 'billing-month-summary/1.0.0'
+export const BILLING_SUMMARY_DEFINITION = 'billing-month-summary/1.1.0'
+// 1.1.0: a call settled at KServe's claim no longer counts as unresolved.
 
 const TABLE = '`kaudit_billing_month_summary`'
 

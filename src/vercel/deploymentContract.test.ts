@@ -82,8 +82,13 @@ test('only Vite hashed assets are served without the function', () => {
     const isAuditMonitorRefresh =
       route.src === '/api/v1/audits/refresh' &&
       route.dest === '/api/audit-monitor-refresh'
+    // Same handler; the month reads get room to refill their cache.
+    const isMonthPage =
+      (route.src === '/api/v1/reports' && route.dest === '/api/reports-page') ||
+      (route.src === '/api/v1/billing' && route.dest === '/api/billing-page')
     assert.ok(
-      isAsset || isCsvExport || isReconciliationBatch || isAuditMonitorRefresh,
+      isAsset || isCsvExport || isReconciliationBatch || isAuditMonitorRefresh ||
+        isMonthPage,
       'every route must reach a reviewed edge',
     )
   }
@@ -326,5 +331,18 @@ test('Audit Monitor summaries recompute in their own long-running function', () 
   assert.match(entry, /createVercelDashboardHandler\(\)/)
   assert.match(entry, /AUDIT_MONITOR_REFRESH_ROUTE/)
   // The page function keeps its short limit; only the refresh is long.
+  assert.equal(VERCEL.functions?.['api/index.ts']?.maxDuration, 30)
+})
+
+test('Reports and Billing month reads run in their own longer functions', () => {
+  for (const page of ['reports', 'billing']) {
+    assert.equal(VERCEL.functions?.[`api/${page}-page.ts`]?.maxDuration, 120)
+    assert.match(read(`api/${page}-page.ts`), new RegExp(`request\\.url = \`/api/v1/${page}\\$\\{search\\}\``))
+  }
+  const routes = (JSON.parse(read('vercel.json')) as { routes: Array<{ src: string; dest: string }> }).routes
+  const index = (src: string) => routes.findIndex((route) => route.src === src)
+  // The CSV export keeps its own route; the catch-all stays last.
+  assert.ok(index('/api/v1/reports/monthly.csv') < index('/api/v1/reports'))
+  assert.ok(index('/api/v1/billing') < index('/(.*)'))
   assert.equal(VERCEL.functions?.['api/index.ts']?.maxDuration, 30)
 })
