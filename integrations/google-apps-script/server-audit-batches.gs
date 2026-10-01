@@ -26,8 +26,12 @@ const KAUDIT_SERVER_AUDIT = Object.freeze({
     reaudit: 'Re-audit',
     // Calls billed at KServe's unverified claim because their audit never ran.
     retryAudit: 'Retry Audit',
+    // Final word for calls the AI checks never agreed on: bill KServe's claim.
+    acceptClaim: 'Accept KServe Claim',
   }),
-  modes: Object.freeze(['new_month', 'late_recording', 'transcript_reaudit', 'retry_audit']),
+  modes: Object.freeze([
+    'new_month', 'late_recording', 'transcript_reaudit', 'retry_audit', 'accept_kserve_claim',
+  ]),
   headers: Object.freeze({
     taskId: 'Task ID',
     recordingUrl: 'Recording URL',
@@ -200,6 +204,7 @@ function setupKauditAuditTabs() {
   layouts[tabs.lateRecording] = [h.taskId, h.recordingUrl, h.billMonth].concat(lifecycle);
   layouts[tabs.reaudit] = [h.taskId, h.billMonth].concat(lifecycle);
   layouts[tabs.retryAudit] = [h.taskId, h.billMonth].concat(lifecycle);
+  layouts[tabs.acceptClaim] = [h.taskId, h.billMonth].concat(lifecycle);
   const spreadsheet = SpreadsheetApp.getActive();
   Object.keys(layouts).forEach(function(name) {
     kauditAuditSetupTab_(spreadsheet, name, layouts[name]);
@@ -332,7 +337,7 @@ function kauditAuditContexts_(config) {
   const tabs = KAUDIT_SERVER_AUDIT.tabs;
   const names = config.sheetNames.length
     ? config.sheetNames
-    : [tabs.newMonth, tabs.lateRecording, tabs.reaudit, tabs.retryAudit];
+    : [tabs.newMonth, tabs.lateRecording, tabs.reaudit, tabs.retryAudit, tabs.acceptClaim];
   const sheets = names.map(function(name) {
     const sheet = spreadsheet.getSheetByName(name);
     // A configured tab must exist; a default tab nobody created is skipped.
@@ -548,6 +553,7 @@ function kauditAuditMode_(ref) {
   if (KAUDIT_SERVER_AUDIT.modes.indexOf(explicit) >= 0) return explicit;
   // The tab name outranks the project-wide default so each tab keeps its flow.
   const name = ref.context.sheet.getName().toLowerCase();
+  if (name.indexOf('accept') >= 0) return 'accept_kserve_claim';
   if (name.indexOf('retry') >= 0) return 'retry_audit';
   if (name.indexOf('late') >= 0) return 'late_recording';
   if (name.indexOf('reaudit') >= 0 || name.indexOf('re-audit') >= 0) {
