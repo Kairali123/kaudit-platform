@@ -183,14 +183,18 @@ export async function collectLatestBillingCycle(
            FROM kaudit_automated_decision newer
            WHERE newer.supersedes_decision_id = decision_row.id
          )
-         -- Settled at KServe's claim because the checks never agreed: the
-         -- disagreement stays on record but no longer holds the cycle open.
+         -- Settled deliberately although the checks never agreed -- at
+         -- KServe's claim, or from our own audit capped at KServe's charge:
+         -- the disagreement stays on record but no longer holds the cycle open.
          AND NOT EXISTS (
            SELECT 1
            FROM kaudit_billing_calculation settled
            WHERE settled.call_id = decision_row.call_id
              AND settled.status = 'final'
-             AND settled.calculation_basis = 'accepted_as_billed_unverified'
+             AND settled.calculation_basis IN (
+               'accepted_as_billed_unverified',
+               'independent_audited_projection'
+             )
              AND NOT EXISTS (
                SELECT 1 FROM kaudit_billing_calculation newer_settled
                WHERE newer_settled.supersedes_calculation_id = settled.id
