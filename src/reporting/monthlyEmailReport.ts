@@ -145,7 +145,7 @@ export const UNAVAILABLE_MONTHLY_SETTLEMENT: MonthlyReportSettlement =
 
 export interface MonthlyEmailReport {
   schemaVersion: '1'
-  reportVersion: 'monthly-revenue/1.0.0'
+  reportVersion: 'monthly-revenue/1.1.0'
   authority: 'authoritative'
   period: BillingMonthScope
   generatedAt: string
@@ -158,6 +158,11 @@ export interface MonthlyEmailReport {
     vendorUsageAmount: string
     invoiceClaimedAmount: string | null
     verifiedBillableRevenue: string
+    /**
+     * What is owed: the audit total, never above KServe's invoice. Equals
+     * the audit total unless that exceeded the invoice.
+     */
+    payableAmount: string
     revenueVarianceVsInvoice: string | null
     revenueVarianceVsUsage: string
     currency: string
@@ -165,6 +170,11 @@ export interface MonthlyEmailReport {
   resolutionBreakdown: MonthlyResolutionBreakdown[]
   rows: MonthlyReportRow[]
   sourceManifestSha256: string
+}
+
+/** Never pay more than KServe invoiced. */
+export function payableAgainstInvoice(verified: bigint, invoice: bigint | null): bigint {
+  return invoice != null && invoice < verified ? invoice : verified
 }
 
 function requiredScaled(value: string, name: string): bigint {
@@ -349,7 +359,7 @@ export function buildMonthlySummaryReport(options: {
 
   return {
     schemaVersion: '1',
-    reportVersion: 'monthly-revenue/1.0.0',
+    reportVersion: 'monthly-revenue/1.1.0',
     authority: 'authoritative',
     period: options.period,
     generatedAt: options.generatedAt,
@@ -361,8 +371,10 @@ export function buildMonthlySummaryReport(options: {
       vendorUsageAmount: fromScaled(totals.vendor),
       invoiceClaimedAmount: options.invoiceClaimedAmount,
       verifiedBillableRevenue: fromScaled(totals.verified),
-      revenueVarianceVsInvoice:
-        invoice == null ? null : fromScaled(invoice - totals.verified),
+      payableAmount: fromScaled(payableAgainstInvoice(totals.verified, invoice)),
+      revenueVarianceVsInvoice: invoice == null
+        ? null
+        : fromScaled(invoice - payableAgainstInvoice(totals.verified, invoice)),
       revenueVarianceVsUsage: fromScaled(totals.vendor - totals.verified),
       currency: options.groups[0]?.currency ?? 'INR',
     },
@@ -426,7 +438,7 @@ export function buildMonthlyEmailReport(options: {
   } as unknown as JsonValue)
   return {
     schemaVersion: '1',
-    reportVersion: 'monthly-revenue/1.0.0',
+    reportVersion: 'monthly-revenue/1.1.0',
     authority: 'authoritative',
     period: options.period,
     generatedAt: options.generatedAt,
@@ -445,10 +457,10 @@ export function buildMonthlyEmailReport(options: {
       vendorUsageAmount: fromScaled(totals.vendor),
       invoiceClaimedAmount: options.invoiceClaimedAmount,
       verifiedBillableRevenue: fromScaled(totals.verified),
-      revenueVarianceVsInvoice:
-        invoice == null
-          ? null
-          : fromScaled(invoice - totals.verified),
+      payableAmount: fromScaled(payableAgainstInvoice(totals.verified, invoice)),
+      revenueVarianceVsInvoice: invoice == null
+        ? null
+        : fromScaled(invoice - payableAgainstInvoice(totals.verified, invoice)),
       revenueVarianceVsUsage: fromScaled(
         totals.vendor - totals.verified,
       ),

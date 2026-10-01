@@ -52,3 +52,14 @@ test('D-12 withholds verified revenue and variance before audit completion', () 
   assert.equal(views[0]?.vendorClaimed, 'INR 19,100.00')
   assert.equal(views[0]?.trend, 'unknown')
 })
+
+test('the Reports card never shows more payable than the KServe invoice', () => {
+  const [view] = buildRevenueSnapshots([{
+    cadence: 'monthly', label: 'June 2026', start: '2026-06-01', end: '2026-06-30',
+    currency: 'INR', verified: '181625.75', vendorClaimed: '179108.25',
+    vendorClaimedBasis: 'invoiced', priorVerified: null, priorVendorClaimed: null,
+  }])
+  assert.match(view!.verified, /1,79,108\.25/)
+  assert.equal(view!.varianceRaw, '0')
+  assert.match(view!.invoiceCapNote ?? '', /Audit total .*1,81,625\.75.*capped at the KServe invoice/)
+})

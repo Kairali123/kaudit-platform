@@ -126,7 +126,7 @@ for (const failOn of ['settlement', 'vendorBilled'] as const) {
     assert.equal(settlement.savingsDirection, 'unavailable')
 
     // The rest of the report is still produced.
-    assert.equal(report.reportVersion, 'monthly-revenue/1.0.0')
+    assert.equal(report.reportVersion, 'monthly-revenue/1.1.0')
     assert.equal(report.period.month, MONTH.month)
   })
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
+  payableAgainstInvoice,
   buildMonthlyEmailReport,
   buildMonthlySummaryReport,
   reportContentSha256,
@@ -94,4 +95,10 @@ test('builds a summary report from grouped facts without per-call rows', () => {
   assert.equal(report.resolutionBreakdown.length, 2)
   assert.equal(report.rows.length, 0)
   assert.match(report.sourceManifestSha256, /^[a-f0-9]{64}$/)
+})
+
+test('payable never exceeds the KServe invoice', () => {
+  assert.equal(payableAgainstInvoice(18162575n, 17910825n), 17910825n)
+  assert.equal(payableAgainstInvoice(17823900n, 17910825n), 17823900n)
+  assert.equal(payableAgainstInvoice(18162575n, null), 18162575n)
 })

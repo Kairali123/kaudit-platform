@@ -417,3 +417,13 @@ test('the Accept KServe Claim tab sends accept_kserve_claim rows with Task ID on
   assert.equal(dispatcher.kauditAuditInitialBatches_([sheet], 4)[0]?.mode, 'accept_kserve_claim')
   assert.match(source, /layouts\[tabs\.acceptClaim\] = \[h\.taskId, h\.billMonth\]/)
 })
+
+test('the Apply KServe Cap tab sends cap_at_kserve rows', () => {
+  const context = vm.createContext({ console })
+  new vm.Script(source).runInContext(context)
+  const dispatcher = context as unknown as {
+    kauditAuditInitialBatches_: (contexts: unknown[], limit: number) => Array<{ mode: string }>
+  }
+  const sheet = tab('Apply KServe Cap', [['T-cap', '2026-06']])
+  assert.equal(dispatcher.kauditAuditInitialBatches_([sheet], 4)[0]?.mode, 'cap_at_kserve')
+})

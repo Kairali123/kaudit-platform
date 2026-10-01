@@ -27,6 +27,11 @@ export type CycleCloseCohort =
    * already wrote a bill. Only reachable with an explicit call list.
    */
   | 'unresolved-validation'
+  /**
+   * Named audited calls whose live bill is above KServe's charge (billed
+   * before the per-call cap existed), re-priced from their own audit facts.
+   */
+  | 'audited-recap'
 
 /**
  * Calls this platform actually audited: a final recording, a completed media
@@ -253,7 +258,9 @@ export async function listAcceptedAsBilledCandidates(
   cohort: CycleCloseCohort = 'all',
   callIds: readonly string[] = [],
 ): Promise<AcceptedAsBilledCandidate[]> {
-  if (cohort === 'unresolved-validation' && callIds.length === 0) return []
+  const namedCalls =
+    cohort === 'unresolved-validation' || cohort === 'audited-recap'
+  if (namedCalls && callIds.length === 0) return []
   /**
    * The cohort narrows WHICH calls are settled; it never changes how any one
    * of them is priced. `exhausted-recording` keeps only the recording-backed
@@ -262,6 +269,8 @@ export async function listAcceptedAsBilledCandidates(
    */
   const eligibilitySql = cohort === 'unresolved-validation'
     ? UNRESOLVED_VALIDATION_SQL
+    : cohort === 'audited-recap'
+    ? AUDITED_SQL
     : cohort === 'exhausted-recording'
     ? EXHAUSTED_RECORDING_SQL
     : cohort === 'no-recording'
@@ -273,7 +282,6 @@ export async function listAcceptedAsBilledCandidates(
          OR ${UNRESOLVED_VALIDATION_SQL}
          OR ${EXHAUSTED_RECORDING_SQL}
        )`
-  const namedCalls = cohort === 'unresolved-validation'
   const [rows] = await pool.execute<CandidateRow[]>(
     `SELECT
        c.id AS call_id,
