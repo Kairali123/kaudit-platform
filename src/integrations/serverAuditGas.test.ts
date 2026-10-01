@@ -393,3 +393,16 @@ test('a slow round stops the run before the 6-minute limit', () => {
   // After a 120 s round at t=120, another would need 120+240 > 330.
   assert.equal(runLoop([{ sent: true, ms: 120_000 }, { sent: true, ms: 120_000 }]), 1)
 })
+
+test('the Retry Audit tab sends retry_audit rows with Task ID only', () => {
+  const context = vm.createContext({ console })
+  new vm.Script(source).runInContext(context)
+  const dispatcher = context as unknown as {
+    kauditAuditInitialBatches_: (contexts: unknown[], limit: number) => Array<{ mode: string }>
+  }
+  const sheet = tab('Retry Audit', [['T-retry', '2026-07']])
+  const batches = dispatcher.kauditAuditInitialBatches_([sheet], 4)
+  assert.equal(batches[0]?.mode, 'retry_audit')
+  assert.match(source, /retryAudit: 'Retry Audit'/)
+  assert.match(source, /layouts\[tabs\.retryAudit\] = \[h\.taskId, h\.billMonth\]/)
+})

@@ -179,3 +179,12 @@ test('a swallowed billing failure logs only bounded identifiers', async () => {
   })
   assert.doesNotMatch(written.join(''), /recordings|secret|Duplicate/)
 })
+
+test('retry_audit is an accepted mode and scopes its lookup like the others', async () => {
+  const { pool, statements } = fakePool([{ match: /UNION/, rows: [] }])
+  const receipt = await service(pool).process(request({ mode: 'retry_audit' }))
+  assert.equal(receipt.mode, 'retry_audit')
+  assert.deepEqual(receipt.items.map((item) => item.code), ['TASK_NOT_FOUND_OR_AMBIGUOUS'])
+  // Nothing was reset for a call that was not found.
+  assert.ok(statements.every(({ sql }) => /^\s*SELECT/i.test(sql)))
+})
