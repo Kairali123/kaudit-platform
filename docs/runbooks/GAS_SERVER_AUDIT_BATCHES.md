@@ -20,6 +20,7 @@ Each mode has its own tab, and the tab name picks the mode:
 | `New Month` | A:J the locked KServe usage columns (the importer writes K `Import Status`), L `Kaudit Bill Month` |
 | `Late Recording` | `Task ID`, `Recording URL`, `Kaudit Bill Month` |
 | `Re-audit` | `Task ID`, `Kaudit Bill Month` |
+| `Retry Audit` | `Task ID`, `Kaudit Bill Month` — for calls whose recording was attached but never downloaded, whose audit was `exhausted`, and which month close billed at KServe's unverified claim (`accepted_as_billed_unverified`). The server resets the recording and the spend guard and runs the normal audit; a successful bill supersedes the unverified one. Any other call is refused untouched (`RETRY_*` codes). |
 
 Run `setupKauditAuditTabs` (menu: **Set up audit tabs**) once. It creates or
 repairs the three tabs' headers, text month column, frozen header and status

@@ -37,6 +37,7 @@ import { correctLateRecordingItem } from '../lateRecording/correctItem.ts'
 import { proposedFinanceAdjustment } from '../lateRecording/corrections.ts'
 import { parseBillingMonth, type BillingMonthScope } from '../reporting/billingMonth.ts'
 import { auditOneCall } from '../reaudit/core.ts'
+import { prepareRetryAudit } from './retryAudit.ts'
 import { runReauditBatch, type ReauditCandidateRepository } from '../reaudit/worker.ts'
 
 const TASK_ID = /^[A-Za-z0-9._:-]{1,191}$/
@@ -48,6 +49,7 @@ export type ReconciliationMode =
   | 'new_month'
   | 'late_recording'
   | 'transcript_reaudit'
+  | 'retry_audit'
 
 export interface ReconciliationBatchRequest {
   batchId: string
@@ -128,7 +130,8 @@ function parseRequest(input: ReconciliationBatchRequest): {
   if (
     body.mode !== 'new_month' &&
     body.mode !== 'late_recording' &&
-    body.mode !== 'transcript_reaudit'
+    body.mode !== 'transcript_reaudit' &&
+    body.mode !== 'retry_audit'
   ) throw new TypeError('reconciliation mode is invalid')
   if (
     !Array.isArray(body.items) ||
@@ -397,7 +400,7 @@ export function createReconciliationBatchService(options: {
     input: ReconciliationBatchRequest,
     period: BillingMonthScope,
     items: ParsedItem[],
-    mode: 'new_month' | 'transcript_reaudit',
+    mode: 'new_month' | 'transcript_reaudit' | 'retry_audit',
   ): Promise<ReconciliationBatchReceipt> {
     const taskIds = items.map((item) => item.taskId)
     const resolution = await resolveTaskCalls(pool, period, taskIds)
@@ -412,12 +415,28 @@ export function createReconciliationBatchService(options: {
     }
     const validTaskIds = taskIds.filter((taskId) => !resolution.invalid.has(taskId))
     let processingTaskIds = validTaskIds
-    if (mode === 'new_month' && validTaskIds.length > 0) {
+    if (mode === 'retry_audit' && validTaskIds.length > 0) {
+      // Only calls whose audit never happened are reset and retried; the
+      // rest are refused untouched (see retryAudit.ts).
+      const prepared = await prepareRetryAudit(
+        pool,
+        validTaskIds.map((taskId) => ({
+          taskId,
+          callId: resolution.calls.get(taskId) as string,
+        })),
+        input.correlationId,
+      )
+      for (const [taskId, code] of prepared.refused) {
+        receipts.set(taskId, { taskId, stage: 'upload', status: 'failed', code })
+      }
+      processingTaskIds = prepared.eligible
+    }
+    if (mode !== 'transcript_reaudit' && processingTaskIds.length > 0) {
       const completed = await completedCallAmounts(
         pool,
         validTaskIds.map((taskId) => resolution.calls.get(taskId) as string),
       )
-      processingTaskIds = validTaskIds.filter((taskId) => {
+      processingTaskIds = processingTaskIds.filter((taskId) => {
         const callId = resolution.calls.get(taskId) as string
         const amount = completed.get(callId)
         if (amount == null) return true

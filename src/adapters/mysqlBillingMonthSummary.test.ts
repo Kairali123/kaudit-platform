@@ -65,7 +65,14 @@ test('a finished month is served from the cache', async () => {
 test('a month that has not ended is never cached, read or written', async () => {
   // It is still receiving calls and audits, so any stored answer about it is a
   // guess about the past.
-  const open = { ...JUNE, month: '2026-09', start: '2026-09-01', end: '2026-09-30' }
+  // The CURRENT month, derived from the clock: a fixed month here silently
+  // stops being open once the calendar passes it.
+  const now = new Date()
+  const year = now.getUTCFullYear()
+  const monthNumber = now.getUTCMonth() + 1
+  const month = `${year}-${String(monthNumber).padStart(2, '0')}`
+  const lastDay = new Date(Date.UTC(year, monthNumber, 0)).getUTCDate()
+  const open = { ...JUNE, month, start: `${month}-01`, end: `${month}-${String(lastDay).padStart(2, '0')}` }
   const { pool, statements } = poolReturning([storedRow(METRICS)])
   const store = createMysqlBillingMonthSummaryStore(pool)
   assert.equal(await store.read(open), null)
