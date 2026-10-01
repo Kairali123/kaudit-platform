@@ -188,3 +188,30 @@ test('retry_audit is an accepted mode and scopes its lookup like the others', as
   // Nothing was reset for a call that was not found.
   assert.ok(statements.every(({ sql }) => /^\s*SELECT/i.test(sql)))
 })
+
+test('accept_kserve_claim replays a settled call and refuses one that is not unresolved', async () => {
+  const { pool, statements } = fakePool([
+    { match: /UNION/, rows: [
+      { task_id: 'task-settled', call_id: 'call-settled' },
+      { task_id: 'task-agreed', call_id: 'call-agreed' },
+    ] },
+    { match: /AS basis/, rows: [
+      { call_id: 'call-settled', basis: 'accepted_as_billed_unverified', amount: '9.50000000' },
+      { call_id: 'call-agreed', basis: 'independent_category_service_end', amount: '4.75000000' },
+    ] },
+    // Neither call's latest consensus is unresolved.
+    { match: /validation\.decision_status = 'unresolved'/, rows: [] },
+  ])
+  const receipt = await service(pool).process(request({
+    mode: 'accept_kserve_claim',
+    items: [{ task_id: 'task-settled' }, { task_id: 'task-agreed' }],
+  }))
+  assert.equal(receipt.mode, 'accept_kserve_claim')
+  assert.deepEqual(receipt.items, [
+    { taskId: 'task-settled', stage: 'complete', status: 'duplicate',
+      code: 'ACCEPTED_AS_BILLED_UNVERIFIED|AUTOMATED_VALIDATION_UNRESOLVED', amount: '9.50000000' },
+    { taskId: 'task-agreed', stage: 'upload', status: 'failed', code: 'ACCEPT_CLAIM_NOT_UNRESOLVED' },
+  ])
+  // No model, no money written.
+  assert.ok(statements.every(({ sql }) => /^\s*SELECT/i.test(sql)))
+})

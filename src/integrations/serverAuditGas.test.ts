@@ -406,3 +406,14 @@ test('the Retry Audit tab sends retry_audit rows with Task ID only', () => {
   assert.match(source, /retryAudit: 'Retry Audit'/)
   assert.match(source, /layouts\[tabs\.retryAudit\] = \[h\.taskId, h\.billMonth\]/)
 })
+
+test('the Accept KServe Claim tab sends accept_kserve_claim rows with Task ID only', () => {
+  const context = vm.createContext({ console })
+  new vm.Script(source).runInContext(context)
+  const dispatcher = context as unknown as {
+    kauditAuditInitialBatches_: (contexts: unknown[], limit: number) => Array<{ mode: string }>
+  }
+  const sheet = tab('Accept KServe Claim', [['T-accept', '2026-06']])
+  assert.equal(dispatcher.kauditAuditInitialBatches_([sheet], 4)[0]?.mode, 'accept_kserve_claim')
+  assert.match(source, /layouts\[tabs\.acceptClaim\] = \[h\.taskId, h\.billMonth\]/)
+})

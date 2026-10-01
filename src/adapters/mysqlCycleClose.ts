@@ -21,6 +21,12 @@ export type CycleCloseCohort =
   | 'exhausted-recording'
   | 'no-recording'
   | 'audited-projection'
+  /**
+   * Named calls whose automated validation is still unresolved, settled at
+   * KServe's claim on an operator's request even though their first audit
+   * already wrote a bill. Only reachable with an explicit call list.
+   */
+  | 'unresolved-validation'
 
 /**
  * Calls this platform actually audited: a final recording, a completed media
@@ -145,6 +151,22 @@ const EXHAUSTED_RECORDING_SQL = `
   )
 `
 
+/** The call's latest consensus validation never reached a verdict. */
+const UNRESOLVED_VALIDATION_SQL = `
+  EXISTS (
+    SELECT 1
+    FROM kaudit_automated_decision validation
+    WHERE validation.call_id = c.id
+      AND validation.decision_type = 'automated_consensus_validation'
+      AND validation.decision_status = 'unresolved'
+      AND NOT EXISTS (
+        SELECT 1
+        FROM kaudit_automated_decision newer_validation
+        WHERE newer_validation.supersedes_decision_id = validation.id
+      )
+  )
+`
+
 interface CandidateRow extends RowDataPacket {
   call_id: string
   audit_run_id: string | null
@@ -229,14 +251,18 @@ export async function listAcceptedAsBilledCandidates(
   period: BillingMonthScope,
   limit: number,
   cohort: CycleCloseCohort = 'all',
+  callIds: readonly string[] = [],
 ): Promise<AcceptedAsBilledCandidate[]> {
+  if (cohort === 'unresolved-validation' && callIds.length === 0) return []
   /**
    * The cohort narrows WHICH calls are settled; it never changes how any one
    * of them is priced. `exhausted-recording` keeps only the recording-backed
    * calls whose independent audit is finished, so a targeted run cannot reach
    * the no-recording or unresolved-validation populations.
    */
-  const eligibilitySql = cohort === 'exhausted-recording'
+  const eligibilitySql = cohort === 'unresolved-validation'
+    ? UNRESOLVED_VALIDATION_SQL
+    : cohort === 'exhausted-recording'
     ? EXHAUSTED_RECORDING_SQL
     : cohort === 'no-recording'
     ? NO_RECORDING_SQL
@@ -244,22 +270,10 @@ export async function listAcceptedAsBilledCandidates(
     ? AUDITED_SQL
     : `(
          ${NO_RECORDING_SQL}
-         OR EXISTS (
-           SELECT 1
-           FROM kaudit_automated_decision validation
-           WHERE validation.call_id = c.id
-             AND validation.decision_type =
-                   'automated_consensus_validation'
-             AND validation.decision_status = 'unresolved'
-             AND NOT EXISTS (
-               SELECT 1
-               FROM kaudit_automated_decision newer_validation
-               WHERE newer_validation.supersedes_decision_id =
-                     validation.id
-             )
-         )
+         OR ${UNRESOLVED_VALIDATION_SQL}
          OR ${EXHAUSTED_RECORDING_SQL}
        )`
+  const namedCalls = cohort === 'unresolved-validation'
   const [rows] = await pool.execute<CandidateRow[]>(
     `SELECT
        c.id AS call_id,
@@ -315,7 +329,11 @@ export async function listAcceptedAsBilledCandidates(
      ) audited ON audited.call_id = c.id
      WHERE c.billing_period_date BETWEEN ? AND ?
        AND ${eligibilitySql}
-       AND NOT EXISTS (
+       AND ${namedCalls
+         // The named calls already carry their first audit's bill; settling
+         // them supersedes it, so the unsettled filter does not apply.
+         ? `c.id IN (${callIds.map(() => '?').join(',')})`
+         : `NOT EXISTS (
          SELECT 1
          FROM kaudit_billing_calculation calculation
          WHERE calculation.call_id = c.id
@@ -325,10 +343,10 @@ export async function listAcceptedAsBilledCandidates(
              FROM kaudit_billing_calculation newer
              WHERE newer.supersedes_calculation_id = calculation.id
            )
-       )
+       )`}
      ORDER BY c.id
      LIMIT ?`,
-    [period.start, period.end, limit],
+    [period.start, period.end, ...(namedCalls ? callIds : []), limit],
   )
   return rows.map((row) => ({
     callId: row.call_id,

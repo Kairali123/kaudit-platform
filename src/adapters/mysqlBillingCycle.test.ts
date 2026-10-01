@@ -149,3 +149,19 @@ test('independent cycle aggregates start without waiting for one another', async
 
   assert.equal((await result).totalCalls, 1)
 })
+
+test('a call settled at the KServe claim no longer holds the cycle open', async () => {
+  let unresolvedSql = ''
+  const pool = {
+    async query(sql: string) {
+      if (sql.includes('AS total_calls')) return [[{ total_calls: 1 }], []]
+      if (sql.includes('AS accepted_as_billed_calls')) return [[{ final_calculation_calls: 1 }], []]
+      if (sql.includes('unresolved_decision_calls')) unresolvedSql = sql
+      return [[{ unresolved_decision_calls: 0 }], []]
+    },
+  } as unknown as Pool
+  await collectLatestBillingCycle(pool, {
+    month: '2026-06', start: '2026-06-01', end: '2026-06-30', label: 'June 2026',
+  })
+  assert.match(unresolvedSql, /settled\.calculation_basis = 'accepted_as_billed_unverified'/)
+})

@@ -164,3 +164,23 @@ test('the two targeted cohorts are mutually exclusive by construction', async ()
   assert.doesNotMatch(noRecording, /exhausted_recording/)
   assert.notEqual(exhausted, noRecording)
 })
+
+test('the unresolved-validation cohort settles only named, still-unresolved calls', async () => {
+  const calls: Array<{ sql: string; parameters: unknown[] }> = []
+  const pool = {
+    async execute(sql: string, parameters: unknown[]) {
+      calls.push({ sql, parameters })
+      return [[]]
+    },
+  } as unknown as Pool
+  const june = { month: '2026-06', label: 'June 2026', start: '2026-06-01', end: '2026-06-30' }
+  // Never a whole-month sweep: no names, no query.
+  assert.deepEqual(await listAcceptedAsBilledCandidates(pool, june, 10, 'unresolved-validation'), [])
+  assert.equal(calls.length, 0)
+  await listAcceptedAsBilledCandidates(pool, june, 2, 'unresolved-validation', ['call-a', 'call-b'])
+  const { sql, parameters } = calls[0]!
+  assert.match(sql, /validation\.decision_status = 'unresolved'/)
+  assert.match(sql, /c\.id IN \(\?,\?\)/)
+  assert.doesNotMatch(sql, /NOT EXISTS \(\s*SELECT 1\s*FROM kaudit_call_artifact recording\b/)
+  assert.deepEqual(parameters, ['2026-06-01', '2026-06-30', 'call-a', 'call-b', 2])
+})

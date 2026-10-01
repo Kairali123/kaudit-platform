@@ -2,6 +2,9 @@ import { createHash } from 'node:crypto'
 import type { Pool, RowDataPacket } from 'mysql2/promise'
 import { createConfiguredReauditAi } from '../adapters/configuredReaudit.ts'
 import { createMysqlBillingMonthSummaryStore } from '../adapters/mysqlBillingMonthSummary.ts'
+import { listAcceptedAsBilledCandidates } from '../adapters/mysqlCycleClose.ts'
+import { persistVerifiedBillingRecords } from '../adapters/mysqlVerifiedBilling.ts'
+import { buildAcceptedAsBilledRecords } from '../billing/acceptedAsBilled.ts'
 import { createMysqlBillingSpendGuard } from '../adapters/mysqlBillingSpendLease.ts'
 import {
   collectAutomatedValidationCandidates,
@@ -44,12 +47,14 @@ const TASK_ID = /^[A-Za-z0-9._:-]{1,191}$/
 const BATCH_ID = /^[A-Za-z0-9._:-]{16,80}$/
 export const RECONCILIATION_BATCH_ROUTE = '/api/v1/reconciliation/batch'
 export const MAX_RECONCILIATION_BATCH_ITEMS = 3
+const ACCEPTED_CLAIM_CODE = 'ACCEPTED_AS_BILLED_UNVERIFIED|AUTOMATED_VALIDATION_UNRESOLVED'
 
 export type ReconciliationMode =
   | 'new_month'
   | 'late_recording'
   | 'transcript_reaudit'
   | 'retry_audit'
+  | 'accept_kserve_claim'
 
 export interface ReconciliationBatchRequest {
   batchId: string
@@ -131,7 +136,8 @@ function parseRequest(input: ReconciliationBatchRequest): {
     body.mode !== 'new_month' &&
     body.mode !== 'late_recording' &&
     body.mode !== 'transcript_reaudit' &&
-    body.mode !== 'retry_audit'
+    body.mode !== 'retry_audit' &&
+    body.mode !== 'accept_kserve_claim'
   ) throw new TypeError('reconciliation mode is invalid')
   if (
     !Array.isArray(body.items) ||
@@ -325,6 +331,32 @@ async function failureReceipts(
       code: row.audio_last_error || 'AUDIT_NOT_COMPLETED',
     }]]
   }))
+}
+
+interface LiveBillRow extends RowDataPacket {
+  call_id: string
+  basis: string
+  amount: string
+}
+
+/** The live final bill of each call, for telling a replay from new work. */
+async function liveBills(
+  pool: Pool,
+  callIds: readonly string[],
+): Promise<Map<string, LiveBillRow>> {
+  const [rows] = await pool.execute<LiveBillRow[]>(
+    `SELECT calc.call_id, calc.calculation_basis AS basis,
+            CAST(calc.total_amount AS CHAR) AS amount
+     FROM kaudit_billing_calculation calc
+     WHERE calc.call_id IN (${callIds.map(() => '?').join(',')})
+       AND calc.status = 'final'
+       AND NOT EXISTS (
+         SELECT 1 FROM kaudit_billing_calculation newer
+         WHERE newer.supersedes_calculation_id = calc.id
+       )`,
+    [...callIds],
+  )
+  return new Map(rows.map((row) => [row.call_id, row]))
 }
 
 async function completedCallAmounts(
@@ -576,6 +608,88 @@ export function createReconciliationBatchService(options: {
     }
   }
 
+  /**
+   * Operator's final word on calls the automated checks never agreed on:
+   * bill KServe's claim, recorded as unverified. No model is called. Only a
+   * call whose latest consensus is still unresolved qualifies; its first
+   * audit's bill and the disagreement stay in history, superseded.
+   */
+  async function processAcceptClaim(
+    input: ReconciliationBatchRequest,
+    period: BillingMonthScope,
+    items: ParsedItem[],
+  ): Promise<ReconciliationBatchReceipt> {
+    const taskIds = items.map((item) => item.taskId)
+    const resolution = await resolveTaskCalls(pool, period, taskIds)
+    const receipts = new Map<string, ReconciliationItemReceipt>()
+    for (const taskId of resolution.invalid) {
+      receipts.set(taskId, {
+        taskId, stage: 'upload', status: 'failed', code: 'TASK_NOT_FOUND_OR_AMBIGUOUS',
+      })
+    }
+    const valid = taskIds.filter((taskId) => !resolution.invalid.has(taskId))
+    const callIds = valid.map((taskId) => resolution.calls.get(taskId) as string)
+    if (callIds.length > 0) {
+      const live = await liveBills(pool, callIds)
+      const candidates = new Map((await listAcceptedAsBilledCandidates(
+        pool, period, callIds.length, 'unresolved-validation', callIds,
+      )).map((candidate) => [candidate.callId, candidate]))
+      let rateCard: PublishedRateCard | null = null
+      let written = false
+      for (const taskId of valid) {
+        const callId = resolution.calls.get(taskId) as string
+        const bill = live.get(callId)
+        if (bill?.basis === 'accepted_as_billed_unverified') {
+          receipts.set(taskId, {
+            taskId, stage: 'complete', status: 'duplicate',
+            code: ACCEPTED_CLAIM_CODE, amount: bill.amount,
+          })
+          continue
+        }
+        const candidate = candidates.get(callId)
+        if (!candidate) {
+          // Agreed, never audited, or no KServe claim on file: not this tab.
+          receipts.set(taskId, {
+            taskId, stage: 'upload', status: 'failed', code: 'ACCEPT_CLAIM_NOT_UNRESOLVED',
+          })
+          continue
+        }
+        rateCard ??= await loadPublishedRateCard(pool, options.rateCardId)
+        const records = buildAcceptedAsBilledRecords({
+          callId,
+          auditRunId: candidate.auditRunId,
+          fallbackReason: 'automated_validation_unresolved',
+          claimedDurationMs: candidate.claimedDurationMs,
+          connectedDurationMs: candidate.connectedDurationMs,
+          vendorBilledMinutes: candidate.vendorBilledMinutes,
+          vendorBilledAmount: candidate.vendorBilledAmount,
+          sourceEvidence: {
+            kind: 'call_manifest',
+            referenceId: candidate.evidenceObjectId,
+            sha256: candidate.evidenceSha256,
+          },
+          // Same timestamp month close uses, so a replay is a duplicate.
+          decidedAt: `${period.end}T18:29:59.999Z`,
+        }, rateCard)
+        await persistVerifiedBillingRecords(pool, {
+          records, rateCard, correlationId: input.correlationId,
+        })
+        written = true
+        receipts.set(taskId, {
+          taskId, stage: 'complete', status: 'completed',
+          code: ACCEPTED_CLAIM_CODE, amount: records.calculation?.totalAmount ?? null,
+        })
+      }
+      if (written) await summaries.invalidate(period.month)
+    }
+    return {
+      batchId: input.batchId,
+      billMonth: period.month,
+      mode: 'accept_kserve_claim',
+      items: taskIds.map((taskId) => receipts.get(taskId) as ReconciliationItemReceipt),
+    }
+  }
+
   async function processLate(
     input: ReconciliationBatchRequest,
     period: BillingMonthScope,
@@ -763,6 +877,9 @@ export function createReconciliationBatchService(options: {
           code: 'INVALID_RECONCILIATION_BATCH',
           status: 400,
         })
+      }
+      if (parsed.mode === 'accept_kserve_claim') {
+        return processAcceptClaim(input, parsed.period, parsed.items)
       }
       return parsed.mode === 'late_recording'
         ? processLate(input, parsed.period, parsed.items)
