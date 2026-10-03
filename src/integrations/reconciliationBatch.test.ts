@@ -237,3 +237,16 @@ test('cap_at_kserve leaves a call already within KServe charge untouched', async
   ])
   assert.ok(statements.every(({ sql }) => /^\s*SELECT/i.test(sql)))
 })
+
+test('new_month refuses up front while the month has no KServe invoice', async () => {
+  const { pool, statements } = fakePool([
+    { match: /UNION/, rows: [{ task_id: 'task-1', call_id: 'call-1' }] },
+    { match: /CAST\(calculation\.total_amount AS CHAR\) AS amount/, rows: [] },
+    { match: /FROM kaudit_invoice invoice/, rows: [] },
+  ])
+  const receipt = await service(pool).process(request({ mode: 'new_month' }))
+  assert.deepEqual(receipt.items, [
+    { taskId: 'task-1', stage: 'upload', status: 'failed', code: 'INVOICE_NOT_IMPORTED' },
+  ])
+  assert.ok(statements.every(({ sql }) => /^\s*SELECT/i.test(sql)))
+})
