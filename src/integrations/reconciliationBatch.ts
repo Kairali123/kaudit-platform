@@ -461,8 +461,20 @@ export function createReconciliationBatchService(options: {
         })),
         input.correlationId,
       )
+      // A call the retry finds already audited is usually this batch's own
+      // first attempt that finished after the Sheet gave up waiting: report
+      // its bill as done, not as a failure.
+      const audited = await completedCallAmounts(
+        pool,
+        [...prepared.refused]
+          .filter(([, code]) => code === 'RETRY_AUDIT_ALREADY_COMPLETED')
+          .map(([taskId]) => resolution.calls.get(taskId) as string),
+      )
       for (const [taskId, code] of prepared.refused) {
-        receipts.set(taskId, { taskId, stage: 'upload', status: 'failed', code })
+        const amount = audited.get(resolution.calls.get(taskId) as string)
+        receipts.set(taskId, amount == null
+          ? { taskId, stage: 'upload', status: 'failed', code }
+          : { taskId, stage: 'complete', status: 'duplicate', amount })
       }
       processingTaskIds = prepared.eligible
     }
