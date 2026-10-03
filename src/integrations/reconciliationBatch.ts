@@ -105,6 +105,7 @@ interface FailureRow extends RowDataPacket {
   processing_status: string | null
   audio_processing_status: string | null
   audio_last_error: string | null
+  has_recording: number | string | null
 }
 
 interface CompletedRow extends RowDataPacket {
@@ -299,7 +300,8 @@ async function failureReceipts(
   const placeholders = taskIds.map(() => '?').join(',')
   // Same two ways to match a Task ID as resolveTaskCalls.
   const columns = `c.latest_audit_run_id, c.processing_status,
-            artifact.audio_processing_status, artifact.audio_last_error
+            artifact.audio_processing_status, artifact.audio_last_error,
+            artifact.source_url IS NOT NULL AS has_recording
      FROM kaudit_call c`
   const recording = `LEFT JOIN kaudit_call_artifact artifact ON artifact.call_id = c.id
       AND artifact.artifact_type = 'recording' AND artifact.is_final = 1`
@@ -319,6 +321,13 @@ async function failureReceipts(
   )
   return new Map(rows.flatMap((row) => {
     if (row.audio_processing_status === 'completed') return []
+    // Nothing to audit; month close settles these calls at zero.
+    if (Number(row.has_recording) !== 1) {
+      return [[row.task_id, {
+        taskId: row.task_id, stage: 'upload' as const, status: 'failed' as const,
+        code: 'NO_RECORDING',
+      }]]
+    }
     return [[row.task_id, {
       taskId: row.task_id,
       stage:
@@ -334,6 +343,19 @@ async function failureReceipts(
       code: row.audio_last_error || 'AUDIT_NOT_COMPLETED',
     }]]
   }))
+}
+
+/** Same rule the audit's candidate query applies (mysqlReauditReadRepo). */
+async function monthHasInvoice(pool: Pool, period: BillingMonthScope): Promise<boolean> {
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT 1 FROM kaudit_invoice invoice
+     WHERE ? BETWEEN invoice.period_start AND invoice.period_end
+       AND invoice.status IN ('received','matched','approved')
+     LIMIT 1`,
+    // Calls are imported with the month's first day as their billing date.
+    [period.start],
+  )
+  return rows.length > 0
 }
 
 interface LiveBillRow extends RowDataPacket {
@@ -495,6 +517,19 @@ export function createReconciliationBatchService(options: {
         })
         return false
       })
+    }
+    if (
+      processingTaskIds.length > 0 && mode !== 'transcript_reaudit' &&
+      !(await monthHasInvoice(pool, period))
+    ) {
+      // The audit only runs for a month whose KServe invoice is imported;
+      // say so instead of reporting every call as not completed.
+      for (const taskId of processingTaskIds) {
+        receipts.set(taskId, {
+          taskId, stage: 'upload', status: 'failed', code: 'INVOICE_NOT_IMPORTED',
+        })
+      }
+      processingTaskIds = []
     }
     if (processingTaskIds.length > 0) {
       let candidates: ReauditCandidateRepository
