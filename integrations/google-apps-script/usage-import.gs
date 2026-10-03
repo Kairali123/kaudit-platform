@@ -324,18 +324,33 @@ function validateKauditUsageCanonicalRow_(canonicalRow) {
 }
 
 function canonicalKauditUsageRow_(rawRow, displayRow, timeZone) {
+  const withoutRinging = canonicalKauditNumber_(rawRow[6], displayRow[6], 12);
+  const billedMinutes = canonicalKauditNumber_(rawRow[7], displayRow[7], 12);
   return [
     String(displayRow[0] || '').trim(),
     String(displayRow[1] || '').trim(),
     canonicalKauditDateTime_(rawRow[2], displayRow[2], timeZone),
     canonicalKauditDateTime_(rawRow[3], displayRow[3], timeZone),
     canonicalKauditDateTime_(rawRow[4], displayRow[4], timeZone),
-    canonicalKauditNumber_(rawRow[5], displayRow[5], 12),
-    canonicalKauditNumber_(rawRow[6], displayRow[6], 12),
-    canonicalKauditNumber_(rawRow[7], displayRow[7], 12),
+    canonicalKauditNumber_(rawRow[5], displayRow[5], 12) ||
+      kauditRingingFallback_(withoutRinging, billedMinutes),
+    withoutRinging,
+    billedMinutes,
     canonicalKauditNumber_(rawRow[8], displayRow[8], 8),
-    String(displayRow[9] || '').trim(),
+    // KServe sends object names with spaces ("Kairali Bridge_...").
+    String(displayRow[9] || '').trim().replace(/ /g, '%20'),
   ];
+}
+
+/**
+ * A blank "With Ringing" is never sent as 0: the audit caps each bill at
+ * that duration, so 0 would zero a billed call. It can be no shorter than
+ * the connected time or the minutes KServe billed, so the larger stands in.
+ */
+function kauditRingingFallback_(withoutRinging, billedMinutes) {
+  const connected = /^\d+(\.\d+)?$/.test(withoutRinging) ? Number(withoutRinging) : 0;
+  const billed = /^\d+(\.\d+)?$/.test(billedMinutes) ? Number(billedMinutes) * 60 : 0;
+  return String(Math.round(Math.max(connected, billed) * 1000) / 1000);
 }
 
 function canonicalKauditDateTime_(rawValue, displayValue, timeZone) {

@@ -509,3 +509,21 @@ test('a tab with every row already submitted is not read in full', async () => {
   await runImport(sandbox)
   assert.equal(sentBodies.length, 0)
 })
+
+test('blank With Ringing never becomes 0 and a URL space is sent encoded', async () => {
+  const context = vm.createContext({ console })
+  new vm.Script(await loadGasSource()).runInContext(context)
+  const gas = context as unknown as {
+    canonicalKauditUsageRow_: (raw: unknown[], display: string[], tz: string) => string[]
+    validateKauditUsageCanonicalRow_: (row: string[]) => unknown
+  }
+  const url = 'https://proxy.example.test/api/v1/media/download-signed-url/?url=https://recordings.example.test/media/Kairali Bridge_0000_SYNTHETIC.ogg'
+  const display = ['T-1', '', '', '', '', '', '41', '1', '9.5', url]
+  const row = gas.canonicalKauditUsageRow_(display, display, 'Asia/Kolkata')
+  assert.equal(row[5], '60', 'the billed minute outranks a shorter connected time')
+  assert.equal(row[9], url.replace(/ /g, '%20'))
+  assert.equal(gas.validateKauditUsageCanonicalRow_(row), null)
+  const unanswered = gas.canonicalKauditUsageRow_(
+    ['T-2', '', '', '', '', '', '0', '0', '', ''], ['T-2', '', '', '', '', '', '0', '0', '', ''], 'Asia/Kolkata')
+  assert.equal(unanswered[5], '0')
+})
