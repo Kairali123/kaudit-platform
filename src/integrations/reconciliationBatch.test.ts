@@ -237,3 +237,31 @@ test('cap_at_kserve leaves a call already within KServe charge untouched', async
   ])
   assert.ok(statements.every(({ sql }) => /^\s*SELECT/i.test(sql)))
 })
+
+test('a retry of a call that is already audited reports its bill as done', async () => {
+  const run = async (sql: string) => {
+    if (/UNION/.test(sql) && /logical_call_key AS task_id, c\.id/.test(sql)) {
+      return [[{ task_id: 'task-done', call_id: 'call-done' }], []]
+    }
+    if (/FROM kaudit_call_artifact ca/.test(sql)) {
+      return [[{ artifact_id: 'a1', has_source_url: 1, has_sha256: 1,
+        audio_processing_status: 'completed', live_basis: 'independent_category_service_end',
+        audit_completed: 1 }], []]
+    }
+    if (/CAST\(calculation\.total_amount AS CHAR\) AS amount/.test(sql)) {
+      return [[{ call_id: 'call-done', amount: '42.75000000' }], []]
+    }
+    throw new Error(`unexpected SQL: ${sql.slice(0, 80)}`)
+  }
+  const connection = {
+    execute: run, query: run, beginTransaction: async () => {}, commit: async () => {},
+    rollback: async () => {}, release: () => {},
+  }
+  const pool = { execute: run, query: run, getConnection: async () => connection } as unknown as Pool
+  const receipt = await service(pool).process(request({
+    mode: 'retry_audit', items: [{ task_id: 'task-done' }],
+  }))
+  assert.deepEqual(receipt.items, [
+    { taskId: 'task-done', stage: 'complete', status: 'duplicate', amount: '42.75000000' },
+  ])
+})
