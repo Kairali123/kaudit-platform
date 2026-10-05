@@ -8,7 +8,8 @@ import type { PageSnapshotStore } from '../adapters/mysqlPageSnapshot.ts'
  * heavy month-wide aggregates never run inside the 30 s page function and never
  * stack up behind each other (one refresh per key at a time).
  */
-export const AUDIT_MONITOR_SNAPSHOT_DEFINITION = 'audit-monitor-summary/1'
+export const AUDIT_MONITOR_SNAPSHOT_DEFINITION = 'audit-monitor-summary/2'
+// 2: "Auditor" tile is the live final bill, no longer a duration projection.
 /** Served by the dedicated long function on Vercel; an alias locally. */
 export const AUDIT_MONITOR_REFRESH_ROUTE = '/api/v1/audits/refresh'
 export const AUDIT_MONITOR_REFRESH_LEASE_SECONDS = 300

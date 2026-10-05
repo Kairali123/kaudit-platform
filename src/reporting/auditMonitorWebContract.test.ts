@@ -31,30 +31,22 @@ test('the web client type exposes capped amount and missing-duration counts', as
   assert.equal(/auditorCalculatedCalls\b/.test(source), false)
 })
 
-test('the financial tile is labelled as capped auditor money', async () => {
+test('the financial tile is labelled as the final bill Reports and Billing use', async () => {
   const source = await webSource('pages/AuditMonitorPage.tsx')
-  assert.match(source, /label: 'Auditor capped amount · audited calls'/)
+  assert.match(source, /label: 'Final bill · audited calls'/)
   assert.match(source, /value: money\(financials\.auditorFinalChargeInr\)/)
-  assert.match(source, /capped at KServe charge/)
+  assert.match(source, /same bills as Reports and Billing/)
+  assert.equal(/Auditor capped amount/.test(source), false)
 })
 
-test('the tile reports priced and missing-duration audited calls distinctly', async () => {
+test('the tile reports billed and not-yet-billed audited calls distinctly', async () => {
   const source = await webSource('pages/AuditMonitorPage.tsx')
   assert.match(source, /financials\.auditorFinalPricedCalls\.toLocaleString/)
   assert.match(source, /financials\.auditorUnfinalizedCalls\.toLocaleString/)
-  assert.match(source, /missing audited duration/)
-  // A missing-duration audited call is an open item, not a priced one.
+  assert.match(source, /not billed yet/)
   assert.match(
     source,
     /financials\.auditorUnfinalizedCalls === 0\s*\n?\s*\?\s*'good'\s*\n?\s*:\s*'warn'/,
-  )
-})
-
-test('supporting copy states the per-call cap', async () => {
-  const source = await webSource('pages/AuditMonitorPage.tsx')
-  assert.match(
-    source,
-    /caps\s*\n?\s*each call at KServe/,
   )
 })
 

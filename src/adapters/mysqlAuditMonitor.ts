@@ -392,17 +392,14 @@ const AUDITED_JOIN = `
  *
  *   * `kserve_charge` — what the vendor asserts, from its own billed-minutes
  *     evidence; and
- *   * `auditor_final_charge` — capped auditor projection: audited duration
- *     priced with the locked KServe rounding rule, capped per call at KServe's
- *     own charge.
+ *   * `auditor_final_charge` — the call's live final bill, the same rows the
+ *     Billing and Reports pages add up. It used to be a separate projection
+ *     from audited duration, which never matched the bill (it skipped the
+ *     category rules, calls settled at KServe's claim, and calls without an
+ *     audited duration). A call with no final bill yet is counted in
+ *     `auditor_unfinalized_calls`.
  *
- * The cap is applied before summing, so a call where the audited duration is
- * longer than KServe's billed duration contributes KServe's charge, never a
- * higher amount. A call with no audited duration is counted in
- * `auditor_unfinalized_calls` instead.
- *
- * `scopedAuditedCallsSql` must yield one `id` column and one
- * `grace_adjusted_duration_ms` column per audited call.
+ * `scopedAuditedCallsSql` must yield one `id` column per audited call.
  */
 export function auditedFinancialSummarySql(
   scopedAuditedCallsSql: string,
@@ -412,44 +409,38 @@ export function auditedFinancialSummarySql(
        CAST(vendor.amount_decimal AS DECIMAL(20,8)),
        vendor.minutes_decimal * ${KSERVE_VENDOR_RATE_PER_MINUTE}
      )`
-  const projectedCharge = `CASE
-       WHEN scoped.grace_adjusted_duration_ms IS NULL THEN NULL
-       WHEN scoped.grace_adjusted_duration_ms = 0 THEN 0
-       WHEN scoped.grace_adjusted_duration_ms < ${KSERVE_SHORT_CALL_CUTOFF_MS}
-         THEN ${KSERVE_VENDOR_RATE_PER_MINUTE} / 2
-       ELSE CEIL(scoped.grace_adjusted_duration_ms / ${KSERVE_MINUTE_MS}.0)
-         * ${KSERVE_VENDOR_RATE_PER_MINUTE}
-     END`
-  const cappedCharge = `CASE
-       WHEN ${projectedCharge} IS NULL THEN NULL
-       WHEN ${vendorCharge} IS NULL THEN ${projectedCharge}
-       WHEN ${projectedCharge}
-         <= ${vendorCharge}
-         THEN ${projectedCharge}
-       ELSE ${vendorCharge}
-     END`
-  if (options.legacyVendorScan) {
-    // Tests only: the pre-rewrite shape (table-wide vendor grouping).
-    return `SELECT
+  const liveBills = (scope: string) => `SELECT calc.call_id,
+         MAX(calc.total_amount) AS total_amount
+       FROM kaudit_billing_calculation calc
+       ${scope}
+       WHERE calc.status = 'final'
+         AND NOT EXISTS (
+           SELECT 1 FROM kaudit_billing_calculation newer
+           WHERE newer.supersedes_calculation_id = calc.id
+         )
+       GROUP BY calc.call_id`
+  const totals = `SELECT
      COUNT(*) AS audited_calls,
      SUM((${vendorCharge}) IS NOT NULL) AS kserve_priced_calls,
      COALESCE(SUM(${vendorCharge}), 0) AS kserve_charge,
-     SUM((${cappedCharge}) IS NOT NULL)
-       AS auditor_final_priced_calls,
-     SUM((${cappedCharge}) IS NULL)
-       AS auditor_unfinalized_calls,
-     COALESCE(SUM(${cappedCharge}), 0)
-       AS auditor_final_charge
+     SUM(live.total_amount IS NOT NULL) AS auditor_final_priced_calls,
+     SUM(live.total_amount IS NULL) AS auditor_unfinalized_calls,
+     COALESCE(SUM(live.total_amount), 0) AS auditor_final_charge`
+  if (options.legacyVendorScan) {
+    // Tests only: the pre-rewrite shape (table-wide vendor grouping).
+    return `${totals}
    FROM (
      ${scopedAuditedCallsSql}
    ) scoped
    LEFT JOIN (
      ${vendorBilledAssertionsSql()}
-   ) vendor ON vendor.call_id = scoped.id`
+   ) vendor ON vendor.call_id = scoped.id
+   LEFT JOIN (
+     ${liveBills('')}
+   ) live ON live.call_id = scoped.id`
   }
-  // Vendor costs are grouped only for the scoped calls, not for the whole
-  // provider-cost table. The scoped relation and every money expression are
-  // unchanged.
+  // Vendor costs and bills are read only for the scoped calls, not for the
+  // whole table.
   return `WITH scoped AS (
      ${scopedAuditedCallsSql}
    ),
@@ -460,19 +451,14 @@ export function auditedFinancialSummarySql(
      ${vendorBilledAssertionsSql(
        'JOIN scoped_ids vendor_scope ON vendor_scope.id = cost.call_id',
      )}
+   ),
+   live AS (
+     ${liveBills('JOIN scoped_ids bill_scope ON bill_scope.id = calc.call_id')}
    )
-   SELECT
-     COUNT(*) AS audited_calls,
-     SUM((${vendorCharge}) IS NOT NULL) AS kserve_priced_calls,
-     COALESCE(SUM(${vendorCharge}), 0) AS kserve_charge,
-     SUM((${cappedCharge}) IS NOT NULL)
-       AS auditor_final_priced_calls,
-     SUM((${cappedCharge}) IS NULL)
-       AS auditor_unfinalized_calls,
-     COALESCE(SUM(${cappedCharge}), 0)
-       AS auditor_final_charge
+   ${totals}
    FROM scoped
-   LEFT JOIN vendor ON vendor.call_id = scoped.id`
+   LEFT JOIN vendor ON vendor.call_id = scoped.id
+   LEFT JOIN live ON live.call_id = scoped.id`
 }
 
 function categoryAdjustedDurationSql(alias: string): string {
