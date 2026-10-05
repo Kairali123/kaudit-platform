@@ -635,12 +635,14 @@ export function AuditMonitorPage() {
             ? 'neutral'
             : 'warn',
       }, {
-        label: 'Auditor capped amount · audited calls',
+        label: 'Final bill · audited calls',
         value: money(financials.auditorFinalChargeInr),
         sub:
           `${financials.auditorFinalPricedCalls.toLocaleString('en-IN')} of ` +
-          `${financials.scopedAuditedCalls.toLocaleString('en-IN')} audited calls priced by audited duration, capped at KServe charge · ` +
-          `${financials.auditorUnfinalizedCalls.toLocaleString('en-IN')} missing audited duration`,
+          `${financials.scopedAuditedCalls.toLocaleString('en-IN')} audited calls billed · same bills as Reports and Billing` +
+          (financials.auditorUnfinalizedCalls === 0
+            ? ''
+            : ` · ${financials.auditorUnfinalizedCalls.toLocaleString('en-IN')} not billed yet`),
         status:
           financials.auditorUnfinalizedCalls === 0
             ? 'good'
@@ -669,10 +671,9 @@ export function AuditMonitorPage() {
       <Notice tone="warning" title="Automated consensus—not human ground truth">
         Use this view to inspect categories, confidence, durations, calculations,
         and stuck processing. Open Call is restricted to administrators and
-        every content access is logged. <strong>Auditor capped amount</strong>{' '}
-        prices audited duration with the locked KServe rounding rule and caps
-        each call at KServe&apos;s charge, so it never exceeds the vendor charge
-        for the same call.
+        every content access is logged. <strong>Final bill</strong> is the sum of
+        the audited calls&apos; final bills, the same figures the Billing and
+        Reports pages use; Reports adds the calls that could not be audited.
       </Notice>
       <AuditWorkerControl system="billing" />
     </>

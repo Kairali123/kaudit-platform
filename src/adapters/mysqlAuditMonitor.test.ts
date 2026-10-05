@@ -156,105 +156,68 @@ const VENDOR_MINUTES: SyntheticProviderCost = {
   minutesDecimal: '2.00000000',
 }
 
-test('an audited amount is capped at KServe charge when AI duration is higher', () => {
+const FINAL_BILL = {
+  id: 'calc-current',
+  callId: 'call-synthetic-1',
+  status: 'final',
+  totalAmount: '9.50000000',
+  calculatedAt: '2026-08-01 00:00:00',
+}
+
+test('the auditor tile is the live final bill, not a duration projection', () => {
   const totals = summarize({
     scopedCallIds: ['call-synthetic-1'],
     providerCosts: [VENDOR_MINUTES],
+    calculations: [FINAL_BILL],
   })
   assert.equal(totals.auditedCalls, 1)
   assert.equal(totals.kserveCharge, 19)
   assert.equal(totals.auditorFinalPricedCalls, 1)
   assert.equal(totals.auditorUnfinalizedCalls, 0)
-  // 121s rounds to 3 minutes (₹28.50), then caps at KServe's 2 minutes.
-  assert.equal(totals.auditorFinalCharge, 19)
+  // 121 s of audited duration would project to 28.50; the bill says 9.50.
+  assert.equal(totals.auditorFinalCharge, 9.5)
 })
 
-test('an audited amount stays below KServe when AI duration is lower', () => {
-  const totals = summarize({
-    scopedCallIds: [
-      { id: 'call-synthetic-1', graceAdjustedDurationMs: 61_000 },
-    ],
-    providerCosts: [
-      { ...VENDOR_MINUTES, minutesDecimal: '3.00000000' },
-    ],
-  })
-  assert.equal(totals.kserveCharge, 28.5)
-  // 61s rounds to 2 minutes, below KServe's 3 billed minutes.
-  assert.equal(totals.auditorFinalCharge, 19)
-})
-
-test('billing calculations do not change the capped auditor amount', () => {
+test('a superseded bill is replaced by the bill that supersedes it', () => {
   const totals = summarize({
     scopedCallIds: ['call-synthetic-1'],
-    providerCosts: [VENDOR_MINUTES],
     calculations: [
+      { ...FINAL_BILL, totalAmount: '28.50000000' },
       {
-        id: 'calc-current',
-        callId: 'call-synthetic-1',
-        status: 'final',
-        totalAmount: '999.50000000',
-        calculatedAt: '2026-08-01 00:00:00',
+        ...FINAL_BILL, id: 'calc-capped', totalAmount: '19.00000000',
+        calculatedAt: '2026-09-01 00:00:00', supersedesCalculationId: 'calc-current',
       },
     ],
   })
-  assert.equal(totals.auditorFinalPricedCalls, 1)
-  assert.equal(totals.auditorUnfinalizedCalls, 0)
   assert.equal(totals.auditorFinalCharge, 19)
 })
 
-test('missing audited duration is counted separately from priced calls', () => {
+test('an audited call with no final bill yet is counted, not priced', () => {
   const totals = summarize({
-    scopedCallIds: [
-      'call-synthetic-1',
-      { id: 'call-synthetic-2', graceAdjustedDurationMs: null },
-    ],
+    scopedCallIds: ['call-synthetic-1', 'call-synthetic-2'],
     providerCosts: [VENDOR_MINUTES],
+    calculations: [FINAL_BILL],
   })
+  assert.equal(totals.auditedCalls, 2)
   assert.equal(totals.auditorFinalPricedCalls, 1)
   assert.equal(totals.auditorUnfinalizedCalls, 1)
-  assert.equal(totals.auditorFinalCharge, 19)
+  assert.equal(totals.auditorFinalCharge, 9.5)
 })
 
-test('priced and missing-duration calls are reported distinctly in one scope', () => {
-  const totals = summarize({
-    scopedCallIds: [
-      'call-synthetic-1',
-      'call-synthetic-2',
-      { id: 'call-synthetic-3', graceAdjustedDurationMs: null },
-    ],
-  })
-  assert.equal(totals.auditedCalls, 3)
-  assert.equal(totals.auditorFinalPricedCalls, 2)
-  assert.equal(totals.auditorUnfinalizedCalls, 1)
-  assert.equal(totals.auditorFinalCharge, 57)
-})
-
-test('the KServe charge aggregates independently of the capped auditor amount', () => {
+test('the KServe charge aggregates independently of the final bill', () => {
   const vendorOnly = summarize({
     scopedCallIds: ['call-synthetic-1'],
     providerCosts: [VENDOR_MINUTES],
   })
-  assert.equal(vendorOnly.kservePricedCalls, 1)
   assert.equal(vendorOnly.kserveCharge, 19)
-  assert.equal(vendorOnly.auditorFinalCharge, 19)
-
-  const withFinalCalculation = summarize({
+  assert.equal(vendorOnly.auditorFinalCharge, 0)
+  const withBill = summarize({
     scopedCallIds: ['call-synthetic-1'],
     providerCosts: [VENDOR_MINUTES],
-    calculations: [
-      {
-        id: 'calc-current',
-        callId: 'call-synthetic-1',
-        status: 'final',
-        totalAmount: '9.50000000',
-        calculatedAt: '2026-08-01 00:00:00',
-      },
-    ],
+    calculations: [FINAL_BILL],
   })
-  // The vendor total is unchanged by the auditor's own money, and vice versa:
-  // the two are never merged into one authoritative figure.
-  assert.equal(withFinalCalculation.kserveCharge, 19)
-  assert.equal(withFinalCalculation.auditorFinalCharge, 19)
+  assert.equal(withBill.kserveCharge, 19)
+  assert.equal(withBill.auditorFinalCharge, 9.5)
 })
 
 test('a non-final provider cost row is not vendor-priced evidence', () => {
@@ -266,13 +229,13 @@ test('a non-final provider cost row is not vendor-priced evidence', () => {
   assert.equal(totals.kserveCharge, 0)
 })
 
-test('the summary SQL caps audited money before summing', () => {
-  const sql = auditedFinancialSummarySql(
-    'SELECT 1 AS id, 121000 AS grace_adjusted_duration_ms',
-  )
-  assert.match(sql, /CEIL\(scoped\.grace_adjusted_duration_ms/)
+test('the summary SQL reads live final bills, scoped to the audited calls', () => {
+  const sql = auditedFinancialSummarySql('SELECT 1 AS id')
+  assert.match(sql, /calc\.status = 'final'/)
+  assert.match(sql, /newer\.supersedes_calculation_id = calc\.id/)
+  assert.match(sql, /JOIN scoped_ids bill_scope ON bill_scope\.id = calc\.call_id/)
   assert.match(sql, /vendor\.minutes_decimal \* 9\.5/)
-  assert.equal(/final_calculation/.test(sql), false)
+  assert.equal(/CEIL\(scoped\.grace_adjusted_duration_ms/.test(sql), false)
 })
 
 // ---------------------------------------------------------------------------
