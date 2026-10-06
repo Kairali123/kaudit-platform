@@ -35,6 +35,8 @@ const KAUDIT_SERVER_AUDIT = Object.freeze({
     'new_month', 'late_recording', 'transcript_reaudit', 'retry_audit', 'accept_kserve_claim',
     'cap_at_kserve',
   ]),
+  // Answers a retry cannot change; such rows are never retried automatically.
+  finalCodes: Object.freeze(['NO_RECORDING', 'INVOICE_NOT_IMPORTED']),
   headers: Object.freeze({
     taskId: 'Task ID',
     recordingUrl: 'Recording URL',
@@ -605,6 +607,10 @@ function kauditAuditRowReady_(ref) {
   return true;
 }
 
+function kauditAuditHasRecording_(ref) {
+  return String(kauditAuditGet_(ref, 'recordingUrl') || '').trim() !== '';
+}
+
 function kauditAuditInitialBatches_(contexts, limit) {
   const groups = {};
   contexts.forEach(function(context) {
@@ -632,6 +638,15 @@ function kauditAuditInitialBatches_(contexts, limit) {
   });
   const queues = Object.keys(groups).sort().map(function(key) {
     const group = groups[key];
+    // Calls with a recording are the only ones the AI audits; send them
+    // first. Rows without one just come back NO_RECORDING (settled at zero
+    // at month close), so they are swept after every recording is done.
+    if (group.mode === 'new_month') {
+      const withUrl = group.rows.filter(kauditAuditHasRecording_);
+      group.rows = withUrl.concat(group.rows.filter(function(ref) {
+        return !kauditAuditHasRecording_(ref);
+      }));
+    }
     const chunks = [];
     for (let index = 0; index < group.rows.length; index += KAUDIT_SERVER_AUDIT.batchSize) {
       chunks.push({
@@ -688,6 +703,9 @@ function kauditAuditRetryBatches_(contexts, limit, statuses) {
     const retry = rows.some(function(ref) {
       const status = String(kauditAuditGet_(ref, 'status') || '').trim().toUpperCase();
       const attempt = Number(kauditAuditGet_(ref, 'attempt') || 0);
+      // A settled answer: retrying would only get the same reply.
+      const error = String(kauditAuditGet_(ref, 'error') || '').trim();
+      if (KAUDIT_SERVER_AUDIT.finalCodes.indexOf(error) >= 0) return false;
       return eligible.indexOf(status) >= 0 && attempt < 2;
     });
     if (!retry) return false;
