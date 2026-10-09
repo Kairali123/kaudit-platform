@@ -32,6 +32,14 @@ export type CycleCloseCohort =
    * before the per-call cap existed), re-priced from their own audit facts.
    */
   | 'audited-recap'
+  /**
+   * The Sheet's month close: the whole `all` population plus recording-backed
+   * calls whose audit failed and was given up (the Sheet retries a row at
+   * most twice; with the worker stopped nothing will audit them later). A
+   * later successful audit, e.g. from the Retry Audit tab, supersedes the
+   * settlement.
+   */
+  | 'close-month'
 
 /**
  * Calls this platform actually audited: a final recording, a completed media
@@ -172,6 +180,25 @@ const UNRESOLVED_VALIDATION_SQL = `
   )
 `
 
+/** Recording-backed, never audited, and its processing failed. */
+const FAILED_RECORDING_SQL = `
+  EXISTS (
+    SELECT 1
+    FROM kaudit_call_artifact failed_recording
+    WHERE failed_recording.call_id = c.id
+      AND failed_recording.artifact_type = 'recording'
+      AND failed_recording.is_final = 1
+      AND failed_recording.source_url IS NOT NULL
+      AND failed_recording.audio_processing_status IN (
+        'fetch_failed', 'transcribe_failed', 'classify_failed', 'exhausted'
+      )
+  )
+  AND NOT EXISTS (
+    SELECT 1 FROM kaudit_audit_run failed_run
+    WHERE failed_run.call_id = c.id AND failed_run.status = 'completed'
+  )
+`
+
 interface CandidateRow extends RowDataPacket {
   call_id: string
   audit_run_id: string | null
@@ -281,6 +308,7 @@ export async function listAcceptedAsBilledCandidates(
          ${NO_RECORDING_SQL}
          OR ${UNRESOLVED_VALIDATION_SQL}
          OR ${EXHAUSTED_RECORDING_SQL}
+         ${cohort === 'close-month' ? `OR (${FAILED_RECORDING_SQL})` : ''}
        )`
   const [rows] = await pool.execute<CandidateRow[]>(
     `SELECT
@@ -299,6 +327,8 @@ export async function listAcceptedAsBilledCandidates(
          -- exhausted, not as an unresolved validation. They are different
          -- facts and the decision record has to say which one happened.
          WHEN ${EXHAUSTED_RECORDING_SQL}
+         THEN 'audit_exhausted'
+         WHEN ${cohort === 'close-month' ? FAILED_RECORDING_SQL : 'FALSE'}
          THEN 'audit_exhausted'
          ELSE 'automated_validation_unresolved'
        END AS fallback_reason,

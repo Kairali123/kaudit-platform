@@ -48,6 +48,9 @@ const TASK_ID = /^[A-Za-z0-9._:-]{1,191}$/
 const BATCH_ID = /^[A-Za-z0-9._:-]{16,80}$/
 export const RECONCILIATION_BATCH_ROUTE = '/api/v1/reconciliation/batch'
 export const MAX_RECONCILIATION_BATCH_ITEMS = 3
+/** Calls one month-close request settles, well inside the 300 s function. */
+export const MONTH_CLOSE_CHUNK = 400
+const MONTH_CLOSE_LANES = 10
 const ACCEPTED_CLAIM_CODE = 'ACCEPTED_AS_BILLED_UNVERIFIED|AUTOMATED_VALIDATION_UNRESOLVED'
 
 export type ReconciliationMode =
@@ -57,6 +60,7 @@ export type ReconciliationMode =
   | 'retry_audit'
   | 'accept_kserve_claim'
   | 'cap_at_kserve'
+  | 'close_month'
 
 export interface ReconciliationBatchRequest {
   batchId: string
@@ -81,6 +85,14 @@ export interface ReconciliationBatchReceipt {
   items: ReconciliationItemReceipt[]
   finalized?: boolean
   totalAdjustment?: string | null
+  /** Month close only: this call's share of the settlement. */
+  closed?: {
+    settled: number
+    skipped: number
+    amount: string
+    /** True while more calls remain; the Sheet calls again. */
+    more: boolean
+  }
 }
 
 export interface ReconciliationBatchService {
@@ -141,8 +153,16 @@ function parseRequest(input: ReconciliationBatchRequest): {
     body.mode !== 'transcript_reaudit' &&
     body.mode !== 'retry_audit' &&
     body.mode !== 'accept_kserve_claim' &&
-    body.mode !== 'cap_at_kserve'
+    body.mode !== 'cap_at_kserve' &&
+    body.mode !== 'close_month'
   ) throw new TypeError('reconciliation mode is invalid')
+  // Month close names no calls: the server settles the month's own cohort.
+  if (body.mode === 'close_month') {
+    if (!Array.isArray(body.items) || body.items.length !== 0) {
+      throw new TypeError('month close takes no items')
+    }
+    return { mode: body.mode, period, items: [] }
+  }
   if (
     !Array.isArray(body.items) ||
     body.items.length < 1 ||
@@ -212,7 +232,7 @@ async function resolveTaskCalls(
  * never written.
  */
 export function logReconciliationBillingFailure(
-  operation: 'validate_and_bill' | 'late_correction',
+  operation: 'validate_and_bill' | 'late_correction' | 'month_close',
   error: unknown,
 ): void {
   const shaped = (error ?? {}) as {
@@ -784,6 +804,78 @@ export function createReconciliationBatchService(options: {
     }
   }
 
+  /**
+   * Month close, as the stopped worker's cycle close did it: calls with no
+   * recording at zero; calls whose checks never agreed, and calls whose audit
+   * failed, at KServe's claim (unverified). Only calls with no live bill are
+   * touched, so a replay settles nothing twice. Bounded per request; the
+   * Sheet repeats while `more` is true.
+   */
+  async function processCloseMonth(
+    input: ReconciliationBatchRequest,
+    period: BillingMonthScope,
+  ): Promise<ReconciliationBatchReceipt> {
+    const candidates = await listAcceptedAsBilledCandidates(
+      pool, period, MONTH_CLOSE_CHUNK, 'close-month',
+    )
+    let settled = 0
+    let skipped = 0
+    let paise = 0
+    if (candidates.length > 0) {
+      const rateCard = await loadPublishedRateCard(pool, options.rateCardId)
+      let next = 0
+      await Promise.all(Array.from(
+        { length: Math.min(MONTH_CLOSE_LANES, candidates.length) },
+        async () => {
+          for (let candidate = candidates[next++]; candidate; candidate = candidates[next++]) {
+            try {
+              const records = buildAcceptedAsBilledRecords({
+                callId: candidate.callId,
+                auditRunId: candidate.auditRunId,
+                fallbackReason: candidate.fallbackReason,
+                claimedDurationMs: candidate.claimedDurationMs,
+                connectedDurationMs: candidate.connectedDurationMs,
+                vendorBilledMinutes: candidate.vendorBilledMinutes,
+                vendorBilledAmount: candidate.vendorBilledAmount,
+                sourceEvidence: {
+                  kind: 'call_manifest',
+                  referenceId: candidate.evidenceObjectId,
+                  sha256: candidate.evidenceSha256,
+                },
+                decidedAt: `${period.end}T18:29:59.999Z`,
+              }, rateCard)
+              await persistVerifiedBillingRecords(pool, {
+                records, rateCard, correlationId: input.correlationId,
+                // The candidate query selected calls with no live bill.
+                firstSettlement: true,
+              })
+              settled += 1
+              paise += Math.round(Number(records.calculation?.totalAmount || 0) * 100)
+            } catch (error) {
+              skipped += 1
+              logReconciliationBillingFailure('month_close', error)
+            }
+          }
+        },
+      ))
+      if (settled > 0) await summaries.invalidate(period.month)
+    }
+    return {
+      batchId: input.batchId,
+      billMonth: period.month,
+      mode: 'close_month',
+      items: [],
+      closed: {
+        settled,
+        skipped,
+        amount: (paise / 100).toFixed(2),
+        // A full chunk may leave more; a short one means the cohort is empty
+        // apart from calls that could not be settled.
+        more: candidates.length === MONTH_CLOSE_CHUNK && settled > 0,
+      },
+    }
+  }
+
   async function processLate(
     input: ReconciliationBatchRequest,
     period: BillingMonthScope,
@@ -971,6 +1063,9 @@ export function createReconciliationBatchService(options: {
           code: 'INVALID_RECONCILIATION_BATCH',
           status: 400,
         })
+      }
+      if (parsed.mode === 'close_month') {
+        return processCloseMonth(input, parsed.period)
       }
       if (parsed.mode === 'accept_kserve_claim' || parsed.mode === 'cap_at_kserve') {
         return processSettle(input, parsed.period, parsed.items, parsed.mode)
