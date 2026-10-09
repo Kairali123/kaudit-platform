@@ -427,3 +427,22 @@ test('the Apply KServe Cap tab sends cap_at_kserve rows', () => {
   const sheet = tab('Apply KServe Cap', [['T-cap', '2026-06']])
   assert.equal(dispatcher.kauditAuditInitialBatches_([sheet], 4)[0]?.mode, 'cap_at_kserve')
 })
+
+test('planning asks Sheets for the tab name and id once, not once per row', () => {
+  const context = vm.createContext({ console })
+  new vm.Script(source).runInContext(context)
+  const dispatcher = context as unknown as {
+    kauditAuditPlanBatches_: (contexts: unknown[], limit: number) => unknown
+  }
+  const sheet = tab('New Month', Array.from({ length: 500 }, (_, n) =>
+    [`T-${n}`, '2026-08'] as [string, string]))
+  // Half the rows already carry a batch id, so the retry scan walks them too.
+  sheet.rows.forEach((row, n) => { if (n % 2) Object.assign(row, { 4: 'RETRYABLE', 7: `gas-batch-${String(n).padStart(10, '0')}`, 8: 1 }) })
+  let calls = 0
+  sheet.sheet = {
+    getName: () => { calls += 1; return 'New Month' },
+    getSheetId: () => { calls += 1; return 1 },
+  }
+  dispatcher.kauditAuditPlanBatches_([sheet], 6)
+  assert.ok(calls <= 2, `Sheets was asked ${calls} times`)
+})
