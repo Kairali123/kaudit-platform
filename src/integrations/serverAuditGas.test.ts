@@ -427,3 +427,49 @@ test('the Apply KServe Cap tab sends cap_at_kserve rows', () => {
   const sheet = tab('Apply KServe Cap', [['T-cap', '2026-06']])
   assert.equal(dispatcher.kauditAuditInitialBatches_([sheet], 4)[0]?.mode, 'cap_at_kserve')
 })
+
+test('planning asks Sheets for the tab name and id once, not once per row', () => {
+  const context = vm.createContext({ console })
+  new vm.Script(source).runInContext(context)
+  const dispatcher = context as unknown as {
+    kauditAuditPlanBatches_: (contexts: unknown[], limit: number) => unknown
+  }
+  const sheet = tab('New Month', Array.from({ length: 500 }, (_, n) =>
+    [`T-${n}`, '2026-08'] as [string, string]))
+  // Half the rows already carry a batch id, so the retry scan walks them too.
+  sheet.rows.forEach((row, n) => { if (n % 2) Object.assign(row, { 4: 'RETRYABLE', 7: `gas-batch-${String(n).padStart(10, '0')}`, 8: 1 }) })
+  let calls = 0
+  sheet.sheet = {
+    getName: () => { calls += 1; return 'New Month' },
+    getSheetId: () => { calls += 1; return 1 },
+  }
+  dispatcher.kauditAuditPlanBatches_([sheet], 6)
+  assert.ok(calls <= 2, `Sheets was asked ${calls} times`)
+})
+test('New Month sends rows with a recording before rows without one', () => {
+  const dispatcher = loadDispatcher()
+  const sheet = tab('New Month', [
+    ['no-1', '2026-08'], ['rec-1', '2026-08'], ['no-2', '2026-08'], ['rec-2', '2026-08'],
+  ])
+  // Rows 0 and 2 have no Recording URL.
+  sheet.rows[0]![2] = ''
+  sheet.rows[2]![2] = ''
+  const batches = dispatcher.kauditAuditInitialBatches_([sheet], 4)
+  assert.deepEqual(
+    [...batches].flatMap((batch) => [...batch.rows].map((ref) => ref.index)),
+    [1, 3, 0, 2],
+  )
+})
+
+test('NO_RECORDING and INVOICE_NOT_IMPORTED rows are never retried automatically', () => {
+  const context = vm.createContext({ console })
+  new vm.Script(source).runInContext(context)
+  const dispatcher = context as unknown as {
+    kauditAuditRetryBatches_: (contexts: unknown[], limit: number) => unknown[]
+  }
+  for (const code of ['NO_RECORDING', 'INVOICE_NOT_IMPORTED']) {
+    const sheet = tab('New Month', [['T-1', '2026-08']])
+    Object.assign(sheet.rows[0]!, { 4: 'FAILED', 6: code, 7: 'gas-batch-0000000001', 8: 1 })
+    assert.equal(dispatcher.kauditAuditRetryBatches_([sheet], 4).length, 0, code)
+  }
+})

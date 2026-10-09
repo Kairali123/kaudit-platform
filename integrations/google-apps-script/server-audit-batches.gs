@@ -35,6 +35,8 @@ const KAUDIT_SERVER_AUDIT = Object.freeze({
     'new_month', 'late_recording', 'transcript_reaudit', 'retry_audit', 'accept_kserve_claim',
     'cap_at_kserve',
   ]),
+  // Answers a retry cannot change; such rows are never retried automatically.
+  finalCodes: Object.freeze(['NO_RECORDING', 'INVOICE_NOT_IMPORTED']),
   headers: Object.freeze({
     taskId: 'Task ID',
     recordingUrl: 'Recording URL',
@@ -460,6 +462,21 @@ function kauditAuditHeaderRow_(sheet) {
   throw new Error('Task ID header was not found in the first 10 rows of ' + sheet.getName());
 }
 
+/**
+ * The tab's name and id, asked of Sheets once per run. Both are needed for
+ * every row; each ask is a round trip, and on a 38k-row tab asking per row
+ * took the whole run before a single batch was sent.
+ */
+function kauditAuditSheetName_(context) {
+  if (context.sheetName === undefined) context.sheetName = context.sheet.getName();
+  return context.sheetName;
+}
+
+function kauditAuditSheetId_(context) {
+  if (context.sheetId === undefined) context.sheetId = context.sheet.getSheetId();
+  return context.sheetId;
+}
+
 function kauditAuditGet_(ref, key) {
   const column = ref.context.columns[key];
   return column >= 0 ? ref.context.rows[ref.index][column] : '';
@@ -498,7 +515,7 @@ function kauditAuditFlush_(contexts) {
         });
         if (useApi) {
           apiWrites.push({
-            range: kauditAuditA1_(context.sheet.getName(), column + 1, firstRow, firstRow + block.length - 1),
+            range: kauditAuditA1_(kauditAuditSheetName_(context), column + 1, firstRow, firstRow + block.length - 1),
             values: values,
           });
         } else {
@@ -557,7 +574,7 @@ function kauditAuditMode_(ref) {
   const explicit = normalise(kauditAuditGet_(ref, 'mode'));
   if (KAUDIT_SERVER_AUDIT.modes.indexOf(explicit) >= 0) return explicit;
   // The tab name outranks the project-wide default so each tab keeps its flow.
-  const name = ref.context.sheet.getName().toLowerCase();
+  const name = kauditAuditSheetName_(ref.context).toLowerCase();
   if (name.indexOf('accept') >= 0) return 'accept_kserve_claim';
   if (name.indexOf('cap') >= 0) return 'cap_at_kserve';
   if (name.indexOf('retry') >= 0) return 'retry_audit';
@@ -574,7 +591,7 @@ function kauditAuditMonth_(ref) {
   const explicit = String(kauditAuditGet_(ref, 'billMonth') || '').trim();
   if (/^\d{4}-\d{2}$/.test(explicit)) return explicit;
   if (/^\d{4}-\d{2}$/.test(ref.context.config.billMonth)) return ref.context.config.billMonth;
-  const name = ref.context.sheet.getName();
+  const name = kauditAuditSheetName_(ref.context);
   const numeric = name.match(/\b(20\d{2})[-_ ](0[1-9]|1[0-2])\b/);
   if (numeric) return numeric[1] + '-' + numeric[2];
   const monthNames = ['january','february','march','april','may','june',
@@ -586,7 +603,7 @@ function kauditAuditMonth_(ref) {
   if (monthIndex >= 0 && /^20\d{2}$/.test(year)) {
     return year + '-' + ('0' + (monthIndex + 1)).slice(-2);
   }
-  throw new Error('Bill month is missing for sheet ' + ref.context.sheet.getName());
+  throw new Error('Bill month is missing for sheet ' + kauditAuditSheetName_(ref.context));
 }
 
 function kauditAuditRowReady_(ref) {
@@ -603,6 +620,10 @@ function kauditAuditRowReady_(ref) {
     if (imported !== 'submitted' && imported !== 'duplicate') return false;
   }
   return true;
+}
+
+function kauditAuditHasRecording_(ref) {
+  return String(kauditAuditGet_(ref, 'recordingUrl') || '').trim() !== '';
 }
 
 function kauditAuditInitialBatches_(contexts, limit) {
@@ -632,6 +653,15 @@ function kauditAuditInitialBatches_(contexts, limit) {
   });
   const queues = Object.keys(groups).sort().map(function(key) {
     const group = groups[key];
+    // Calls with a recording are the only ones the AI audits; send them
+    // first. Rows without one just come back NO_RECORDING (settled at zero
+    // at month close), so they are swept after every recording is done.
+    if (group.mode === 'new_month') {
+      const withUrl = group.rows.filter(kauditAuditHasRecording_);
+      group.rows = withUrl.concat(group.rows.filter(function(ref) {
+        return !kauditAuditHasRecording_(ref);
+      }));
+    }
     const chunks = [];
     for (let index = 0; index < group.rows.length; index += KAUDIT_SERVER_AUDIT.batchSize) {
       chunks.push({
@@ -677,7 +707,7 @@ function kauditAuditRetryBatches_(contexts, limit, statuses) {
       const ref = { context: context, index: index };
       const batchId = String(kauditAuditGet_(ref, 'batchId') || '').trim();
       if (!batchId) return;
-      const key = context.sheet.getSheetId() + '|' + batchId;
+      const key = kauditAuditSheetId_(context) + '|' + batchId;
       if (!groups[key]) groups[key] = [];
       groups[key].push(ref);
     });
@@ -688,6 +718,9 @@ function kauditAuditRetryBatches_(contexts, limit, statuses) {
     const retry = rows.some(function(ref) {
       const status = String(kauditAuditGet_(ref, 'status') || '').trim().toUpperCase();
       const attempt = Number(kauditAuditGet_(ref, 'attempt') || 0);
+      // A settled answer: retrying would only get the same reply.
+      const error = String(kauditAuditGet_(ref, 'error') || '').trim();
+      if (KAUDIT_SERVER_AUDIT.finalCodes.indexOf(error) >= 0) return false;
       return eligible.indexOf(status) >= 0 && attempt < 2;
     });
     if (!retry) return false;
