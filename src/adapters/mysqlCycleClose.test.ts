@@ -184,3 +184,11 @@ test('the unresolved-validation cohort settles only named, still-unresolved call
   assert.doesNotMatch(sql, /NOT EXISTS \(\s*SELECT 1\s*FROM kaudit_call_artifact recording\b/)
   assert.deepEqual(parameters, ['2026-06-01', '2026-06-30', 'call-a', 'call-b', 2])
 })
+
+test('the month-close cohort adds given-up audits and labels them exhausted', async () => {
+  const closing = await capture('close-month')
+  assert.match(closing, /failed_recording\.audio_processing_status IN/)
+  assert.match(closing, /WHEN\s+EXISTS \(\s*SELECT 1\s*FROM kaudit_call_artifact failed_recording[\s\S]*?THEN 'audit_exhausted'/)
+  // The original whole-month close is unchanged.
+  assert.doesNotMatch(await capture('all'), /failed_recording/)
+})

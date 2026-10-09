@@ -153,6 +153,61 @@ function kauditAuditRound_(config, contexts) {
   };
 }
 
+/**
+ * Month close, run once after every audit for the month has finished.
+ * Calls with no recording are settled at zero; calls whose AI checks never
+ * agreed, and calls whose audit failed, at KServe's claim (unverified). Calls
+ * that already have a bill are never touched, so running it twice is safe.
+ */
+function closeKauditMonth() {
+  const ui = SpreadsheetApp.getUi();
+  const answer = ui.prompt('Close a bill month',
+    'Bill month to close, as YYYY-MM (e.g. 2026-08). Run it only after every audit for the month has finished.',
+    ui.ButtonSet.OK_CANCEL);
+  if (answer.getSelectedButton() !== ui.Button.OK) return;
+  const month = answer.getResponseText().trim();
+  if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(month)) {
+    ui.alert('Enter the month as YYYY-MM, for example 2026-08.');
+    return;
+  }
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(30000)) {
+    ui.alert('An audit run is in progress. Try again in a few minutes.');
+    return;
+  }
+  const totals = { settled: 0, skipped: 0, paise: 0, requests: 0 };
+  let more = true;
+  let error = '';
+  try {
+    const config = kauditAuditConfig_();
+    const startedAt = Date.now();
+    while (more && Date.now() - startedAt < KAUDIT_SERVER_AUDIT.runBudgetMs - 60000) {
+      const batch = { batchId: kauditAuditBatchId_(), billMonth: month, mode: 'close_month', rows: [] };
+      const response = UrlFetchApp.fetchAll([kauditAuditSignedRequest_(config, batch)])[0];
+      let body = {};
+      try { body = JSON.parse(response.getContentText() || '{}'); } catch (ignored) {}
+      if (response.getResponseCode() !== 200 || !body.closed) {
+        error = String(body.code || (body.error && body.error.code) || ('HTTP_' + response.getResponseCode()));
+        break;
+      }
+      totals.requests += 1;
+      totals.settled += Number(body.closed.settled) || 0;
+      totals.skipped += Number(body.closed.skipped) || 0;
+      totals.paise += Math.round(Number(body.closed.amount || 0) * 100);
+      more = body.closed.more === true;
+    }
+  } finally {
+    lock.releaseLock();
+  }
+  console.log(JSON.stringify({ event: 'kaudit_month_close', month: month,
+    settled: totals.settled, skipped: totals.skipped, more: more, error: error }));
+  ui.alert('Month close ' + month,
+    'Settled ' + totals.settled + ' calls (total INR ' + (totals.paise / 100).toFixed(2) + ').' +
+    (totals.skipped ? ' ' + totals.skipped + ' could not be settled.' : '') +
+    (error ? ' Stopped: ' + error + '.' : more ? ' More remain: run Close month again.' : ' Done.'),
+    ui.ButtonSet.OK);
+}
+
 /** Make selected failed rows eligible for one supervised retry. */
 function retrySelectedKauditServerAudits() {
   // Never edit rows under a run in flight: its write-back owns those cells.

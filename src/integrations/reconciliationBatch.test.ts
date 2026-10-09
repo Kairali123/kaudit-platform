@@ -278,3 +278,17 @@ test('a retry of a call that is already audited reports its bill as done', async
     { taskId: 'task-done', stage: 'complete', status: 'duplicate', amount: '42.75000000' },
   ])
 })
+
+test('close_month names no calls and reports an empty month as done', async () => {
+  const { pool, statements } = fakePool([
+    { match: /failed_recording\.audio_processing_status IN/, rows: [] },
+  ])
+  const receipt = await service(pool).process(request({ mode: 'close_month', items: [] }))
+  assert.equal(receipt.mode, 'close_month')
+  assert.deepEqual(receipt.closed, { settled: 0, skipped: 0, amount: '0.00', more: false })
+  assert.ok(statements.every(({ sql }) => /^\s*SELECT/i.test(sql)))
+  await assert.rejects(
+    service(pool).process(request({ mode: 'close_month', items: [{ task_id: 'task-1' }] })),
+    /invalid/,
+  )
+})

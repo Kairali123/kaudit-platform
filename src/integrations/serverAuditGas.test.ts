@@ -473,3 +473,25 @@ test('NO_RECORDING and INVOICE_NOT_IMPORTED rows are never retried automatically
     assert.equal(dispatcher.kauditAuditRetryBatches_([sheet], 4).length, 0, code)
   }
 })
+
+test('month close is a signed close_month request naming no calls', () => {
+  const context = vm.createContext({
+    console,
+    Utilities: {
+      computeDigest: () => [1, 2, 3], computeHmacSha256Signature: () => [4, 5, 6],
+      DigestAlgorithm: { SHA_256: 'sha256' }, Charset: { UTF_8: 'utf8' },
+    },
+  })
+  new vm.Script(source).runInContext(context)
+  const gas = context as unknown as {
+    kauditAuditSignedRequest_: (config: unknown, batch: unknown) => { payload: string }
+  }
+  const request = gas.kauditAuditSignedRequest_(
+    { endpoint: 'https://kaudit.example.test', secret: 'synthetic' },
+    { batchId: 'gas-close-000000000001', billMonth: '2026-08', mode: 'close_month', rows: [] },
+  )
+  const body = JSON.parse(request.payload)
+  assert.equal(body.mode, 'close_month')
+  assert.deepEqual(body.items, [])
+  assert.match(source, /^function closeKauditMonth\(\)/m)
+})
